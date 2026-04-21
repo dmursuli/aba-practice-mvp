@@ -1,0 +1,1152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ABA Session Workspace</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main id="login-screen" class="login-screen">
+      <form id="login-form" class="login-panel">
+        <p class="eyebrow">ABA Practice MVP</p>
+        <h1>Sign in</h1>
+        <label>
+          Username
+          <input type="text" name="username" autocomplete="username" required>
+        </label>
+        <label>
+          Password
+          <input type="password" name="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit" class="primary-button">Sign in</button>
+        <p class="form-message" id="login-message" role="status"></p>
+        <p class="muted">Starter local accounts: admin/admin123, bcba/bcba123, rbt/rbt123, readonly/readonly123.</p>
+      </form>
+    </main>
+
+    <div id="app-root" class="hidden">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">ABA Practice MVP</p>
+        <h1>Session workspace</h1>
+        <nav class="view-switcher" aria-label="Workspace views">
+          <button type="button" class="view-tab" data-view-button="clients">Clients</button>
+          <button type="button" class="view-tab" data-view-button="users">Users</button>
+          <button type="button" class="view-tab active" data-view-button="session">Session</button>
+          <button type="button" class="view-tab" data-view-button="plan">Treatment plan</button>
+          <button type="button" class="view-tab" data-view-button="parent">Parent Training</button>
+          <button type="button" class="view-tab" data-view-button="graphs">Graphs</button>
+          <button type="button" class="view-tab" data-view-button="report">Funder Report</button>
+          <button type="button" class="view-tab" data-view-button="soap">SOAP Notes</button>
+          <button type="button" class="view-tab" data-view-button="health">Data Health</button>
+          <button type="button" class="view-tab" data-view-button="audit">Audit Log</button>
+        </nav>
+      </div>
+      <div class="user-box">
+        <img class="header-image" src="https://images.unsplash.com/photo-1600880292203-757bb62b4baf?auto=format&fit=crop&w=520&q=80" alt="Clinician workspace">
+        <div>
+          <strong id="current-user-label"></strong>
+          <button type="button" class="secondary-button" id="logout-button">Logout</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="app-shell" data-view-panel="session">
+      <section class="entry-panel" aria-labelledby="session-entry-title">
+        <div class="section-heading">
+          <p class="eyebrow">97153</p>
+          <h2 id="session-entry-title">Session entry</h2>
+        </div>
+
+        <form id="session-form" class="session-form">
+          <div class="form-grid">
+            <label>
+              Client
+              <select name="clientId" id="client-select" required></select>
+            </label>
+            <label>
+              Date
+              <input type="date" name="date" required>
+            </label>
+            <label>
+              Therapist
+              <input type="text" name="therapist" placeholder="Therapist name" required>
+            </label>
+            <label>
+              Setting
+              <input type="text" name="setting" placeholder="Clinic, home, school" required>
+            </label>
+            <label>
+              Start time
+              <input type="time" name="startTime" required>
+            </label>
+            <label>
+              End time
+              <input type="time" name="endTime" required>
+            </label>
+            <label>
+              Caregiver present
+              <select name="caregiverPresent">
+                <option value="false">No</option>
+                <option value="true">Yes</option>
+              </select>
+            </label>
+            <label>
+              Caregiver training
+              <select name="caregiverTraining">
+                <option value="false">No</option>
+                <option value="true">Yes</option>
+              </select>
+            </label>
+            <label>
+              Session affect
+              <select name="affect">
+                <option value="neutral">Neutral</option>
+                <option value="happy">Happy</option>
+                <option value="engaged">Engaged</option>
+                <option value="tired">Tired</option>
+                <option value="upset">Upset</option>
+              </select>
+            </label>
+            <label>
+              Transitions
+              <select name="transitions">
+                <option value="typical">Typical</option>
+                <option value="smooth">Smooth</option>
+                <option value="delayed">Delayed</option>
+                <option value="difficult">Difficult</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="block-heading">
+            <h3>Skill targets</h3>
+            <div class="button-row">
+              <button type="button" class="secondary-button" id="add-program">Restore active target</button>
+              <button type="button" class="secondary-button" id="add-maintenance-target">Add maintenance target</button>
+            </div>
+          </div>
+          <div id="domain-tabs" class="domain-tabs" aria-label="Skill target domains"></div>
+          <div id="program-list" class="stack"></div>
+
+          <div class="block-heading">
+            <h3>Behaviors</h3>
+            <button type="button" class="secondary-button" id="add-behavior">Restore behavior</button>
+          </div>
+          <div id="behavior-list" class="stack"></div>
+
+          <div class="form-grid">
+            <label>
+              Barriers to treatment
+              <select name="barriers">
+                <option value="none">None observed</option>
+                <option value="fatigue">Fatigue</option>
+                <option value="illness">Illness</option>
+                <option value="motivation">Low motivation</option>
+                <option value="environment">Environmental distraction</option>
+                <option value="behavior">Behavior interference</option>
+              </select>
+            </label>
+            <label>
+              Barrier details
+              <input type="text" name="barrierText" placeholder="Optional">
+            </label>
+          </div>
+
+          <label>
+            Notes
+            <textarea name="notes" rows="3" maxlength="360" placeholder="Short optional note"></textarea>
+          </label>
+
+          <section class="signature-section" aria-labelledby="session-signature-title">
+            <div class="block-heading">
+              <h3 id="session-signature-title">Provider signature</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Signature
+                <input type="text" name="providerSignature" placeholder="Type provider signature" required>
+              </label>
+              <label>
+                Credential
+                <input type="text" name="providerCredential" placeholder="RBT, BCBA, etc.">
+              </label>
+            </div>
+          </section>
+
+          <p class="form-message" id="form-message" role="status"></p>
+          <button class="primary-button" type="submit">Save session and generate SOAP note</button>
+        </form>
+      </section>
+
+    </main>
+
+    <main class="user-shell hidden" data-view-panel="users">
+      <section class="user-panel" aria-labelledby="user-management-title">
+        <div class="section-heading">
+          <p class="eyebrow">Access control</p>
+          <h2 id="user-management-title">User management</h2>
+        </div>
+
+        <form id="new-user-form" class="session-form">
+          <div class="block-heading">
+            <h3>Create user</h3>
+            <button type="submit" class="primary-button">Create user</button>
+          </div>
+          <div class="form-grid">
+            <label>
+              Name
+              <input type="text" name="name" placeholder="Full name" required>
+            </label>
+            <label>
+              Username
+              <input type="text" name="username" autocomplete="off" required>
+            </label>
+            <label>
+              Role
+              <select name="role">
+                <option value="rbt">RBT</option>
+                <option value="bcba">BCBA</option>
+                <option value="admin">Admin</option>
+                <option value="read-only">Read-only</option>
+              </select>
+            </label>
+            <label>
+              Temporary password
+              <input type="password" name="password" autocomplete="new-password" required>
+            </label>
+          </div>
+          <p class="form-message" id="new-user-message" role="status"></p>
+        </form>
+
+        <section class="report-form-section" aria-labelledby="existing-users-title">
+          <div class="block-heading">
+            <h3 id="existing-users-title">Existing users</h3>
+            <button type="button" class="secondary-button" id="refresh-users">Refresh users</button>
+          </div>
+          <p class="form-message" id="user-management-message" role="status"></p>
+          <div id="user-list" class="user-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <main class="client-shell hidden" data-view-panel="clients">
+      <section class="client-panel" aria-labelledby="client-management-title">
+        <div class="section-heading">
+          <p class="eyebrow">Practice setup</p>
+          <h2 id="client-management-title">Client management</h2>
+        </div>
+        <div class="button-row">
+          <button type="button" class="secondary-button" id="export-client-package">Export client package</button>
+          <button type="button" class="secondary-button" id="download-practice-backup">Download practice backup</button>
+          <button type="button" class="secondary-button danger-button" id="restore-practice-backup">Restore practice backup</button>
+        </div>
+        <div id="client-management-summary" class="summary-strip"></div>
+
+        <form id="client-profile-form" class="session-form">
+          <div class="block-heading">
+            <h3>Selected client profile</h3>
+            <button type="submit" class="secondary-button">Save profile</button>
+          </div>
+          <div class="form-grid">
+            <label>
+              Client
+              <select name="clientId" id="management-client-select"></select>
+            </label>
+            <label>
+              Status
+              <select name="status">
+                <option value="active">Active</option>
+                <option value="archived">Archived</option>
+              </select>
+            </label>
+            <label>
+              Client name
+              <input type="text" name="name" required>
+            </label>
+            <label>
+              Date of birth
+              <input type="date" name="dob">
+            </label>
+            <label>
+              Default setting
+              <input type="text" name="defaultSetting" placeholder="Clinic, home, school">
+            </label>
+            <label>
+              Caregivers / family members
+              <input type="text" name="caregivers" placeholder="Parent names or family members">
+            </label>
+            <label>
+              School / setting
+              <input type="text" name="school" placeholder="School, daycare, home program">
+            </label>
+            <label>
+              Diagnosis
+              <input type="text" name="diagnosis" placeholder="Autism Spectrum Disorder">
+            </label>
+          </div>
+          <label>
+            Communication profile
+            <textarea name="communication" rows="3" placeholder="Single words, phrases, AAC, PECS, gestures, etc."></textarea>
+          </label>
+          <label>
+            Client notes
+            <textarea name="profileNotes" rows="3" placeholder="General notes for onboarding, strengths, preferences, or clinical context"></textarea>
+          </label>
+          <section class="report-form-section" aria-labelledby="authorization-title">
+            <div class="block-heading">
+              <h3 id="authorization-title">Authorization</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Authorization number
+                <input type="text" name="authorizationNumber" placeholder="Authorization or reference number">
+              </label>
+              <label>
+                Funder
+                <input type="text" name="funder" placeholder="Insurance/funder">
+              </label>
+              <label>
+                Effective start date
+                <input type="date" name="authorizationStart">
+              </label>
+              <label>
+                Effective end date
+                <input type="date" name="authorizationEnd">
+              </label>
+            </div>
+            <div class="auth-service-grid">
+              <label>
+                97153 hours approved
+                <input type="number" name="auth97153Hours" min="0" step="0.25">
+              </label>
+              <label>
+                97153 units approved
+                <input type="number" name="auth97153Units" min="0" step="1">
+              </label>
+              <label>
+                97155 hours approved
+                <input type="number" name="auth97155Hours" min="0" step="0.25">
+              </label>
+              <label>
+                97155 units approved
+                <input type="number" name="auth97155Units" min="0" step="1">
+              </label>
+              <label>
+                97156 hours approved
+                <input type="number" name="auth97156Hours" min="0" step="0.25">
+              </label>
+              <label>
+                97156 units approved
+                <input type="number" name="auth97156Units" min="0" step="1">
+              </label>
+              <label>
+                97151 hours approved
+                <input type="number" name="auth97151Hours" min="0" step="0.25">
+              </label>
+              <label>
+                97151 units approved
+                <input type="number" name="auth97151Units" min="0" step="1">
+              </label>
+            </div>
+            <label>
+              Authorization notes
+              <textarea name="authorizationNotes" rows="3" placeholder="Administrative notes, unit breakdown, restrictions, or reauthorization reminders"></textarea>
+            </label>
+          </section>
+          <section class="report-form-section" aria-labelledby="assessment-admin-title">
+            <div class="block-heading">
+              <h3 id="assessment-admin-title">Standardized assessments</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Assessment type
+                <input type="text" name="assessmentType" placeholder="VB-MAPP, Vineland, ABLLS-R">
+              </label>
+              <label>
+                Assessment date
+                <input type="date" name="assessmentDate">
+              </label>
+              <label>
+                Conducted by
+                <input type="text" name="assessmentConductedBy" placeholder="BCBA name">
+              </label>
+              <label>
+                Assessment file
+                <input type="file" name="assessmentFile" accept="image/*,.pdf">
+              </label>
+            </div>
+            <label>
+              Assessment notes
+              <textarea name="assessmentNotes" rows="3" placeholder="Scores, grid summary, or where the uploaded source is stored"></textarea>
+            </label>
+          </section>
+          <p class="form-message" id="client-profile-message" role="status"></p>
+        </form>
+
+        <section class="report-form-section" aria-labelledby="client-documents-title">
+          <div class="block-heading">
+            <h3 id="client-documents-title">Documents</h3>
+          </div>
+          <form id="client-document-form" class="session-form">
+            <div class="form-grid">
+              <label>
+                Document type
+                <select name="documentType">
+                  <option value="authorization">Authorization</option>
+                  <option value="standardized-assessment">Standardized assessment</option>
+                  <option value="fba-assessment">FBA / assessment grid</option>
+                  <option value="behavior-support-plan">Behavior support plan</option>
+                  <option value="funder-report">Funder report attachment</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>
+                Document date
+                <input type="date" name="documentDate">
+              </label>
+              <label>
+                File
+                <input type="file" name="documentFile" required>
+              </label>
+            </div>
+            <label>
+              Document notes
+              <textarea name="documentNotes" rows="2" placeholder="Optional notes about this file"></textarea>
+            </label>
+            <div class="button-row">
+              <button type="submit" class="secondary-button">Upload document</button>
+            </div>
+            <p class="form-message" id="client-document-message" role="status"></p>
+          </form>
+          <div id="client-document-list" class="document-list"></div>
+        </section>
+
+        <form id="new-client-form" class="session-form">
+          <div class="block-heading">
+            <h3>Add new client</h3>
+            <button type="submit" class="primary-button">Create client</button>
+          </div>
+          <div class="form-grid">
+            <label>
+              Client name
+              <input type="text" name="name" placeholder="Client name" required>
+            </label>
+            <label>
+              Date of birth
+              <input type="date" name="dob">
+            </label>
+            <label>
+              Default setting
+              <input type="text" name="defaultSetting" placeholder="Clinic, home, school">
+            </label>
+            <label>
+              Diagnosis
+              <input type="text" name="diagnosis" placeholder="Autism Spectrum Disorder">
+            </label>
+          </div>
+          <p class="form-message" id="new-client-message" role="status"></p>
+        </form>
+      </section>
+    </main>
+
+    <main class="parent-shell hidden" data-view-panel="parent">
+      <section class="parent-panel" aria-labelledby="parent-training-title">
+        <div class="section-heading">
+          <p class="eyebrow">BCBA caregiver training</p>
+          <h2 id="parent-training-title">Parent training</h2>
+        </div>
+        <div id="parent-client-summary" class="summary-strip"></div>
+
+        <form id="parent-training-form" class="session-form">
+          <div class="form-grid">
+            <label>
+              Client
+              <select name="clientId" id="parent-client-select" disabled></select>
+            </label>
+            <label>
+              Date
+              <input type="date" name="date" required>
+            </label>
+            <label>
+              BCBA
+              <input type="text" name="bcba" placeholder="BCBA name" required>
+            </label>
+            <label>
+              Caregiver trained
+              <input type="text" name="caregiverName" placeholder="Caregiver name" required>
+            </label>
+            <label>
+              Setting
+              <input type="text" name="setting" placeholder="Clinic, home, school, telehealth" required>
+            </label>
+            <label>
+              Start time
+              <input type="time" name="startTime" required>
+            </label>
+            <label>
+              End time
+              <input type="time" name="endTime" required>
+            </label>
+            <label>
+              Training focus
+              <select name="trainingFocus">
+                <option value="behavior support plan implementation">Behavior support plan implementation</option>
+                <option value="skill acquisition practice">Skill acquisition practice</option>
+                <option value="caregiver goal review">Caregiver goal review</option>
+                <option value="generalization and maintenance">Generalization and maintenance</option>
+                <option value="treatment plan updates">Treatment plan updates</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="block-heading">
+            <h3>Parent training goals</h3>
+            <button type="button" class="secondary-button" id="add-parent-goal">Add parent goal</button>
+          </div>
+          <div id="parent-goal-list" class="stack"></div>
+
+          <label>
+            Session note
+            <textarea name="notes" rows="3" maxlength="520" placeholder="Parent training response, barriers, treatment updates, or next steps"></textarea>
+          </label>
+
+          <section class="signature-section" aria-labelledby="parent-signature-title">
+            <div class="block-heading">
+              <h3 id="parent-signature-title">Provider signature</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Signature
+                <input type="text" name="providerSignature" placeholder="Type BCBA signature" required>
+              </label>
+              <label>
+                Credential
+                <input type="text" name="providerCredential" placeholder="BCBA">
+              </label>
+            </div>
+          </section>
+
+          <p class="form-message" id="parent-message" role="status"></p>
+          <button class="primary-button" type="submit">Generate 97156 SOAP note</button>
+        </form>
+
+      </section>
+    </main>
+
+    <main class="soap-shell hidden" data-view-panel="soap">
+      <section class="profile-panel" aria-labelledby="profile-title">
+        <div class="section-heading">
+          <p class="eyebrow">Client profile</p>
+          <h2 id="profile-title">Session history</h2>
+        </div>
+
+        <div id="client-summary" class="summary-strip"></div>
+
+        <div id="session-history" class="history-list"></div>
+      </section>
+
+      <section class="soap-panel" aria-labelledby="soap-title">
+        <div class="section-heading">
+          <p class="eyebrow">97153</p>
+          <h2 id="soap-title">SOAP note</h2>
+        </div>
+        <div id="soap-client-summary" class="summary-strip"></div>
+        <section class="supervision-note-panel" aria-labelledby="note-97155-title">
+          <h3 id="note-97155-title">97155 note</h3>
+          <textarea id="note-97155" class="soap-editor note-97155-editor" rows="8" aria-label="Editable 97155 note"></textarea>
+          <p id="note-97155-status" class="form-message" role="status"></p>
+        </section>
+        <div class="block-heading">
+          <h3 id="selected-soap-note-title">97153 note</h3>
+          <div class="button-row">
+            <button type="button" class="secondary-button" id="print-soap-note">Print note</button>
+            <button type="button" class="secondary-button" id="download-soap-text">Download .txt</button>
+            <button type="button" class="secondary-button" id="download-soap-html">Download .html</button>
+            <button type="button" class="secondary-button" id="finalize-note">Finalize note</button>
+          </div>
+        </div>
+        <textarea id="soap-note" class="soap-editor" rows="18" aria-label="Editable SOAP note"></textarea>
+        <p id="note-status" class="form-message" role="status"></p>
+      </section>
+    </main>
+
+    <main class="graphs-shell hidden" data-view-panel="graphs">
+      <section class="graphs-panel" aria-labelledby="graphs-title">
+        <div class="section-heading">
+          <p class="eyebrow">Progress review</p>
+          <h2 id="graphs-title">Graphs</h2>
+        </div>
+        <div id="graphs-client-summary" class="summary-strip"></div>
+        <div class="chart-zone">
+          <div id="skill-charts" class="chart-zone"></div>
+          <article class="chart-panel">
+            <h3>Behavior frequency</h3>
+            <canvas id="behavior-chart" width="760" height="320"></canvas>
+          </article>
+          <div id="behavior-charts" class="chart-zone"></div>
+        </div>
+      </section>
+    </main>
+
+    <main class="audit-shell hidden" data-view-panel="audit">
+      <section class="audit-panel" aria-labelledby="audit-title">
+        <div class="section-heading">
+          <p class="eyebrow">Accountability</p>
+          <h2 id="audit-title">Audit log</h2>
+        </div>
+        <div class="form-grid">
+          <label>
+            Client
+            <select id="audit-client-filter">
+              <option value="">All clients</option>
+            </select>
+          </label>
+          <label>
+            User
+            <select id="audit-user-filter">
+              <option value="">All users</option>
+            </select>
+          </label>
+          <label>
+            Action
+            <select id="audit-action-filter">
+              <option value="">All actions</option>
+            </select>
+          </label>
+          <label>
+            Start date
+            <input type="date" id="audit-start-filter">
+          </label>
+          <label>
+            End date
+            <input type="date" id="audit-end-filter">
+          </label>
+        </div>
+        <div class="button-row">
+          <button type="button" class="secondary-button" id="refresh-audit-log">Refresh log</button>
+          <button type="button" class="secondary-button" id="export-audit-csv">Export CSV</button>
+          <button type="button" class="secondary-button" id="export-audit-json">Export JSON</button>
+        </div>
+        <p class="form-message" id="audit-message" role="status"></p>
+        <div id="audit-log-table" class="audit-log-table"></div>
+      </section>
+    </main>
+
+    <main class="health-shell hidden" data-view-panel="health">
+      <section class="audit-panel" aria-labelledby="health-title">
+        <div class="section-heading">
+          <p class="eyebrow">Quality control</p>
+          <h2 id="health-title">Data health</h2>
+        </div>
+        <div class="button-row">
+          <button type="button" class="primary-button" id="run-health-check">Run health check</button>
+          <button type="button" class="secondary-button" id="export-health-csv">Export CSV</button>
+          <button type="button" class="secondary-button" id="export-health-json">Export JSON</button>
+        </div>
+        <p class="form-message" id="health-message" role="status"></p>
+        <div id="health-summary" class="summary-strip"></div>
+        <div id="health-report-table" class="audit-log-table"></div>
+      </section>
+    </main>
+
+    <main class="report-shell hidden" data-view-panel="report">
+      <section class="report-panel" aria-labelledby="report-title">
+        <div class="section-heading">
+          <p class="eyebrow">Six-month review</p>
+          <h2 id="report-title">Funder report</h2>
+        </div>
+        <div id="report-client-summary" class="summary-strip"></div>
+        <form id="funder-report-form" class="session-form">
+          <div class="form-grid">
+            <label>
+              Report start
+              <input type="date" name="startDate" required>
+            </label>
+            <label>
+              Report end
+              <input type="date" name="endDate" required>
+            </label>
+            <label>
+              Report prepared by
+              <input type="text" name="preparedBy" placeholder="Provider name">
+            </label>
+            <label>
+              Credential
+              <input type="text" name="credential" placeholder="BCBA">
+            </label>
+          </div>
+          <label>
+            Background information
+            <textarea name="background" rows="8">The client is a [age]-year-old [male/female] diagnosed with Autism Spectrum Disorder. The client resides with [caregivers/family members] and currently attends [school/setting, if applicable].
+Developmental history indicates delays in [expressive language, receptive language, social skills, adaptive functioning]. The client currently communicates using [single words/phrases/AAC/PECS], with [limited/emerging] ability to engage in reciprocal communication.
+Socially, the client demonstrates [limited/emerging] interest in peers and has difficulty with [turn-taking, joint attention, sustaining interactions]. The client benefits from [structured routines, visual supports, reinforcement systems].
+The client has a history of maladaptive behaviors, including [list behaviors], which interfere with learning and daily functioning. The client is currently receiving ABA services to address communication, behavior reduction, and skill acquisition across settings.</textarea>
+          </label>
+          <label>
+            Medical concerns
+            <textarea name="medicalConcerns" rows="8">At this time, the client is reported to be in [good/overall stable] health. There are [no significant / the following] medical concerns impacting treatment: [insert if applicable].
+The client is currently [not taking / taking] medication(s): [list medications if applicable], which [do/do not] impact behavior or learning.
+Caregivers report [no concerns / concerns] related to sleep, feeding, or toileting. Any noted concerns include: [brief description].
+Due to the diagnosis of Autism Spectrum Disorder, the client may exhibit sensory sensitivities (e.g., noise, textures, transitions), which can affect participation and behavior.
+The client is able to participate in ABA services, and ongoing monitoring of medical and developmental status is recommended.</textarea>
+          </label>
+          <label>
+            Reason for referral
+            <textarea name="reasonReferral" rows="7">The client was referred for Applied Behavior Analysis (ABA) services due to concerns regarding delays in communication, social interaction, and adaptive functioning associated with Autism Spectrum Disorder.
+Primary concerns include [limited functional communication, difficulty following instructions, reduced social engagement]. The client demonstrates challenges in [expressive/receptive language, responding to questions, engaging in conversation].
+Additionally, the client engages in maladaptive behaviors, including [list behaviors], which occur in response to [demands, transitions, denied access, etc.].
+These deficits significantly impact the client’s ability to function independently and participate in daily activities across home, school, and community settings. ABA services were recommended to increase functional skills and reduce behaviors that interfere with learning.</textarea>
+          </label>
+          <label>
+            Impact of behaviors
+            <textarea name="impactBehaviors" rows="8">The client’s maladaptive behaviors interfere with their ability to access learning opportunities and develop age-appropriate skills.
+Behaviors such as [task refusal, tantrums, elopement, etc.] limit the client’s ability to participate in structured activities, complete tasks, and follow adult-directed instruction. As a result, the client requires increased prompting and support to engage in daily routines.
+These behaviors also present safety concerns, particularly in [school/community] settings, where the client may [leave designated areas, fail to respond to directives, engage in unsafe actions].
+Communication deficits further contribute to maladaptive behaviors, as the client may rely on problem behavior to express needs or escape demands.
+Socially, these behaviors reduce opportunities for peer interaction and participation in group activities, impacting the development of appropriate social skills.
+Overall, these behaviors significantly limit the client’s independence and ability to function across environments, supporting the need for continued intervention.</textarea>
+          </label>
+          <label>
+            Client and family strengths
+            <textarea name="familyStrengths" rows="7">The client demonstrates several strengths that support progress in treatment. The client exhibits [positive affect, responsiveness to reinforcement, interest in preferred activities], which facilitate engagement during sessions.
+The client has emerging skills in [communication, imitation, following instructions], providing a foundation for continued development. The client responds well to [visual supports, structured routines, reinforcement systems].
+The family is actively involved in the client’s care and demonstrates a willingness to participate in treatment and implement recommended strategies. Caregivers are [consistent, communicative, receptive to feedback], which supports generalization of skills across settings.
+The family provides a supportive environment that promotes learning and collaboration with service providers. These strengths are expected to contribute to continued progress and positive treatment outcomes.</textarea>
+          </label>
+          <label>
+            Initial observations
+            <textarea name="initialObservations" rows="8">The client was observed in a [clinic/home/school] setting during the initial assessment. The client presented as [alert, calm, active] and transitioned to the assessment environment with [minimal/moderate] prompting.
+During the observation, the client engaged with [preferred items/activities] and demonstrated [increased/decreased] engagement during structured tasks. Participation decreased during [non-preferred tasks/transitions].
+Communication was observed to consist of [single words/phrases/AAC use], with [limited/emerging] spontaneous language. The client required prompting to respond to questions and follow instructions.
+Behaviorally, the client engaged in [task refusal, avoidance, elopement, etc.], particularly when demands were placed. These behaviors were managed with [redirection, reinforcement, visual supports].
+The client demonstrated improved engagement when provided with structure and reinforcement. Overall, observations are consistent with deficits in communication, social interaction, and behavioral regulation, supporting the need for ABA services.</textarea>
+          </label>
+          <section class="report-form-section" aria-labelledby="functional-assessment-title">
+            <div class="block-heading">
+              <h3 id="functional-assessment-title">Functional assessment</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Indirect assessment type
+                <input type="text" name="indirectAssessmentType" placeholder="FAST, MAS, interview, record review">
+              </label>
+              <label>
+                Conducted by
+                <input type="text" name="assessmentConductedBy" placeholder="Provider name">
+              </label>
+              <label>
+                Date
+                <input type="date" name="assessmentDate">
+              </label>
+            </div>
+            <label>
+              Upload assessment grid
+              <input type="file" name="assessmentGrid" accept="image/*">
+            </label>
+          </section>
+          <label>
+            Behavior support plan
+            <textarea name="behaviorSupportPlan" rows="6" placeholder="Paste the behavior support plan or current intervention procedures here"></textarea>
+          </label>
+          <section class="report-form-section" aria-labelledby="standardized-assessment-title">
+            <div class="block-heading">
+              <h3 id="standardized-assessment-title">Standardized assessment</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Assessment type
+                <input type="text" name="standardizedAssessmentType" placeholder="VB-MAPP, Vineland, ABLLS-R">
+              </label>
+              <label>
+                Conducted by
+                <input type="text" name="standardizedConductedBy" placeholder="Provider name">
+              </label>
+              <label>
+                Date
+                <input type="date" name="standardizedAssessmentDate">
+              </label>
+            </div>
+            <label>
+              Upload assessment grid
+              <input type="file" name="standardizedAssessmentGrid" accept="image/*">
+            </label>
+          </section>
+          <label>
+            Progress summary
+            <textarea name="progressSummary" rows="4" placeholder="Summarize progress across skill acquisition, behavior reduction, maintenance, and barriers"></textarea>
+          </label>
+          <label>
+            Instructional goals information
+            <textarea name="instructionalGoalsInfo" rows="7">The following skills will be taught utilizing the listed instructional methods in order to replace the client's problem behavior, increase social skills and independence, and achieve the quality of life outcomes that are the focus of this plan. These goals are derived from the ultimate outcomes desired through intervention and functional behavioral and curricular assessments, and include instruction in skills relevant to functional communication, tolerance and coping, social interaction, and daily living. The short term objectives will be addressed first during intervention, with additional targets being added as the client masters those listed. In order to develop the skills identified, the behavioral intervention professionals and caregiver will task analyze complex skills, develop routine-specific instructional plans, and use appropriate chaining, shaping, and prompting methods. Teaching plans will include the specific skills or skill sequences to be taught, environmental arrangements to promote skill use (e.g., token boards, timers, visual schedules), and other specific instructional procedures.</textarea>
+          </label>
+          <label>
+            Integration, generalization, and maintenance
+            <textarea name="generalizationMaintenance" rows="7">As the client makes progress on the goals identified in this plan, specific strategies will be used to promote generalization across people, settings, and circumstances and improve the durability of the behavioral outcomes. Specifically, the target contexts will include the home, outside areas of home, and the community when applicable. To enhance generalization, behavioral intervention goals and strategies will be integrated into the client's home life with family and the behavior analyst will collaborate with doctors, speech therapists, and teachers if requested. Specific strategies to promote generalization include teaching within the natural routines and environment, engaging caregivers in instructional and behavioral processes, relying on natural cues and reinforcers over time by fading prompts and cues, thinning contrived reinforcers, and expanding exemplars and contexts for implementation.</textarea>
+          </label>
+          <label>
+            Barriers to treatment
+            <textarea name="barriersToTreatmentSummary" rows="7">Implementation of this intervention plan could be affected by the following: lack of outings with family due to resources or time, and lack of socialization opportunities with peers. To overcome these barriers, we will provide times when we can assist parents in community outings, plan for outings that include opportunities to play with similar-aged peers, provide written materials with supportive strategies for behavior management in and out of the home, and provide parents with additional data sheets with planned targets that can be implemented when we are not present. Examples include changes to medications, changes to the home environment and dynamic, changes to family structure and routine, access to community resources, access to reinforcement, competing demands for caregivers and household, multiple caregivers, large family dynamic, language barriers, medical issues, and inconsistent schedules. Barriers do not include unavailable staff, caregiver resistance to training, cancellations, or similar administrative issues.</textarea>
+          </label>
+          <section class="report-form-section" aria-labelledby="discharge-criteria-title">
+            <div class="block-heading">
+              <h3 id="discharge-criteria-title">Discharge criteria</h3>
+            </div>
+            <label>
+              Discharge narrative
+              <textarea name="dischargeCriteria" rows="4">The anticipated date to transition to a lower level of care is ____________. Services will be systematically faded when maladaptive behaviors (50% to 95%) and increases in independent skill performance (60% to greater than or equal to 90-95%) maintained for a minimum of three consecutive months at each level.</textarea>
+            </label>
+            <div class="form-grid">
+              <label>
+                Communication
+                <textarea name="dischargeCommunication" rows="3" placeholder="Long-term communication objective for discharge"></textarea>
+              </label>
+              <label>
+                Socialization
+                <textarea name="dischargeSocialization" rows="3" placeholder="Long-term socialization objective for discharge"></textarea>
+              </label>
+              <label>
+                Adaptive
+                <textarea name="dischargeAdaptive" rows="3" placeholder="Long-term adaptive objective for discharge"></textarea>
+              </label>
+              <label>
+                Executive functioning
+                <textarea name="dischargeExecutive" rows="3" placeholder="Long-term executive functioning objective for discharge"></textarea>
+              </label>
+            </div>
+          </section>
+          <section class="report-form-section" aria-labelledby="fade-plan-title">
+            <div class="block-heading">
+              <h3 id="fade-plan-title">Fade out plan</h3>
+              <button type="button" class="secondary-button" id="add-fade-row">Add phase</button>
+            </div>
+            <div id="fade-plan-rows" class="fade-plan-editor"></div>
+          </section>
+          <label>
+            Recommendations
+            <textarea name="recommendations" rows="6">To implement this behavior intervention plan with integrity, the hours summarized in the table below are recommended. The BCBA will be responsible for providing initial training on the plan, coordinating with other service providers, designing instructional procedures, monitoring the outcomes, providing oversight for the behavior assistant, and assisting in ongoing planning and problem-solving. BCBAs will provide oversight for BCaBAs if assigned. The behavior assistant will facilitate day-to-day implementation of the plan, collecting data and working closely with caregivers and professionals. This plan will include shifting responsibility for monitoring to the caregivers over time.</textarea>
+          </label>
+          <section class="report-form-section" aria-labelledby="service-hours-title">
+            <div class="block-heading">
+              <h3 id="service-hours-title">Service hours requested</h3>
+              <button type="button" class="secondary-button" id="add-service-hour-row">Add service</button>
+            </div>
+            <div id="service-hour-rows" class="service-hours-editor"></div>
+          </section>
+          <label>
+            Medical necessity and justification
+            <textarea name="medicalNecessity" rows="7">Clinical Summary Justifying Hours Requested:
+Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of direct treatment plus direct and indirect supervision and caregiver training. However, certain programs for severe destructive behavior may require more than 30 hours per week of direct therapy, for example day treatment or inpatient programming for severe self-injurious behavior. This BCBA is requesting 30 RBT hours a week (2,880 total units), BCBA direct protocol modification 6 hours per week (576 total units), and 1 BCBA family/caregiver training hour per week (96 total units) to help the client increase their quality of life and decrease maladaptive behaviors.</textarea>
+          </label>
+          <div class="button-row">
+            <button type="submit" class="primary-button">Generate funder report</button>
+            <button type="button" class="secondary-button" id="print-funder-report">Print report</button>
+            <button type="button" class="secondary-button" id="download-funder-text">Download .txt</button>
+            <button type="button" class="secondary-button" id="download-funder-html">Download .html</button>
+          </div>
+          <p id="funder-export-status" class="form-message" role="status"></p>
+        </form>
+        <article id="funder-report-preview" class="funder-report-preview"></article>
+      </section>
+    </main>
+
+    <main class="plan-shell hidden" data-view-panel="plan">
+      <section class="plan-review-panel" aria-labelledby="plan-review-title">
+        <div class="section-heading">
+          <p class="eyebrow">BCBA supervision</p>
+          <h2 id="plan-review-title">Treatment plan review</h2>
+        </div>
+        <div id="plan-client-summary" class="summary-strip"></div>
+        <section class="bcba-session-panel" aria-labelledby="bcba-session-title">
+          <div class="section-heading">
+            <p class="eyebrow">97155</p>
+            <h2 id="bcba-session-title">Session entry</h2>
+          </div>
+          <form id="bcba-session-form" class="session-form">
+            <div class="form-grid">
+              <label>
+                Client
+                <select name="clientId" id="bcba-client-select" disabled></select>
+              </label>
+              <label>
+                Date
+                <input type="date" name="date" required>
+              </label>
+              <label>
+                BCBA
+                <input type="text" name="bcba" placeholder="BCBA name" required>
+              </label>
+              <label>
+                Setting
+                <input type="text" name="setting" placeholder="Clinic, home, school" required>
+              </label>
+              <label>
+                Start time
+                <input type="time" name="startTime" required>
+              </label>
+              <label>
+                End time
+                <input type="time" name="endTime" required>
+              </label>
+              <label>
+                Caregiver present
+                <select name="caregiverPresent">
+                  <option value="false">No</option>
+                  <option value="true">Yes</option>
+                </select>
+              </label>
+              <label>
+                RBT present
+                <select name="rbtPresent">
+                  <option value="false">No</option>
+                  <option value="true">Yes</option>
+                </select>
+              </label>
+              <label>
+                Supervision focus
+                <select name="focus">
+                  <option value="protocol modification">Protocol modification</option>
+                  <option value="treatment plan review">Treatment plan review</option>
+                  <option value="target progression">Target progression</option>
+                  <option value="maintenance review">Maintenance review</option>
+                </select>
+              </label>
+            </div>
+            <label>
+              Notes
+              <textarea name="notes" rows="3" maxlength="360" placeholder="Short optional supervision note"></textarea>
+            </label>
+            <section class="signature-section" aria-labelledby="bcba-signature-title">
+              <div class="block-heading">
+                <h3 id="bcba-signature-title">Provider signature</h3>
+              </div>
+              <div class="form-grid">
+                <label>
+                  Signature
+                  <input type="text" name="providerSignature" placeholder="Type BCBA signature" required>
+                </label>
+                <label>
+                  Credential
+                  <input type="text" name="providerCredential" placeholder="BCBA">
+                </label>
+              </div>
+            </section>
+          </form>
+        </section>
+        <p class="muted">Move targets between active, maintenance, mastered, and paused as the BCBA supervises.</p>
+        <form id="add-program-form" class="add-plan-form">
+          <label>
+            New program
+            <input type="text" name="programName" placeholder="Program name">
+          </label>
+          <label>
+            Domain
+            <select name="programDomain"></select>
+          </label>
+          <button type="submit" class="secondary-button">Add program</button>
+        </form>
+        <div class="button-row plan-actions">
+          <button type="button" class="secondary-button" id="add-domain">Add domain</button>
+        </div>
+        <div id="plan-domain-tabs" class="domain-tabs" aria-label="Treatment plan domains"></div>
+        <div id="plan-review" class="plan-review"></div>
+        <section id="rbt-feedback-section" class="rbt-feedback-section" aria-labelledby="rbt-feedback-title">
+          <div class="block-heading">
+            <div>
+              <p class="eyebrow">RBT supervision</p>
+              <h3 id="rbt-feedback-title">Performance feedback</h3>
+            </div>
+            <div class="metric-pill" id="rbt-fidelity-score">0% fidelity</div>
+          </div>
+          <p class="muted" id="rbt-feedback-help">Set RBT present to Yes in the 97155 session entry when feedback is provided.</p>
+          <div class="fidelity-table" role="table" aria-label="RBT performance fidelity checklist">
+            <div class="fidelity-row fidelity-header" role="row">
+              <span role="columnheader">Area of performance</span>
+              <span role="columnheader">Yes</span>
+              <span role="columnheader">No</span>
+              <span role="columnheader">Remove</span>
+            </div>
+            <div id="rbt-fidelity-rows"></div>
+          </div>
+          <button type="button" class="secondary-button" id="add-rbt-performance-area">Add performance area</button>
+          <label>
+            Written feedback
+            <textarea id="rbt-written-feedback" rows="4" maxlength="700" placeholder="Specific coaching, modeling, praise, corrections, or follow-up items provided to the RBT"></textarea>
+          </label>
+        </section>
+        <p class="form-message" id="plan-message" role="status"></p>
+        <button type="button" class="primary-button" id="generate-97155-note">Generate 97155 note</button>
+      </section>
+    </main>
+
+    <template id="program-template">
+      <div class="data-row program-row">
+        <label>
+          Program
+          <select data-field="programId" required></select>
+        </label>
+        <label>
+          Target
+          <select data-field="targetId" required></select>
+        </label>
+        <label>
+          Trials
+          <input type="number" data-field="trials" min="0" value="10" required>
+        </label>
+        <label>
+          Correct
+          <input type="number" data-field="correct" min="0" value="0" required>
+        </label>
+        <label>
+          Incorrect
+          <input type="number" data-field="incorrect" min="0" value="0" required>
+        </label>
+        <label>
+          Prompt level
+          <select data-field="promptLevel">
+            <option value="independent">Independent</option>
+            <option value="gestural">Gestural</option>
+            <option value="verbal">Verbal</option>
+            <option value="physical">Physical</option>
+          </select>
+        </label>
+        <label>
+          Phase
+          <select data-field="phase">
+            <option value="intervention">Intervention</option>
+            <option value="baseline">Baseline</option>
+          </select>
+        </label>
+        <div class="metric-pill" data-independence>0%</div>
+        <button type="button" class="icon-button" data-remove aria-label="Remove program">x</button>
+      </div>
+    </template>
+
+    <template id="parent-goal-template">
+      <div class="data-row parent-goal-row">
+        <label>
+          Parent goal
+          <input type="text" data-field="goalName" placeholder="Goal name" required>
+        </label>
+        <label>
+          Target
+          <input type="text" data-field="targetName" placeholder="Caregiver target" required>
+        </label>
+        <label>
+          Opportunities
+          <input type="number" data-field="opportunities" min="0" value="5" required>
+        </label>
+        <label>
+          Independent
+          <input type="number" data-field="independent" min="0" value="0" required>
+        </label>
+        <label>
+          Prompted
+          <input type="number" data-field="prompted" min="0" value="0" required>
+        </label>
+        <label>
+          Prompt level
+          <select data-field="promptLevel">
+            <option value="independent">Independent</option>
+            <option value="gestural">Gestural</option>
+            <option value="verbal">Verbal</option>
+            <option value="modeling">Modeling</option>
+            <option value="physical">Physical</option>
+          </select>
+        </label>
+        <div class="metric-pill" data-parent-goal-score>0%</div>
+        <button type="button" class="icon-button" data-remove aria-label="Remove parent goal">x</button>
+      </div>
+    </template>
+
+    <template id="fade-plan-row-template">
+      <div class="fade-plan-row">
+        <label>
+          Phase
+          <input type="text" data-field="phase" placeholder="1">
+        </label>
+        <label>
+          Action step
+          <textarea data-field="actionStep" rows="3"></textarea>
+        </label>
+        <label>
+          Criteria
+          <textarea data-field="criteria" rows="3"></textarea>
+        </label>
+        <label>
+          Time frame
+          <textarea data-field="timeFrame" rows="3"></textarea>
+        </label>
+        <label>
+          BCBA reduction
+          <textarea data-field="bcbaReduction" rows="3"></textarea>
+        </label>
+        <label>
+          RBT reduction
+          <textarea data-field="rbtReduction" rows="3"></textarea>
+        </label>
+        <button type="button" class="icon-button" data-remove aria-label="Remove fade plan phase">x</button>
+      </div>
+    </template>
+
+    <template id="service-hour-row-template">
+      <div class="service-hours-row">
+        <label>
+          Service / code
+          <input type="text" data-field="serviceCode" placeholder="97153">
+        </label>
+        <label>
+          Provider
+          <input type="text" data-field="provider" placeholder="RBT, BCBA, Lead Analyst">
+        </label>
+        <label>
+          Recommended hours
+          <input type="text" data-field="hours" placeholder="30 hours per week">
+        </label>
+        <label>
+          Setting
+          <input type="text" data-field="setting" placeholder="Home, clinic, community">
+        </label>
+        <button type="button" class="icon-button" data-remove aria-label="Remove service hour row">x</button>
+      </div>
+    </template>
+
+    <template id="behavior-template">
+      <div class="data-row behavior-row">
+        <label>
+          Behavior
+          <select data-field="behaviorId"></select>
+        </label>
+        <label>
+          Frequency
+          <input type="number" data-field="frequency" min="0" value="0">
+        </label>
+        <label>
+          Duration
+          <input type="text" data-field="duration" placeholder="Optional">
+        </label>
+        <label>
+          Intensity
+          <select data-field="intensity">
+            <option value="">Not rated</option>
+            <option value="low">Low</option>
+            <option value="moderate">Moderate</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+        <label>
+          Phase
+          <select data-field="phase">
+            <option value="intervention">Intervention</option>
+            <option value="baseline">Baseline</option>
+          </select>
+        </label>
+        <button type="button" class="icon-button" data-remove aria-label="Remove behavior">x</button>
+      </div>
+    </template>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

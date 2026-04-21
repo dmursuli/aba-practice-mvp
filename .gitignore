@@ -1,0 +1,9 @@
+node_modules/
+backups/
+uploads/
+data/
+.env
+.env.*
+!.env.production.example
+.DS_Store
+npm-debug.log*

@@ -1,0 +1,20 @@
+{
+  "name": "aba-practice-mvp",
+  "version": "1.0.0",
+  "description": "Lightweight ABA session data, graphing, and SOAP note MVP.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "backup": "node scripts/backup-data.mjs",
+    "migrate:postgres": "node scripts/migrate-json-to-postgres.mjs",
+    "check": "node --check server.js && node --check public/app.js && node --check public/charts.js && node --check public/soap.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.922.0",
+    "pg": "^8.16.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
