@@ -17,8 +17,8 @@ const state = {
 };
 
 const roleViews = {
-  admin: ["clients", "users", "session", "plan", "parent", "graphs", "report", "soap", "health", "audit"],
-  bcba: ["session", "plan", "parent", "graphs", "report", "soap", "health", "audit"],
+  admin: ["clients", "users", "session", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
+  bcba: ["session", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
   rbt: ["session", "graphs", "soap"],
   "read-only": ["graphs", "report", "soap"]
 };
@@ -124,6 +124,17 @@ const auditLogTable = document.querySelector("#audit-log-table");
 const refreshAuditLogButton = document.querySelector("#refresh-audit-log");
 const exportAuditCsvButton = document.querySelector("#export-audit-csv");
 const exportAuditJsonButton = document.querySelector("#export-audit-json");
+const billingClientFilter = document.querySelector("#billing-client-filter");
+const billingProviderFilter = document.querySelector("#billing-provider-filter");
+const billingCodeFilter = document.querySelector("#billing-code-filter");
+const billingStartFilter = document.querySelector("#billing-start-filter");
+const billingEndFilter = document.querySelector("#billing-end-filter");
+const billingReadyFilter = document.querySelector("#billing-ready-filter");
+const refreshBillingExportButton = document.querySelector("#refresh-billing-export");
+const exportBillingCsvButton = document.querySelector("#export-billing-csv");
+const billingMessage = document.querySelector("#billing-message");
+const billingSummary = document.querySelector("#billing-summary");
+const billingTable = document.querySelector("#billing-table");
 const healthMessage = document.querySelector("#health-message");
 const healthSummary = document.querySelector("#health-summary");
 const healthReportTable = document.querySelector("#health-report-table");
@@ -274,6 +285,11 @@ function bindEvents() {
   refreshAuditLogButton.addEventListener("click", refreshAuditLog);
   exportAuditCsvButton.addEventListener("click", () => exportAuditLog("csv"));
   exportAuditJsonButton.addEventListener("click", () => exportAuditLog("json"));
+  [billingClientFilter, billingProviderFilter, billingCodeFilter, billingStartFilter, billingEndFilter, billingReadyFilter].forEach((field) => {
+    field.addEventListener("input", renderBillingExport);
+  });
+  refreshBillingExportButton.addEventListener("click", renderBillingExport);
+  exportBillingCsvButton.addEventListener("click", exportBillingCsv);
   runHealthCheckButton.addEventListener("click", runDataHealthCheck);
   exportHealthCsvButton.addEventListener("click", () => exportHealthReport("csv"));
   exportHealthJsonButton.addEventListener("click", () => exportHealthReport("json"));
@@ -1078,6 +1094,7 @@ function switchView(view) {
   });
   if (view === "graphs") renderCharts();
   if (view === "report" && reportPreview.innerHTML) drawFunderReportCharts(filteredReportSessions());
+  if (view === "billing") renderBillingExport();
   if (view === "audit") refreshAuditLog(false);
   if (view === "health") runDataHealthCheck();
   if (view === "users") refreshUsers(false);
@@ -1146,6 +1163,69 @@ function renderGraphsSummary() {
       <div><strong>${targetCount}</strong><span>Total targets</span></div>
     `
     : "";
+}
+
+function renderBillingExport() {
+  if (!billingClientFilter || !billingTable || !billingSummary) return;
+  const clientValue = billingClientFilter.value;
+  billingClientFilter.innerHTML = '<option value="">All clients</option>' + state.clients.map((client) => (
+    `<option value="${escapeHtml(client.id)}">${escapeHtml(client.name)}</option>`
+  )).join("");
+  billingClientFilter.value = clientValue;
+
+  const rows = filteredBillingSessions();
+  const readyRows = rows.filter((row) => row.ready);
+  const totalUnits = rows.reduce((sum, row) => sum + row.units, 0);
+  billingSummary.innerHTML = `
+    <div><strong>${rows.length}</strong><span>Sessions</span></div>
+    <div><strong>${readyRows.length}</strong><span>Billing-ready</span></div>
+    <div><strong>${totalUnits}</strong><span>Total units</span></div>
+  `;
+  if (billingMessage) {
+    billingMessage.textContent = rows.length
+      ? `${readyRows.length} billing-ready session${readyRows.length === 1 ? "" : "s"} in the current filter.`
+      : "No sessions match the current billing filters.";
+  }
+  if (!rows.length) {
+    billingTable.innerHTML = '<p class="muted">No billing rows match the current filter.</p>';
+    return;
+  }
+  billingTable.innerHTML = `
+    <div class="report-table-wrap">
+      <table class="fade-plan-table audit-table">
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th>Date</th>
+            <th>Code</th>
+            <th>Provider</th>
+            <th>Start</th>
+            <th>End</th>
+            <th>Minutes</th>
+            <th>Units</th>
+            <th>Setting</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row) => `
+            <tr>
+              <td>${escapeHtml(row.clientName)}</td>
+              <td>${escapeHtml(formatDate(row.date))}</td>
+              <td>${escapeHtml(row.code)}</td>
+              <td>${escapeHtml(row.provider)}</td>
+              <td>${escapeHtml(row.startTime)}</td>
+              <td>${escapeHtml(row.endTime)}</td>
+              <td>${escapeHtml(String(row.minutes))}</td>
+              <td>${escapeHtml(String(row.units))}</td>
+              <td>${escapeHtml(row.setting)}</td>
+              <td>${escapeHtml(row.ready ? "Ready" : row.statusLabel)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 function renderParentSummary() {
@@ -1327,6 +1407,107 @@ function filteredAuditEntries() {
     && (!start || entry.timestamp.slice(0, 10) >= start)
     && (!end || entry.timestamp.slice(0, 10) <= end)
   ));
+}
+
+function filteredBillingSessions() {
+  return billingRows()
+    .filter((row) => (
+      (!billingClientFilter?.value || row.clientId === billingClientFilter.value)
+      && (!billingProviderFilter?.value || row.provider.toLowerCase().includes(billingProviderFilter.value.trim().toLowerCase()))
+      && (!billingCodeFilter?.value || row.codeValue === billingCodeFilter.value)
+      && (!billingStartFilter?.value || row.date >= billingStartFilter.value)
+      && (!billingEndFilter?.value || row.date <= billingEndFilter.value)
+      && ((billingReadyFilter?.value || "ready") === "all" || row.ready)
+    ))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.clientName.localeCompare(b.clientName));
+}
+
+function billingRows() {
+  return state.sessions.map((session) => billingRow(session));
+}
+
+function billingRow(session) {
+  const client = state.clients.find((item) => item.id === session.clientId);
+  const minutes = sessionDurationMinutes(session.startTime, session.endTime);
+  const units = billingUnits(minutes);
+  const codeValue = session.serviceType === "parent-training" ? "97156" : (session.serviceType || "97153");
+  const readyChecks = {
+    finalized: Boolean(session.finalized),
+    signature: Boolean(session.providerSignature),
+    note: Boolean(String(session.soapNote || "").trim()),
+    timing: Boolean(session.startTime && session.endTime),
+    client: Boolean(client)
+  };
+  const ready = Object.values(readyChecks).every(Boolean);
+  const statusLabel = !readyChecks.client
+    ? "Missing client"
+    : !readyChecks.timing
+      ? "Missing time"
+      : !readyChecks.note
+        ? "Missing note"
+        : !readyChecks.signature
+          ? "Missing signature"
+          : !readyChecks.finalized
+            ? "Draft note"
+            : "Ready";
+  return {
+    id: session.id,
+    clientId: session.clientId,
+    clientName: client?.name || "Unknown client",
+    date: session.date,
+    code: codeValue,
+    codeValue,
+    provider: session.therapist || "",
+    credential: session.providerCredential || "",
+    startTime: session.startTime || "",
+    endTime: session.endTime || "",
+    minutes,
+    units,
+    setting: session.setting || "",
+    ready,
+    statusLabel,
+    authorizationNumber: client?.profile?.authorization?.number || ""
+  };
+}
+
+function sessionDurationMinutes(startTime, endTime) {
+  if (!startTime || !endTime) return 0;
+  const [startHour, startMinute] = startTime.split(":").map(Number);
+  const [endHour, endMinute] = endTime.split(":").map(Number);
+  if ([startHour, startMinute, endHour, endMinute].some(Number.isNaN)) return 0;
+  const start = startHour * 60 + startMinute;
+  const end = endHour * 60 + endMinute;
+  return Math.max(0, end - start);
+}
+
+function billingUnits(minutes) {
+  if (!minutes) return 0;
+  return Math.max(1, Math.round(minutes / 15));
+}
+
+function exportBillingCsv() {
+  const rows = filteredBillingSessions();
+  if (!rows.length) {
+    if (billingMessage) billingMessage.textContent = "No billing sessions to export.";
+    return;
+  }
+  const headers = ["client", "date_of_service", "code", "provider", "credential", "start_time", "end_time", "minutes", "units", "setting", "authorization_number", "status"];
+  const csvRows = [headers, ...rows.map((row) => ([
+    row.clientName,
+    row.date,
+    row.code,
+    row.provider,
+    row.credential,
+    row.startTime,
+    row.endTime,
+    row.minutes,
+    row.units,
+    row.setting,
+    row.authorizationNumber,
+    row.ready ? "ready" : row.statusLabel.toLowerCase()
+  ]))];
+  downloadFile(`billing-export-${new Date().toISOString().slice(0, 10)}.csv`, csvRows.map(csvRow).join("\n"), "text/csv");
+  if (billingMessage) billingMessage.textContent = `${rows.length} billing row${rows.length === 1 ? "" : "s"} exported.`;
 }
 
 function exportAuditLog(format) {

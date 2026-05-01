@@ -38,6 +38,7 @@
           <button type="button" class="view-tab" data-view-button="graphs">Graphs</button>
           <button type="button" class="view-tab" data-view-button="report">Funder Report</button>
           <button type="button" class="view-tab" data-view-button="soap">SOAP Notes</button>
+          <button type="button" class="view-tab" data-view-button="billing">Billing</button>
           <button type="button" class="view-tab" data-view-button="health">Data Health</button>
           <button type="button" class="view-tab" data-view-button="audit">Audit Log</button>
         </nav>
@@ -586,6 +587,58 @@
           </article>
           <div id="behavior-charts" class="chart-zone"></div>
         </div>
+      </section>
+    </main>
+
+    <main class="health-shell hidden" data-view-panel="billing">
+      <section class="audit-panel" aria-labelledby="billing-title">
+        <div class="section-heading">
+          <p class="eyebrow">Claims prep</p>
+          <h2 id="billing-title">Billing export</h2>
+        </div>
+        <div class="form-grid">
+          <label>
+            Client
+            <select id="billing-client-filter">
+              <option value="">All clients</option>
+            </select>
+          </label>
+          <label>
+            Provider
+            <input type="text" id="billing-provider-filter" placeholder="Filter by therapist/provider">
+          </label>
+          <label>
+            Code
+            <select id="billing-code-filter">
+              <option value="">All codes</option>
+              <option value="97153">97153</option>
+              <option value="97155">97155</option>
+              <option value="parent-training">97156</option>
+            </select>
+          </label>
+          <label>
+            Start date
+            <input type="date" id="billing-start-filter">
+          </label>
+          <label>
+            End date
+            <input type="date" id="billing-end-filter">
+          </label>
+          <label>
+            Export readiness
+            <select id="billing-ready-filter">
+              <option value="ready">Billing-ready only</option>
+              <option value="all">Include incomplete</option>
+            </select>
+          </label>
+        </div>
+        <div class="button-row">
+          <button type="button" class="secondary-button" id="refresh-billing-export">Refresh</button>
+          <button type="button" class="primary-button" id="export-billing-csv">Export CSV</button>
+        </div>
+        <p class="form-message" id="billing-message" role="status"></p>
+        <div id="billing-summary" class="summary-strip"></div>
+        <div id="billing-table" class="audit-log-table"></div>
       </section>
     </main>
 
