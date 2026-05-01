@@ -1613,6 +1613,7 @@ function renderSoapSummary() {
 
 function renderPlanReview() {
   const programs = clientPrograms();
+  const behaviors = clientBehaviors();
   const client = currentClient();
   const activeTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "active").length;
   const maintenanceTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "maintenance").length;
@@ -1622,19 +1623,25 @@ function renderPlanReview() {
       <div><strong>${client.name}</strong><span>Client</span></div>
       <div><strong>${activeTargets}</strong><span>Active targets</span></div>
       <div><strong>${maintenanceTargets} / ${pausedTargets}</strong><span>Maintenance / paused</span></div>
+      <div><strong>${behaviors.filter((behavior) => behavior.status !== "inactive").length}</strong><span>Active behaviors</span></div>
     `
     : "";
 
   if (!programs.length) {
     planDomainTabs.innerHTML = "";
-    planReview.innerHTML = '<p class="muted">No treatment plan targets configured.</p>';
+    planReview.innerHTML = `
+      <p class="muted">No treatment plan targets configured.</p>
+      ${renderPlanBehaviorSection(behaviors)}
+    `;
+    bindPlanReviewInputs();
     return;
   }
 
   const groupedPrograms = groupedProgramsByDomain(programs);
   renderPlanDomainTabs(groupedPrograms.map(([domain]) => domain));
 
-  planReview.innerHTML = groupedPrograms.map(([domain, domainPrograms]) => `
+  planReview.innerHTML = `
+    ${groupedPrograms.map(([domain, domainPrograms]) => `
     <section class="plan-domain ${domain === state.activePlanDomain ? "" : "hidden"}" data-plan-domain="${escapeHtml(domain)}">
       <div class="plan-domain-heading">
         <h3>${escapeHtml(domain)}</h3>
@@ -1642,9 +1649,15 @@ function renderPlanReview() {
       </div>
       ${domainPrograms.map((program) => renderPlanProgram(program)).join("")}
     </section>
-  `).join("");
+  `).join("")}
+    ${renderPlanBehaviorSection(behaviors)}
+  `;
 
-  planReview.querySelectorAll("[data-program-name], [data-program-objective], [data-target-name], [data-target-note]").forEach((input) => {
+  bindPlanReviewInputs();
+}
+
+function bindPlanReviewInputs() {
+  planReview.querySelectorAll("[data-program-name], [data-program-objective], [data-target-name], [data-target-note], [data-behavior-name]").forEach((input) => {
     input.addEventListener("blur", handlePlanTextEdit);
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -1656,6 +1669,41 @@ function renderPlanReview() {
   planReview.querySelectorAll("[data-program-domain]").forEach((select) => {
     select.addEventListener("change", handleProgramDomainChange);
   });
+}
+
+function renderPlanBehaviorSection(behaviors) {
+  return `
+    <section class="plan-program">
+      <div class="plan-domain-heading">
+        <h3>Behavior reduction</h3>
+        <span>${behaviors.length} behavior${behaviors.length === 1 ? "" : "s"}</span>
+      </div>
+      <p class="muted">Add the problem behaviors this client is tracking so they appear in session entry and graphing.</p>
+      <div class="button-row">
+        <button type="button" class="secondary-button" data-add-plan-behavior>Add behavior</button>
+      </div>
+      <div class="plan-target-list">
+        ${behaviors.length ? behaviors.map((behavior) => `
+          <div class="plan-target">
+            <label>
+              Behavior
+              <input type="text" value="${escapeHtml(behavior.name || "")}" data-behavior-name="${behavior.id}" aria-label="Behavior name">
+            </label>
+            <label>
+              Status
+              <select data-behavior-status="${behavior.id}" aria-label="${escapeHtml(behavior.name || "Behavior")} status">
+                <option value="active" ${behavior.status !== "inactive" ? "selected" : ""}>Active</option>
+                <option value="inactive" ${behavior.status === "inactive" ? "selected" : ""}>Inactive</option>
+              </select>
+            </label>
+            <div class="button-row">
+              <button type="button" class="delete-button" data-remove-plan-behavior="${behavior.id}">Remove</button>
+            </div>
+          </div>
+        `).join("") : '<p class="muted">No behaviors added yet.</p>'}
+      </div>
+    </section>
+  `;
 }
 
 function renderPlanDomainTabs(domains) {
@@ -1767,6 +1815,35 @@ async function handleAddDomain() {
 }
 
 async function handlePlanClick(event) {
+  const addBehavior = event.target.closest("[data-add-plan-behavior]");
+  if (addBehavior) {
+    const name = window.prompt("Behavior name");
+    if (!name?.trim()) return;
+    const behaviors = structuredClone(clientBehaviors());
+    const newBehavior = {
+      id: slugify(name, "behavior", behaviors.map((behavior) => behavior.id)),
+      name: name.trim(),
+      status: "active"
+    };
+    behaviors.push(newBehavior);
+    await savePlan(clientPrograms(), behaviors, {
+      type: "behavior-added",
+      targetName: newBehavior.name
+    });
+    return;
+  }
+  const removeBehavior = event.target.closest("[data-remove-plan-behavior]");
+  if (removeBehavior) {
+    const behaviors = structuredClone(clientBehaviors());
+    const target = behaviors.find((behavior) => behavior.id === removeBehavior.dataset.removePlanBehavior);
+    if (!target) return;
+    if (!window.confirm(`Remove ${target.name}?`)) return;
+    await savePlan(clientPrograms(), behaviors.filter((behavior) => behavior.id !== target.id), {
+      type: "behavior-removed",
+      targetName: target.name
+    });
+    return;
+  }
   const addTarget = event.target.closest("[data-add-target]");
   if (!addTarget) return;
   const name = window.prompt("Target name");
@@ -1798,6 +1875,7 @@ async function handlePlanClick(event) {
 async function handlePlanTextEdit(event) {
   const input = event.target;
   const programs = structuredClone(clientPrograms());
+  const behaviors = structuredClone(clientBehaviors());
   if (input.dataset.programName) {
     const program = programs.find((item) => item.id === input.dataset.programName);
     if (program && input.value.trim()) program.name = input.value.trim();
@@ -1816,7 +1894,13 @@ async function handlePlanTextEdit(event) {
     const target = programs.find((item) => item.id === programId)?.targets?.find((item) => item.id === targetId);
     if (target) target.note = input.value.trim();
   }
-  await savePlan(programs, clientBehaviors());
+  if (input.dataset.behaviorName) {
+    const behavior = behaviors.find((item) => item.id === input.dataset.behaviorName);
+    if (behavior && input.value.trim()) {
+      behavior.name = input.value.trim();
+    }
+  }
+  await savePlan(programs, behaviors);
 }
 
 async function handleProgramDomainChange(event) {
@@ -1828,6 +1912,15 @@ async function handleProgramDomainChange(event) {
 }
 
 async function handlePlanStatusChange(event) {
+  const behaviorControl = event.target.closest("[data-behavior-status]");
+  if (behaviorControl) {
+    const behaviors = structuredClone(clientBehaviors());
+    const behavior = behaviors.find((item) => item.id === behaviorControl.dataset.behaviorStatus);
+    if (!behavior) return;
+    behavior.status = behaviorControl.value;
+    await savePlan(clientPrograms(), behaviors);
+    return;
+  }
   const control = event.target.closest("[data-plan-program][data-plan-target]");
   if (!control) return;
   const client = currentClient();
