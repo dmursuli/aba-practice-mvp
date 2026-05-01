@@ -1,15 +1,18 @@
 :root {
   color-scheme: light;
-  --ink: #17212b;
-  --muted: #59656f;
-  --line: #d7dee5;
-  --soft: #f4f7f9;
+  --ink: #12263a;
+  --muted: #58677a;
+  --line: #d6dfeb;
+  --soft: #f4f8fc;
   --panel: #ffffff;
-  --teal: #167c80;
+  --teal: #1776d2;
+  --brand-deep: #10385b;
+  --brand-soft: #e9f2fb;
   --red: #d1495b;
-  --gold: #edae49;
+  --gold: #f3b61f;
+  --gold-soft: #fff6db;
   --green: #5f8f3f;
-  --focus: #245bdb;
+  --focus: #1776d2;
 }
 
 * {
@@ -19,7 +22,7 @@
 body {
   margin: 0;
   color: var(--ink);
-  background: #f8fafb;
+  background: #f5f8fc;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   line-height: 1.5;
 }
@@ -43,6 +46,7 @@ body {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #ffffff;
+  box-shadow: 0 14px 34px rgba(16, 56, 91, 0.08);
 }
 
 .login-panel h1 {
@@ -63,7 +67,7 @@ textarea {
   align-items: center;
   gap: 24px;
   padding: 28px clamp(16px, 4vw, 48px);
-  background: #ffffff;
+  background: linear-gradient(180deg, #ffffff 0%, #f4f8fd 100%);
   border-bottom: 1px solid var(--line);
 }
 
@@ -104,8 +108,8 @@ textarea {
 }
 
 .view-tab.active {
-  border-color: #b9dddc;
-  background: #e7f4f3;
+  border-color: #bdd5f3;
+  background: var(--brand-soft);
   color: var(--teal);
 }
 
@@ -114,7 +118,7 @@ textarea {
   height: 124px;
   object-fit: cover;
   border-radius: 8px;
-  border: 1px solid var(--line);
+  border: 1px solid #c7d8ef;
 }
 
 .user-box {
@@ -129,7 +133,7 @@ textarea {
 
 .eyebrow {
   margin: 0 0 6px;
-  color: var(--teal);
+  color: var(--brand-deep);
   font-size: 0.78rem;
   font-weight: 800;
   letter-spacing: 0;
@@ -224,7 +228,7 @@ select,
 textarea {
   width: 100%;
   min-width: 0;
-  border: 1px solid #c8d2dc;
+  border: 1px solid #c9d5e2;
   border-radius: 6px;
   background: #ffffff;
   color: var(--ink);
@@ -274,8 +278,8 @@ button:focus-visible {
 }
 
 .domain-tab.active {
-  border-color: #b9dddc;
-  background: #e7f4f3;
+  border-color: #bdd5f3;
+  background: var(--brand-soft);
   color: var(--teal);
 }
 
@@ -308,8 +312,8 @@ button:focus-visible {
   display: grid;
   place-items: center;
   border-radius: 6px;
-  background: #e7f4f3;
-  color: #105f62;
+  background: var(--brand-soft);
+  color: var(--brand-deep);
   font-weight: 800;
 }
 
@@ -326,13 +330,13 @@ button:focus-visible {
 .primary-button {
   min-height: 48px;
   color: #ffffff;
-  background: var(--teal);
+  background: linear-gradient(180deg, #2386e5 0%, #1776d2 100%);
 }
 
 .secondary-button {
   color: var(--teal);
-  background: #e7f4f3;
-  border-color: #b9dddc;
+  background: var(--brand-soft);
+  border-color: #bdd5f3;
   padding: 8px 11px;
 }
 
@@ -368,6 +372,7 @@ button:focus-visible {
   border-radius: 8px;
   border: 1px solid var(--line);
   background: var(--soft);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .summary-strip strong,
@@ -521,10 +526,10 @@ button:focus-visible {
   display: inline-grid;
   min-height: 36px;
   align-items: center;
-  border: 1px solid #b9dddc;
+  border: 1px solid #bdd5f3;
   border-radius: 6px;
   color: var(--teal);
-  background: #e7f4f3;
+  background: var(--brand-soft);
   font-weight: 800;
   padding: 7px 10px;
   text-decoration: none;
@@ -892,7 +897,7 @@ canvas {
 
 .history-item.active {
   border-color: var(--teal);
-  box-shadow: inset 4px 0 0 var(--teal);
+  box-shadow: inset 4px 0 0 var(--gold);
 }
 
 .delete-button {
@@ -922,13 +927,13 @@ canvas {
 }
 
 .health-badge.medium {
-  background: #fff3cd;
+  background: var(--gold-soft);
   color: #765300;
 }
 
 .health-badge.low {
-  background: #e7f4f3;
-  color: #105f62;
+  background: var(--brand-soft);
+  color: var(--brand-deep);
 }
 
 .health-table td {
