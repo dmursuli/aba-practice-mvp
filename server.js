@@ -1106,6 +1106,8 @@ function sanitizeClientProfile(payload) {
       fileName: text(payload.assessmentFileName),
       notes: text(payload.assessmentNotes)
     },
+    parentTrainingGoals: sanitizeParentGoals(payload.parentTrainingGoals || []),
+    intakeInterview: sanitizeIntakeInterview(payload.intakeInterview || {}),
     documents: Array.isArray(payload.documents) ? payload.documents : []
   };
 }
@@ -1114,6 +1116,35 @@ function authorizationService(hours, units) {
   return {
     hours: text(hours),
     units: text(units)
+  };
+}
+
+function sanitizeIntakeInterview(interview) {
+  return {
+    interviewDate: text(interview.interviewDate),
+    interviewedBy: text(interview.interviewedBy),
+    caregiversPresent: text(interview.caregiversPresent),
+    householdMembers: text(interview.householdMembers),
+    schoolPlacement: text(interview.schoolPlacement),
+    communicationMethod: text(interview.communicationMethod),
+    developmentalDelays: text(interview.developmentalDelays),
+    healthStatus: text(interview.healthStatus),
+    medications: text(interview.medications),
+    dailyLivingConcerns: text(interview.dailyLivingConcerns),
+    reasonForReferral: text(interview.reasonForReferral),
+    primaryConcerns: text(interview.primaryConcerns),
+    maladaptiveBehaviors: text(interview.maladaptiveBehaviors),
+    behaviorTriggers: text(interview.behaviorTriggers),
+    strengths: text(interview.strengths),
+    familyStrengths: text(interview.familyStrengths),
+    socialConcerns: text(interview.socialConcerns),
+    observationSetting: text(interview.observationSetting),
+    observationPresentation: text(interview.observationPresentation),
+    preferredItems: text(interview.preferredItems),
+    nonPreferredSituations: text(interview.nonPreferredSituations),
+    parentPriorities: text(interview.parentPriorities),
+    barriersAndRoutines: text(interview.barriersAndRoutines),
+    interviewNotes: text(interview.interviewNotes)
   };
 }
 

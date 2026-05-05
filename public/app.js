@@ -17,8 +17,8 @@ const state = {
 };
 
 const roleViews = {
-  admin: ["clients", "users", "session", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
-  bcba: ["session", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
+  admin: ["clients", "users", "session", "intake", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
+  bcba: ["session", "intake", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
   rbt: ["session", "graphs", "soap"],
   "read-only": ["graphs", "report", "soap"]
 };
@@ -56,6 +56,7 @@ const form = document.querySelector("#session-form");
 const clientProfileForm = document.querySelector("#client-profile-form");
 const clientDocumentForm = document.querySelector("#client-document-form");
 const newClientForm = document.querySelector("#new-client-form");
+const intakeForm = document.querySelector("#intake-form");
 const bcbaSessionForm = document.querySelector("#bcba-session-form");
 const parentTrainingForm = document.querySelector("#parent-training-form");
 const rbtFeedbackSection = document.querySelector("#rbt-feedback-section");
@@ -68,6 +69,7 @@ const clientSelect = document.querySelector("#client-select");
 const managementClientSelect = document.querySelector("#management-client-select");
 const bcbaClientSelect = document.querySelector("#bcba-client-select");
 const parentClientSelect = document.querySelector("#parent-client-select");
+const intakeClientSelect = document.querySelector("#intake-client-select");
 const programList = document.querySelector("#program-list");
 const parentGoalList = document.querySelector("#parent-goal-list");
 const domainTabs = document.querySelector("#domain-tabs");
@@ -97,6 +99,8 @@ const exportClientPackageButton = document.querySelector("#export-client-package
 const downloadPracticeBackupButton = document.querySelector("#download-practice-backup");
 const restorePracticeBackupButton = document.querySelector("#restore-practice-backup");
 const newClientMessage = document.querySelector("#new-client-message");
+const intakeMessage = document.querySelector("#intake-message");
+const intakeSummary = document.querySelector("#intake-summary");
 const planClientSummary = document.querySelector("#plan-client-summary");
 const parentClientSummary = document.querySelector("#parent-client-summary");
 const addProgramForm = document.querySelector("#add-program-form");
@@ -252,6 +256,16 @@ function bindEvents() {
   downloadPracticeBackupButton.addEventListener("click", handleDownloadPracticeBackup);
   restorePracticeBackupButton.addEventListener("click", handleRestorePracticeBackup);
   newClientForm.addEventListener("submit", handleNewClientSubmit);
+  intakeClientSelect.addEventListener("change", () => {
+    clientSelect.value = intakeClientSelect.value;
+    state.selectedSessionId = null;
+    state.activeDomain = "";
+    state.activePlanDomain = "";
+    syncSettingFromClient();
+    resetRows();
+    render();
+  });
+  intakeForm.addEventListener("submit", handleIntakeSubmit);
   parentTrainingForm.addEventListener("input", (event) => {
     const row = event.target.closest(".parent-goal-row");
     if (row) updateParentGoalScore(row);
@@ -494,6 +508,11 @@ function addParentGoalRow(goal = {}) {
 
 function preloadParentRows() {
   parentGoalList.innerHTML = "";
+  const goals = currentParentTrainingGoals();
+  if (goals.length) {
+    goals.forEach((goal) => addParentGoalRow(goal));
+    return;
+  }
   addParentGoalRow();
 }
 
@@ -816,7 +835,39 @@ function readClientProfileForm() {
     assessmentDate: values.get("assessmentDate"),
     assessmentConductedBy: values.get("assessmentConductedBy"),
     assessmentFileName: clientProfileForm.elements.assessmentFile.files[0]?.name || currentClient()?.profile?.assessment?.fileName || "",
-    assessmentNotes: values.get("assessmentNotes")
+    assessmentNotes: values.get("assessmentNotes"),
+    intakeInterview: structuredClone(currentClient()?.profile?.intakeInterview || {}),
+    parentTrainingGoals: structuredClone(currentClient()?.profile?.parentTrainingGoals || [])
+  };
+}
+
+function readIntakeInterviewForm() {
+  const values = new FormData(intakeForm);
+  return {
+    interviewDate: values.get("interviewDate"),
+    interviewedBy: values.get("interviewedBy"),
+    caregiversPresent: values.get("caregiversPresent"),
+    householdMembers: values.get("householdMembers"),
+    schoolPlacement: values.get("schoolPlacement"),
+    communicationMethod: values.get("communicationMethod"),
+    developmentalDelays: values.get("developmentalDelays"),
+    healthStatus: values.get("healthStatus"),
+    medications: values.get("medications"),
+    dailyLivingConcerns: values.get("dailyLivingConcerns"),
+    reasonForReferral: values.get("reasonForReferral"),
+    primaryConcerns: values.get("primaryConcerns"),
+    maladaptiveBehaviors: values.get("maladaptiveBehaviors"),
+    behaviorTriggers: values.get("behaviorTriggers"),
+    strengths: values.get("strengths"),
+    familyStrengths: values.get("familyStrengths"),
+    socialConcerns: values.get("socialConcerns"),
+    observationSetting: values.get("observationSetting"),
+    observationPresentation: values.get("observationPresentation"),
+    preferredItems: values.get("preferredItems"),
+    nonPreferredSituations: values.get("nonPreferredSituations"),
+    parentPriorities: values.get("parentPriorities"),
+    barriersAndRoutines: values.get("barriersAndRoutines"),
+    interviewNotes: values.get("interviewNotes")
   };
 }
 
@@ -856,12 +907,73 @@ function syncClientProfileForm() {
   clientProfileForm.elements.assessmentFile.value = "";
 }
 
+function syncIntakeInterviewForm() {
+  const client = currentClient();
+  if (!intakeForm) return;
+  intakeForm.querySelectorAll("input, select, textarea, button").forEach((field) => {
+    field.disabled = !client;
+  });
+  if (!client) {
+    if (intakeSummary) intakeSummary.innerHTML = "";
+    return;
+  }
+  intakeClientSelect.value = client.id;
+  const interview = client.profile?.intakeInterview || {};
+  Object.entries(interview).forEach(([key, value]) => {
+    if (intakeForm.elements[key]) intakeForm.elements[key].value = value || "";
+  });
+  Object.keys(readIntakeInterviewForm()).forEach((key) => {
+    if (intakeForm.elements[key] && !(key in interview)) intakeForm.elements[key].value = "";
+  });
+  if (intakeSummary) {
+    intakeSummary.innerHTML = `
+      <div><strong>${client.name}</strong><span>Client</span></div>
+      <div><strong>${interview.interviewDate ? formatDate(interview.interviewDate) : "Not saved"}</strong><span>Interview date</span></div>
+      <div><strong>${interview.interviewedBy || "Not entered"}</strong><span>Interviewed by</span></div>
+    `;
+  }
+}
+
+async function handleIntakeSubmit(event) {
+  event.preventDefault();
+  intakeMessage.textContent = "";
+  const client = currentClient();
+  if (!client) return;
+  try {
+    const updated = await updateClientProfile(client.id, {
+      ...currentClientProfilePayload(client),
+      intakeInterview: readIntakeInterviewForm()
+    });
+    replaceClient(updated);
+    applyIntakeInterviewToReport(true);
+    render();
+    intakeMessage.textContent = "Intake interview saved and report narrative refreshed.";
+  } catch (error) {
+    intakeMessage.textContent = error.message;
+  }
+}
+
 async function handleParentTrainingSubmit(event) {
   event.preventDefault();
   parentMessage.textContent = "";
 
   try {
     const payload = buildParentTrainingPayload();
+    const client = currentClient();
+    if (client) {
+      const updatedClient = await updateClientProfile(client.id, {
+        ...currentClientProfilePayload(client),
+        parentTrainingGoals: payload.parentGoals.map((goal) => ({
+          goalName: goal.goalName,
+          targetName: goal.targetName,
+          opportunities: goal.opportunities,
+          independent: goal.independent,
+          prompted: goal.prompted,
+          promptLevel: goal.promptLevel
+        }))
+      });
+      replaceClient(updatedClient);
+    }
     payload.soapNote = generateParentTrainingNote(payload, lookups());
     const saved = await createSession(payload);
     state.selectedSessionId = saved.id;
@@ -1041,11 +1153,13 @@ function render() {
   populateSelect(managementClientSelect, state.clients, clientSelect.value || state.clients[0]?.id);
   populateSelect(bcbaClientSelect, state.clients, clientSelect.value || state.clients[0]?.id);
   populateSelect(parentClientSelect, state.clients, clientSelect.value || state.clients[0]?.id);
+  populateSelect(intakeClientSelect, state.clients, clientSelect.value || state.clients[0]?.id);
   populateDomainSelect(addProgramForm.elements.programDomain, addProgramForm.elements.programDomain.value || clientDomains()[0]);
   syncSettingFromClient();
   syncBcbaSessionDefaults();
   syncParentTrainingDefaults();
   syncClientProfileForm();
+  syncIntakeInterviewForm();
   renderClientManagementSummary();
   renderClientDocuments();
   renderSummary();
@@ -1080,6 +1194,10 @@ function syncParentTrainingDefaults() {
   if (client && !parentTrainingForm.elements.setting.value) {
     parentTrainingForm.elements.setting.value = client.defaultSetting;
   }
+}
+
+function currentParentTrainingGoals() {
+  return structuredClone(currentClient()?.profile?.parentTrainingGoals || []);
 }
 
 function switchView(view) {
@@ -1771,6 +1889,7 @@ function documentTypeLabel(type) {
 function renderReportSummary() {
   const client = currentClient();
   const sessions = filteredReportSessions();
+  applyIntakeInterviewToReport();
   reportClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
@@ -1778,6 +1897,41 @@ function renderReportSummary() {
       <div><strong>${sessions.length}</strong><span>Sessions in range</span></div>
     `
     : "";
+}
+
+function applyIntakeInterviewToReport(force = false) {
+  const interview = currentClient()?.profile?.intakeInterview;
+  if (!interview || !reportForm) return;
+  setReportFieldFromInterview("background", interviewBackground(interview), defaultBackgroundInformation(), force);
+  setReportFieldFromInterview("medicalConcerns", interviewMedicalConcerns(interview), defaultMedicalConcerns(), force);
+  setReportFieldFromInterview("reasonReferral", interviewReasonForReferral(interview), defaultReasonForReferral(), force);
+  setReportFieldFromInterview("impactBehaviors", interviewImpactOfBehaviors(interview), defaultImpactOfBehaviors(), force);
+  setReportFieldFromInterview("familyStrengths", interviewFamilyStrengths(interview), defaultFamilyStrengths(), force);
+  setReportFieldFromInterview("initialObservations", interviewInitialObservations(interview), defaultInitialObservations(), force);
+  setSimpleReportFieldFromInterview("assessmentConductedBy", interview.interviewedBy || "", force);
+  setSimpleReportFieldFromInterview("assessmentDate", interview.interviewDate || "", force);
+  setSimpleReportFieldFromInterview("indirectAssessmentType", "Caregiver interview", force);
+}
+
+function setReportFieldFromInterview(name, value, fallbackDefault, force = false) {
+  const field = reportForm.elements[name];
+  if (!field || !value) return;
+  const previous = field.dataset.autofillValue || "";
+  const current = field.value || "";
+  if (force || !current || current === fallbackDefault || current === previous) {
+    field.value = value;
+    field.dataset.autofillValue = value;
+  }
+}
+
+function setSimpleReportFieldFromInterview(name, value, force = false) {
+  const field = reportForm.elements[name];
+  if (!field || !value) return;
+  const previous = field.dataset.autofillValue || "";
+  if (force || !field.value || field.value === previous) {
+    field.value = value;
+    field.dataset.autofillValue = value;
+  }
 }
 
 function renderSoapSummary() {
@@ -3032,6 +3186,45 @@ function currentClient() {
   return state.clients.find((client) => client.id === clientSelect.value) || state.clients[0];
 }
 
+function currentClientProfilePayload(client = currentClient()) {
+  return {
+    name: client?.name || "",
+    dob: client?.dob || "",
+    defaultSetting: client?.defaultSetting || "",
+    status: client?.status || "active",
+    caregivers: client?.profile?.caregivers || "",
+    school: client?.profile?.school || "",
+    diagnosis: client?.profile?.diagnosis || "",
+    communication: client?.profile?.communication || "",
+    profileNotes: client?.profile?.notes || "",
+    authorizationNumber: client?.profile?.authorization?.number || "",
+    funder: client?.profile?.authorization?.funder || "",
+    authorizationStart: client?.profile?.authorization?.startDate || "",
+    authorizationEnd: client?.profile?.authorization?.endDate || "",
+    authorizationNotes: client?.profile?.authorization?.notes || "",
+    auth97153Hours: client?.profile?.authorization?.services?.["97153"]?.hours || "",
+    auth97153Units: client?.profile?.authorization?.services?.["97153"]?.units || "",
+    auth97155Hours: client?.profile?.authorization?.services?.["97155"]?.hours || "",
+    auth97155Units: client?.profile?.authorization?.services?.["97155"]?.units || "",
+    auth97156Hours: client?.profile?.authorization?.services?.["97156"]?.hours || "",
+    auth97156Units: client?.profile?.authorization?.services?.["97156"]?.units || "",
+    auth97151Hours: client?.profile?.authorization?.services?.["97151"]?.hours || "",
+    auth97151Units: client?.profile?.authorization?.services?.["97151"]?.units || "",
+    assessmentType: client?.profile?.assessment?.type || "",
+    assessmentDate: client?.profile?.assessment?.date || "",
+    assessmentConductedBy: client?.profile?.assessment?.conductedBy || "",
+    assessmentFileName: client?.profile?.assessment?.fileName || "",
+    assessmentNotes: client?.profile?.assessment?.notes || "",
+    intakeInterview: structuredClone(client?.profile?.intakeInterview || {}),
+    parentTrainingGoals: structuredClone(client?.profile?.parentTrainingGoals || [])
+  };
+}
+
+function replaceClient(updated) {
+  const index = state.clients.findIndex((item) => item.id === updated.id);
+  if (index >= 0) state.clients[index] = updated;
+}
+
 function clientPrograms() {
   return currentClient()?.programs || state.programs || [];
 }
@@ -3297,6 +3490,10 @@ Socially, the client demonstrates [limited/emerging] interest in peers and has d
 The client has a history of maladaptive behaviors, including [list behaviors], which interfere with learning and daily functioning. The client is currently receiving ABA services to address communication, behavior reduction, and skill acquisition across settings.`;
 }
 
+function interviewBackground(interview) {
+  return `The client resides with ${interview.householdMembers || "[caregivers/family members]"} and currently attends ${interview.schoolPlacement || "[school/setting, if applicable]"}. Developmental history and caregiver report indicate delays in ${interview.developmentalDelays || "[expressive language, receptive language, social skills, adaptive functioning]"}. The client currently communicates using ${interview.communicationMethod || "[single words/phrases/AAC/PECS]"} and demonstrates challenges related to ${interview.primaryConcerns || "[communication, social interaction, adaptive functioning]"}. Caregivers reported maladaptive behaviors including ${interview.maladaptiveBehaviors || "[list behaviors]"}, and the client is currently receiving ABA services to address communication, behavior reduction, and skill acquisition across settings.${interview.interviewNotes ? ` Additional interview notes: ${interview.interviewNotes}` : ""}`;
+}
+
 function defaultMedicalConcerns() {
   return `At this time, the client is reported to be in [good/overall stable] health. There are [no significant / the following] medical concerns impacting treatment: [insert if applicable].
 The client is currently [not taking / taking] medication(s): [list medications if applicable], which [do/do not] impact behavior or learning.
@@ -3305,11 +3502,19 @@ Due to the diagnosis of Autism Spectrum Disorder, the client may exhibit sensory
 The client is able to participate in ABA services, and ongoing monitoring of medical and developmental status is recommended.`;
 }
 
+function interviewMedicalConcerns(interview) {
+  return `At this time, the client is reported to be in ${interview.healthStatus || "[good/overall stable]"} health. The client is currently ${interview.medications ? `taking medication(s): ${interview.medications}` : "not taking medication(s) per caregiver report"}. Caregivers reported ${interview.dailyLivingConcerns || "[no concerns / concerns] related to sleep, feeding, or toileting"}. Ongoing monitoring of medical and developmental status is recommended as treatment continues.`;
+}
+
 function defaultReasonForReferral() {
   return `The client was referred for Applied Behavior Analysis (ABA) services due to concerns regarding delays in communication, social interaction, and adaptive functioning associated with Autism Spectrum Disorder.
 Primary concerns include [limited functional communication, difficulty following instructions, reduced social engagement]. The client demonstrates challenges in [expressive/receptive language, responding to questions, engaging in conversation].
 Additionally, the client engages in maladaptive behaviors, including [list behaviors], which occur in response to [demands, transitions, denied access, etc.].
 These deficits significantly impact the client’s ability to function independently and participate in daily activities across home, school, and community settings. ABA services were recommended to increase functional skills and reduce behaviors that interfere with learning.`;
+}
+
+function interviewReasonForReferral(interview) {
+  return `The client was referred for Applied Behavior Analysis (ABA) services due to ${interview.reasonForReferral || "[concerns regarding delays in communication, social interaction, and adaptive functioning associated with Autism Spectrum Disorder]"}. Primary caregiver concerns include ${interview.primaryConcerns || "[limited functional communication, difficulty following instructions, reduced social engagement]"}. Caregivers also reported maladaptive behaviors including ${interview.maladaptiveBehaviors || "[list behaviors]"} that are commonly associated with ${interview.behaviorTriggers || "[demands, transitions, denied access, etc.]"}. These concerns impact the client’s ability to participate successfully across home, school, and community settings.`;
 }
 
 function defaultImpactOfBehaviors() {
@@ -3321,11 +3526,19 @@ Socially, these behaviors reduce opportunities for peer interaction and particip
 Overall, these behaviors significantly limit the client’s independence and ability to function across environments, supporting the need for continued intervention.`;
 }
 
+function interviewImpactOfBehaviors(interview) {
+  return `Caregiver interview indicates that maladaptive behaviors such as ${interview.maladaptiveBehaviors || "[task refusal, tantrums, elopement, etc.]"} interfere with the client’s ability to access learning opportunities and complete routines independently. These behaviors are most likely to occur during ${interview.behaviorTriggers || "[demands, transitions, denied access, etc.]"} and often require increased prompting and adult support. Communication and social concerns related to ${interview.primaryConcerns || "[communication, social interaction, adaptive functioning]"} further increase the impact of these behaviors across daily environments.`;
+}
+
 function defaultFamilyStrengths() {
   return `The client demonstrates several strengths that support progress in treatment. The client exhibits [positive affect, responsiveness to reinforcement, interest in preferred activities], which facilitate engagement during sessions.
 The client has emerging skills in [communication, imitation, following instructions], providing a foundation for continued development. The client responds well to [visual supports, structured routines, reinforcement systems].
 The family is actively involved in the client’s care and demonstrates a willingness to participate in treatment and implement recommended strategies. Caregivers are [consistent, communicative, receptive to feedback], which supports generalization of skills across settings.
 The family provides a supportive environment that promotes learning and collaboration with service providers. These strengths are expected to contribute to continued progress and positive treatment outcomes.`;
+}
+
+function interviewFamilyStrengths(interview) {
+  return `The client demonstrates strengths including ${interview.strengths || "[positive affect, responsiveness to reinforcement, interest in preferred activities]"}, which support engagement in treatment. Caregivers identified preferred items and activities such as ${interview.preferredItems || "[preferred items/activities]"} as useful motivators. Family strengths include ${interview.familyStrengths || "[consistent, communicative, receptive to feedback caregivers]"}, and caregivers identified priorities related to ${interview.parentPriorities || "[communication, behavior, social interaction, adaptive skills]"}. These factors are expected to support generalization and progress across settings.`;
 }
 
 function defaultInitialObservations() {
@@ -3334,6 +3547,10 @@ During the observation, the client engaged with [preferred items/activities] and
 Communication was observed to consist of [single words/phrases/AAC use], with [limited/emerging] spontaneous language. The client required prompting to respond to questions and follow instructions.
 Behaviorally, the client engaged in [task refusal, avoidance, elopement, etc.], particularly when demands were placed. These behaviors were managed with [redirection, reinforcement, visual supports].
 The client demonstrated improved engagement when provided with structure and reinforcement. Overall, observations are consistent with deficits in communication, social interaction, and behavioral regulation, supporting the need for ABA services.`;
+}
+
+function interviewInitialObservations(interview) {
+  return `The client was observed in a ${interview.observationSetting || "[clinic/home/school]"} setting during the initial assessment. The client presented as ${interview.observationPresentation || "[alert, calm, active]"} and engaged most readily with ${interview.preferredItems || "[preferred items/activities]"}. Participation was more challenging during ${interview.nonPreferredSituations || "[non-preferred tasks/transitions]"}. Communication was reported and observed to consist of ${interview.communicationMethod || "[single words/phrases/AAC use]"}, and caregiver interview highlighted social concerns related to ${interview.socialConcerns || "[turn-taking, joint attention, conversation]"}. These observations are consistent with the current treatment need described by caregivers.`;
 }
 
 function defaultInstructionalGoalsInfo() {
