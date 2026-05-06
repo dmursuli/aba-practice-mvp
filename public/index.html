@@ -33,6 +33,7 @@
           <button type="button" class="view-tab" data-view-button="clients">Clients</button>
           <button type="button" class="view-tab" data-view-button="users">Users</button>
           <button type="button" class="view-tab active" data-view-button="session">Session</button>
+          <button type="button" class="view-tab" data-view-button="intake">Intake Interview</button>
           <button type="button" class="view-tab" data-view-button="plan">Treatment plan</button>
           <button type="button" class="view-tab" data-view-button="parent">Parent Training</button>
           <button type="button" class="view-tab" data-view-button="graphs">Graphs</button>
@@ -447,6 +448,363 @@
             </label>
           </div>
           <p class="form-message" id="new-client-message" role="status"></p>
+        </form>
+      </section>
+    </main>
+
+    <main class="client-shell hidden" data-view-panel="intake">
+      <section class="client-panel" aria-labelledby="intake-title">
+        <div class="section-heading">
+          <p class="eyebrow">Initial assessment</p>
+          <h2 id="intake-title">Intake interview</h2>
+        </div>
+        <div id="intake-summary" class="summary-strip"></div>
+        <form id="intake-form" class="session-form">
+          <section class="intake-form-section" aria-labelledby="intake-admin-title">
+            <div class="block-heading">
+              <h3 id="intake-admin-title">Interview details</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Client
+                <select name="clientId" id="intake-client-select"></select>
+              </label>
+              <label>
+                Interview date
+                <input type="date" name="interviewDate">
+              </label>
+              <label>
+                Interviewed by
+                <input type="text" name="interviewedBy" placeholder="BCBA name">
+              </label>
+            </div>
+          </section>
+
+          <section class="intake-form-section" aria-labelledby="intake-diagnostic-title">
+            <div class="block-heading">
+              <h3 id="intake-diagnostic-title">1. Diagnostic Information</h3>
+            </div>
+            <div class="form-grid">
+              <label class="intake-wide-field">
+                Has your child been diagnosed with autism?
+                <select name="autismDiagnosis">
+                  <option value="">Select</option>
+                  <option value="Yes">Yes</option>
+                  <option value="No">No</option>
+                  <option value="Pending">Pending</option>
+                </select>
+              </label>
+              <label>
+                Who made the diagnosis and when?
+                <input type="text" name="diagnosisSourceDate" placeholder="Provider and date">
+              </label>
+              <label>
+                Have there been any evaluations? (psychological, speech, developmental)
+                <input type="text" name="priorEvaluations" placeholder="Psych / speech / developmental">
+              </label>
+              <label>
+                Date of most recent CDE
+                <input type="date" name="recentCdeDate">
+              </label>
+              <label>
+                Current communication style
+                <input type="text" name="communicationMethod" placeholder="Single words, phrases, AAC, gestures">
+              </label>
+              <label>
+                Current VB-MAPP level
+                <select name="vbMappLevel" id="intake-vbmapp-level">
+                  <option value="">Show all</option>
+                  <option value="1">Level 1</option>
+                  <option value="2">Level 2</option>
+                  <option value="3">Level 3</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section class="intake-form-section" aria-labelledby="intake-background-title">
+            <div class="block-heading">
+              <h3 id="intake-background-title">2. Background Information</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Caregivers present
+                <input type="text" name="caregiversPresent" placeholder="Parent / caregiver names">
+              </label>
+              <label>
+                Household / family members
+                <input type="text" name="householdMembers" placeholder="Who lives in the home">
+              </label>
+              <label>
+                Primary caregivers
+                <input type="text" name="primaryCaregivers" placeholder="Who is most involved in care?">
+              </label>
+              <label>
+                Pregnancy or birth complications
+                <input type="text" name="pregnancyBirthComplications" placeholder="Yes / no / brief note">
+              </label>
+              <label>
+                Early milestones
+                <input type="text" name="milestones" placeholder="On time / delayed / brief note">
+              </label>
+              <label>
+                Significant early development history
+                <input type="text" name="earlyDevelopmentNotes" placeholder="NICU / delays / none">
+              </label>
+              <label>
+                Developmental strengths and emerging skills
+                <input type="text" name="strengths" placeholder="Strengths / motivators">
+              </label>
+            </div>
+          </section>
+
+          <section class="intake-form-section" aria-labelledby="intake-behavior-title">
+            <div class="block-heading">
+              <h3 id="intake-behavior-title">3. Problem Behaviors</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                What behaviors concern you the most?
+                <input type="text" name="concerningBehaviors" placeholder="Aggression / tantrums / elopement">
+              </label>
+              <label>
+                What do these behaviors look like?
+                <input type="text" name="behaviorDescription" placeholder="Hit / drop / scream / run">
+              </label>
+              <label>
+                When do they usually happen?
+                <input type="text" name="behaviorWhen" placeholder="Transitions / demands / evenings">
+              </label>
+              <label>
+                What seems to trigger them?
+                <input type="text" name="behaviorTriggers" placeholder="Denied access / demand / sensory">
+              </label>
+              <label>
+                What usually happens after the behavior?
+                <input type="text" name="behaviorAfter" placeholder="Attention / escape / item returned">
+              </label>
+              <label>
+                How do you respond when it happens?
+                <input type="text" name="behaviorResponse" placeholder="Redirect / ignore / comfort / prompt">
+              </label>
+              <label>
+                Which behavior is your top priority to address?
+                <input type="text" name="topPriorityBehavior" placeholder="Top priority">
+              </label>
+            </div>
+          </section>
+
+          <section class="intake-form-section" aria-labelledby="intake-services-title">
+            <div class="block-heading">
+              <h3 id="intake-services-title">4. Current Services</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Is your child receiving any services right now?
+                <input type="text" name="currentServices" placeholder="Speech / OT / PT / none">
+              </label>
+              <label>
+                How often do they receive these services?
+                <input type="text" name="serviceFrequency" placeholder="2x/week, 30 min">
+              </label>
+              <label>
+                Have you seen progress in these areas?
+                <input type="text" name="serviceProgress" placeholder="Yes / some / no">
+              </label>
+            </div>
+          </section>
+
+          <section class="intake-form-section" aria-labelledby="intake-school-title">
+            <div class="block-heading">
+              <h3 id="intake-school-title">5. School / Academic Information</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Does your child attend daycare or school?
+                <input type="text" name="schoolAttendance" placeholder="School / daycare / home / none">
+              </label>
+              <label>
+                Type of setting
+                <input type="text" name="schoolSetting" placeholder="General ed, special ed, daycare">
+              </label>
+              <label>
+                Teacher concerns
+                <input type="text" name="teacherConcerns" placeholder="Any concerns reported by teachers">
+              </label>
+              <label>
+                How does your child interact with peers?
+                <input type="text" name="peerInteraction" placeholder="Parallel / avoids / initiates">
+              </label>
+              <label>
+                Academic or behavioral challenges at school
+                <input type="text" name="schoolChallenges" placeholder="Transitions / attention / behavior">
+              </label>
+            </div>
+          </section>
+
+          <section class="intake-form-section" aria-labelledby="intake-aba-title">
+            <div class="block-heading">
+              <h3 id="intake-aba-title">6. Previous ABA Services</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Has your child ever received ABA therapy before?
+                <select name="previousAba">
+                  <option value="">Select</option>
+                  <option value="Yes">Yes</option>
+                  <option value="No">No</option>
+                </select>
+              </label>
+              <label>
+                If yes, how long and where?
+                <input type="text" name="previousAbaDetails" placeholder="Provider / setting / duration">
+              </label>
+              <label>
+                What did they work on?
+                <input type="text" name="previousAbaFocus" placeholder="Communication / behavior / adaptive">
+              </label>
+              <label>
+                Why did services stop?
+                <input type="text" name="previousAbaEnded" placeholder="Moved / staffing / authorization / discharge">
+              </label>
+            </div>
+          </section>
+
+          <section class="intake-form-section" aria-labelledby="intake-medical-title">
+            <div class="block-heading">
+              <h3 id="intake-medical-title">7. Medical Concerns</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Medical history
+                <input type="text" name="medicalHistory" placeholder="NICU / hospitalizations / none">
+              </label>
+              <label>
+                Seizures, allergies, or medications
+                <input type="text" name="seizuresAllergiesMedications" placeholder="Seizures / allergies / meds / none">
+              </label>
+              <label>
+                How is their sleep?
+                <input type="text" name="sleepQuality" placeholder="Sleep concerns or stable sleep">
+              </label>
+              <label>
+                Any feeding concerns?
+                <input type="text" name="feedingConcerns" placeholder="Picky eating, stuffing food, choking">
+              </label>
+              <label>
+                Pain tolerance concerns
+                <input type="text" name="painTolerance" placeholder="High, low, unclear, none reported">
+              </label>
+            </div>
+          </section>
+
+          <section class="intake-form-section" data-vbmapp-section="1" aria-labelledby="intake-vbmapp1-title">
+            <div class="block-heading">
+              <h3 id="intake-vbmapp1-title">VB-MAPP Level 1 (0–18 months)</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Manding
+                <input type="text" name="level1Manding" placeholder="Pulls / points / words / prompted">
+              </label>
+              <label>
+                Listener responding
+                <input type="text" name="level1Listener" placeholder="Yes / sometimes / needs gestures">
+              </label>
+              <label>
+                Imitation
+                <input type="text" name="level1Imitation" placeholder="Actions / objects / sounds / none">
+              </label>
+              <label>
+                Play
+                <input type="text" name="level1Play" placeholder="Functional / repetitive / brief engagement">
+              </label>
+              <label>
+                Social
+                <input type="text" name="level1Social" placeholder="Eye contact / name response / enjoys songs">
+              </label>
+            </div>
+          </section>
+
+          <section class="intake-form-section" data-vbmapp-section="2" aria-labelledby="intake-vbmapp2-title">
+            <div class="block-heading">
+              <h3 id="intake-vbmapp2-title">VB-MAPP Level 2 (18–30 months)</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Manding
+                <input type="text" name="level2Manding" placeholder="Combines words / asks for help / no">
+              </label>
+              <label>
+                Tacting
+                <input type="text" name="level2Tacting" placeholder="Labels objects / prompted / spontaneous">
+              </label>
+              <label>
+                Listener responding
+                <input type="text" name="level2Listener" placeholder="Items / 2-step / categories">
+              </label>
+              <label>
+                Intraverbals
+                <input type="text" name="level2Intraverbals" placeholder="Simple questions / fill-ins / none">
+              </label>
+              <label>
+                Play
+                <input type="text" name="level2Play" placeholder="Parallel / imitates / pretend emerging">
+              </label>
+              <label>
+                Social
+                <input type="text" name="level2Social" placeholder="Initiates / responds / limited">
+              </label>
+            </div>
+          </section>
+
+          <section class="intake-form-section" data-vbmapp-section="3" aria-labelledby="intake-vbmapp3-title">
+            <div class="block-heading">
+              <h3 id="intake-vbmapp3-title">VB-MAPP Level 3 (30–48 months)</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Manding
+                <input type="text" name="level3Manding" placeholder="Sentences / WH questions / no">
+              </label>
+              <label>
+                Tacting
+                <input type="text" name="level3Tacting" placeholder="Describes / talks about absent items">
+              </label>
+              <label>
+                Intraverbals
+                <input type="text" name="level3Intraverbals" placeholder="WH / past events / on-topic">
+              </label>
+              <label>
+                Listener responding
+                <input type="text" name="level3Listener" placeholder="Multi-step / classroom directions">
+              </label>
+              <label>
+                Play and social skills
+                <input type="text" name="level3PlaySocial" placeholder="Pretend / sharing / conversation">
+              </label>
+              <label>
+                Group and school readiness
+                <input type="text" name="level3SchoolReadiness" placeholder="Group / transitions / routines">
+              </label>
+              <label>
+                Preferred interests
+                <input type="text" name="preferredInterests" placeholder="Cars / videos / songs / sensory">
+              </label>
+            </div>
+          </section>
+
+          <section class="intake-form-section" aria-labelledby="intake-notes-title">
+            <div class="block-heading">
+              <h3 id="intake-notes-title">Interview notes</h3>
+            </div>
+            <label>
+              Freeform notes
+              <textarea name="interviewNotes" rows="5" placeholder="Extra caregiver interview notes, context, examples, or wording you want kept in mind for the assessment draft"></textarea>
+            </label>
+          </section>
+          <p class="form-message" id="intake-message" role="status"></p>
+          <button type="submit" class="primary-button">Save intake interview</button>
         </form>
       </section>
     </main>

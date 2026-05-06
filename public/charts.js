@@ -28,12 +28,14 @@ export function drawLineChart(canvas, series, options = {}) {
   const dates = [...new Set(allPoints.map((point) => point.x))].sort();
   const maxY = Math.max(options.maxY || 0, ...allPoints.map((point) => point.y), 1);
   const yTop = options.maxY || Math.max(options.yStep || 1, Math.ceil(maxY * 1.15));
+  const phaseBoundary = getPhaseBoundary(allPoints, dates);
+  const xPositions = buildXPositions(dates.length, margin.left, plotWidth, phaseBoundary);
 
   drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options);
-  const phaseBoundary = drawPhaseLine(ctx, allPoints, dates, margin, plotWidth, plotHeight);
+  drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions);
 
   dates.forEach((date, index) => {
-    const x = xFor(index, dates.length, margin.left, plotWidth);
+    const x = xPositions[index];
     ctx.fillStyle = "#59656f";
     ctx.font = "12px system-ui, sans-serif";
     ctx.textAlign = dates.length > 3 ? "right" : "center";
@@ -56,7 +58,7 @@ export function drawLineChart(canvas, series, options = {}) {
       .map((point) => {
         const dateIndex = dates.indexOf(point.x);
         return {
-          x: xFor(dateIndex, dates.length, margin.left, plotWidth),
+          x: xPositions[dateIndex],
           y: margin.top + plotHeight - (point.y / yTop) * plotHeight,
           value: point.y,
           dateIndex,
@@ -113,7 +115,7 @@ function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, optio
   }
 }
 
-function drawPhaseLine(ctx, allPoints, dates, margin, plotWidth, plotHeight) {
+function getPhaseBoundary(allPoints, dates) {
   const baselineIndexes = allPoints
     .filter((point) => point.phase === "baseline")
     .map((point) => dates.indexOf(point.x))
@@ -130,8 +132,14 @@ function drawPhaseLine(ctx, allPoints, dates, margin, plotWidth, plotHeight) {
   const lastBaseline = Math.max(...baselineIndexes.filter((index) => index < firstIntervention));
   if (!Number.isFinite(lastBaseline)) return null;
 
-  const baselineX = xFor(lastBaseline, dates.length, margin.left, plotWidth);
-  const interventionX = xFor(firstIntervention, dates.length, margin.left, plotWidth);
+  return { leftIndex: lastBaseline, rightIndex: firstIntervention };
+}
+
+function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions) {
+  if (!phaseBoundary) return null;
+
+  const baselineX = xPositions[phaseBoundary.leftIndex];
+  const interventionX = xPositions[phaseBoundary.rightIndex];
   const lineX = baselineX + (interventionX - baselineX) / 2;
 
   ctx.save();
@@ -155,7 +163,7 @@ function drawPhaseLine(ctx, allPoints, dates, margin, plotWidth, plotHeight) {
   ctx.restore();
   ctx.restore();
 
-  return { leftIndex: lastBaseline, rightIndex: firstIntervention };
+  return phaseBoundary;
 }
 
 function drawPhaseSegments(ctx, points, phaseBoundary) {
@@ -206,10 +214,41 @@ function drawEmpty(ctx, width, height, message) {
   ctx.fillText(message, width / 2, height / 2);
 }
 
-function xFor(index, count, left, width) {
-  if (count <= 1) return left + width / 2;
+function buildXPositions(count, left, width, phaseBoundary) {
+  if (count <= 1) return [left + width / 2];
   const padding = Math.min(28, width * 0.08);
-  return left + padding + (index / (count - 1)) * (width - padding * 2);
+  const start = left + padding;
+  const end = left + width - padding;
+
+  if (!phaseBoundary) {
+    return buildCenteredSegmentPositions(count, start, end, 88);
+  }
+
+  const leftCount = phaseBoundary.leftIndex + 1;
+  const rightCount = count - phaseBoundary.rightIndex;
+  const phaseGap = Math.min(72, width * 0.12);
+  const usableWidth = end - start - phaseGap;
+  const leftWidth = usableWidth / 2;
+  const rightWidth = usableWidth / 2;
+
+  const leftPositions = buildCenteredSegmentPositions(leftCount, start, start + leftWidth, 88);
+  const rightPositions = buildCenteredSegmentPositions(rightCount, start + leftWidth + phaseGap, end, 88);
+
+  return [
+    ...leftPositions,
+    ...rightPositions
+  ];
+}
+
+function buildCenteredSegmentPositions(count, start, end, maxStep) {
+  if (count <= 0) return [];
+  if (count === 1) return [(start + end) / 2];
+  const width = end - start;
+  const naturalStep = width / (count - 1);
+  const step = Math.min(naturalStep, maxStep);
+  const span = step * (count - 1);
+  const offset = (width - span) / 2;
+  return Array.from({ length: count }, (_, index) => start + offset + index * step);
 }
 
 function formatDate(value) {

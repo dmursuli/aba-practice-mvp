@@ -215,6 +215,28 @@ textarea {
   gap: 12px;
 }
 
+.intake-form-section {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.intake-form-section.hidden,
+.intake-form-section[hidden] {
+  display: none;
+}
+
+.intake-form-section .block-heading {
+  align-items: baseline;
+}
+
+.intake-wide-field {
+  grid-column: 1 / -1;
+}
+
 label {
   display: grid;
   gap: 6px;
