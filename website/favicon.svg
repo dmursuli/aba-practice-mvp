@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Triumph Behavioral">
+  <rect width="64" height="64" rx="14" fill="#1776d2"/>
+  <path d="M14 18h36v9H37v24H27V27H14z" fill="#ffffff"/>
+  <path d="M43.5 12.5c4.4 2.7 7.4 7.6 7.4 13.1 0 8.5-6.9 15.4-15.4 15.4h-3.2v-8.1h3.2c4 0 7.3-3.3 7.3-7.3 0-2.6-1.4-4.9-3.4-6.2z" fill="#9ed8ff"/>
+  <path d="M20.5 51.5c-4.4-2.7-7.4-7.6-7.4-13.1C13.1 29.9 20 23 28.5 23h3.2v8.1h-3.2c-4 0-7.3 3.3-7.3 7.3 0 2.6 1.4 4.9 3.4 6.2z" fill="#0b2f5f"/>
+</svg>
