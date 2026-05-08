@@ -485,7 +485,7 @@ const server = createServer(async (req, res) => {
     const profileMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/profile$/);
     if (req.method === "PUT" && profileMatch) {
       const db = await readDbWithUsers();
-      if (!requireRole(req, res, db, ["admin"])) return;
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
       const payload = await readBody(req);
       const client = db.clients.find((item) => item.id === profileMatch[1]);
       if (!client) {
