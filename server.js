@@ -980,6 +980,7 @@ function treatmentPlanAuditSnapshot(client) {
       id: program.id,
       name: program.name,
       domain: program.domain,
+      status: program.status || "active",
       objective: program.objective || "",
       targets: (program.targets || []).map((target) => ({
         id: target.id,
@@ -1000,6 +1001,7 @@ function treatmentPlanChanges(before, after) {
   return {
     programsAdded: addedById(before.programs, after.programs).map((program) => program.name),
     programsRemoved: addedById(after.programs, before.programs).map((program) => program.name),
+    programStatusChanges: programStatusChanges(before.programs, after.programs),
     targetsAdded: addedTargets(before.programs, after.programs),
     targetsRemoved: addedTargets(after.programs, before.programs),
     targetStatusChanges: targetStatusChanges(before.programs, after.programs),
@@ -1019,6 +1021,14 @@ function addedTargets(beforePrograms, afterPrograms) {
     const beforeProgram = beforePrograms.find((program) => program.id === afterProgram.id);
     const beforeTargets = beforeProgram?.targets || [];
     return addedById(beforeTargets, afterProgram.targets || []).map((target) => `${afterProgram.name}: ${target.name}`);
+  });
+}
+
+function programStatusChanges(beforePrograms, afterPrograms) {
+  return afterPrograms.flatMap((afterProgram) => {
+    const beforeProgram = beforePrograms.find((program) => program.id === afterProgram.id);
+    if (!beforeProgram || beforeProgram.status === afterProgram.status) return [];
+    return [`${afterProgram.name} ${beforeProgram.status || "active"} -> ${afterProgram.status || "active"}`];
   });
 }
 
@@ -1273,6 +1283,7 @@ function sanitizePrograms(programs) {
     id: String(program.id),
     name: String(program.name || "Program"),
     domain: String(program.domain || "General"),
+    status: ["active", "maintenance", "mastered", "paused"].includes(program.status) ? program.status : "active",
     objective: String(program.objective || ""),
     targets: (program.targets || []).map((target) => ({
       id: String(target.id),

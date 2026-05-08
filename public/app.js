@@ -2194,12 +2194,15 @@ function renderPlanReview() {
   const programs = clientPrograms();
   const behaviors = clientBehaviors();
   const client = currentClient();
+  const activePrograms = programs.filter((program) => (program.status || "active") === "active").length;
+  const masteredPrograms = programs.filter((program) => program.status === "mastered").length;
   const activeTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "active").length;
   const maintenanceTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "maintenance").length;
   const pausedTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "paused").length;
   planClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
+      <div><strong>${activePrograms} / ${masteredPrograms}</strong><span>Active / mastered goals</span></div>
       <div><strong>${activeTargets}</strong><span>Active targets</span></div>
       <div><strong>${maintenanceTargets} / ${pausedTargets}</strong><span>Maintenance / paused</span></div>
       <div><strong>${behaviors.filter((behavior) => behavior.status !== "inactive").length}</strong><span>Active behaviors</span></div>
@@ -2322,6 +2325,14 @@ function renderPlanProgram(program) {
             `).join("")}
           </select>
         </label>
+        <label>
+          Goal status
+          <select data-plan-program-status="${program.id}" aria-label="${program.name} goal status">
+            ${["active", "maintenance", "mastered", "paused"].map((status) => `
+              <option value="${status}" ${(program.status || "active") === status ? "selected" : ""}>${status}</option>
+            `).join("")}
+          </select>
+        </label>
         <button type="button" class="secondary-button" data-add-target="${program.id}">Add target</button>
       </div>
       <label>
@@ -2363,6 +2374,7 @@ async function handleAddProgram(event) {
     id: slugify(name, "program", programs.map((program) => program.id)),
     name,
     domain: addProgramForm.elements.programDomain.value || clientDomains()[0],
+    status: "active",
     objective: "",
     targets: []
   });
@@ -2498,6 +2510,28 @@ async function handlePlanStatusChange(event) {
     if (!behavior) return;
     behavior.status = behaviorControl.value;
     await savePlan(clientPrograms(), behaviors);
+    return;
+  }
+  const programControl = event.target.closest("[data-plan-program-status]");
+  if (programControl) {
+    const programs = structuredClone(clientPrograms());
+    const program = programs.find((item) => item.id === programControl.dataset.planProgramStatus);
+    if (!program) return;
+    const previousStatus = program.status || "active";
+    program.status = programControl.value;
+    try {
+      await savePlan(programs, clientBehaviors(), previousStatus !== programControl.value ? {
+        type: "program-status-changed",
+        domain: program.domain,
+        programId: program.id,
+        programName: program.name,
+        fromStatus: previousStatus,
+        toStatus: programControl.value
+      } : null);
+    } catch (error) {
+      formMessage.textContent = error.message;
+      renderPlanReview();
+    }
     return;
   }
   const control = event.target.closest("[data-plan-program][data-plan-target]");
