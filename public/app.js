@@ -11,6 +11,7 @@ const state = {
   healthIssues: [],
   users: [],
   selectedSessionId: null,
+  activeClientId: "",
   activeDomain: "",
   activePlanDomain: "",
   currentUser: null
@@ -65,6 +66,7 @@ const rbtWrittenFeedback = document.querySelector("#rbt-written-feedback");
 const rbtFeedbackHelp = document.querySelector("#rbt-feedback-help");
 const rbtFidelityRows = document.querySelector("#rbt-fidelity-rows");
 const addRbtPerformanceAreaButton = document.querySelector("#add-rbt-performance-area");
+const workspaceClientSelect = document.querySelector("#workspace-client-select");
 const clientSelect = document.querySelector("#client-select");
 const managementClientSelect = document.querySelector("#management-client-select");
 const bcbaClientSelect = document.querySelector("#bcba-client-select");
@@ -292,23 +294,9 @@ function bindEvents() {
   document.querySelector("#add-maintenance-target").addEventListener("click", () => addFirstAvailableTargetRow("maintenance"));
   document.querySelector("#add-behavior").addEventListener("click", () => addFirstAvailableBehaviorRow());
   document.querySelector("#add-parent-goal").addEventListener("click", () => addParentGoalRow());
-  managementClientSelect.addEventListener("change", () => {
-    clientSelect.value = managementClientSelect.value;
-    state.selectedSessionId = null;
-    state.activeDomain = "";
-    state.activePlanDomain = "";
-    syncSettingFromClient();
-    resetRows();
-    render();
-  });
-  clientSelect.addEventListener("change", () => {
-    state.selectedSessionId = null;
-    state.activeDomain = "";
-    state.activePlanDomain = "";
-    syncSettingFromClient();
-    resetRows();
-    render();
-  });
+  workspaceClientSelect.addEventListener("change", () => setActiveClient(workspaceClientSelect.value));
+  managementClientSelect.addEventListener("change", () => setActiveClient(managementClientSelect.value));
+  clientSelect.addEventListener("change", () => setActiveClient(clientSelect.value));
   form.addEventListener("input", (event) => {
     const row = event.target.closest(".program-row");
     if (row) updateProgramIndependence(row);
@@ -336,15 +324,7 @@ function bindEvents() {
   downloadPracticeBackupButton.addEventListener("click", handleDownloadPracticeBackup);
   restorePracticeBackupButton.addEventListener("click", handleRestorePracticeBackup);
   newClientForm.addEventListener("submit", handleNewClientSubmit);
-  intakeClientSelect.addEventListener("change", () => {
-    clientSelect.value = intakeClientSelect.value;
-    state.selectedSessionId = null;
-    state.activeDomain = "";
-    state.activePlanDomain = "";
-    syncSettingFromClient();
-    resetRows();
-    render();
-  });
+  intakeClientSelect.addEventListener("change", () => setActiveClient(intakeClientSelect.value));
   intakeVbMappLevelSelect.addEventListener("change", updateVbMappVisibility);
   intakeVbMappLevelSelect.addEventListener("input", updateVbMappVisibility);
   intakeForm.addEventListener("input", saveIntakeDraft);
@@ -501,6 +481,29 @@ function populateSelect(select, items, selected = "") {
     `<option value="${item.id}">${item.name}${item.status === "archived" ? " (archived)" : ""}</option>`
   )).join("");
   if (selected) select.value = selected;
+}
+
+function setActiveClient(clientId, { resetSession = true } = {}) {
+  if (!clientId) return;
+  state.activeClientId = clientId;
+  [
+    workspaceClientSelect,
+    clientSelect,
+    managementClientSelect,
+    bcbaClientSelect,
+    parentClientSelect,
+    intakeClientSelect
+  ].forEach((select) => {
+    if (select) select.value = clientId;
+  });
+  if (resetSession) {
+    state.selectedSessionId = null;
+    state.activeDomain = "";
+    state.activePlanDomain = "";
+    syncSettingFromClient();
+    resetRows();
+  }
+  render();
 }
 
 function addProgramRow(programId = "", targetId = "", values = {}) {
@@ -729,12 +732,8 @@ async function handleNewClientSubmit(event) {
     });
     newClientForm.reset();
     await refreshData();
-    clientSelect.value = client.id;
-    state.selectedSessionId = null;
-    state.activeDomain = "";
-    state.activePlanDomain = "";
-    resetRows();
-    render();
+    state.activeClientId = client.id;
+    setActiveClient(client.id);
     newClientMessage.textContent = "Client created. Add programs and behaviors under Treatment plan.";
   } catch (error) {
     newClientMessage.textContent = error.message;
@@ -1393,11 +1392,14 @@ function resetRows() {
 }
 
 function render() {
-  populateSelect(clientSelect, state.clients, clientSelect.value || state.clients[0]?.id);
-  populateSelect(managementClientSelect, state.clients, clientSelect.value || state.clients[0]?.id);
-  populateSelect(bcbaClientSelect, state.clients, clientSelect.value || state.clients[0]?.id);
-  populateSelect(parentClientSelect, state.clients, clientSelect.value || state.clients[0]?.id);
-  populateSelect(intakeClientSelect, state.clients, clientSelect.value || state.clients[0]?.id);
+  const selectedClientId = state.activeClientId || workspaceClientSelect.value || clientSelect.value || state.clients[0]?.id || "";
+  state.activeClientId = selectedClientId;
+  populateSelect(workspaceClientSelect, state.clients, selectedClientId);
+  populateSelect(clientSelect, state.clients, selectedClientId);
+  populateSelect(managementClientSelect, state.clients, selectedClientId);
+  populateSelect(bcbaClientSelect, state.clients, selectedClientId);
+  populateSelect(parentClientSelect, state.clients, selectedClientId);
+  populateSelect(intakeClientSelect, state.clients, selectedClientId);
   populateDomainSelect(addProgramForm.elements.programDomain, addProgramForm.elements.programDomain.value || clientDomains()[0]);
   syncSettingFromClient();
   restoreSessionDraft();
@@ -3464,7 +3466,7 @@ async function handleFinalize() {
 }
 
 function currentClient() {
-  return state.clients.find((client) => client.id === clientSelect.value) || state.clients[0];
+  return state.clients.find((client) => client.id === state.activeClientId) || state.clients[0];
 }
 
 function currentClientProfilePayload(client = currentClient()) {

@@ -90,6 +90,33 @@ textarea {
   line-height: 1.05;
 }
 
+.workspace-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.workspace-client-picker {
+  display: grid;
+  gap: 6px;
+  max-width: 280px;
+}
+
+.workspace-client-picker span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.workspace-client-picker select {
+  min-width: 220px;
+  width: 100%;
+  background: #ffffff;
+}
+
 .view-switcher {
   display: flex;
   flex-wrap: wrap;
@@ -1008,6 +1035,13 @@ button:disabled {
   }
 
   .icon-button {
+    width: 100%;
+  }
+
+  .workspace-client-picker,
+  .workspace-client-picker select {
+    max-width: none;
+    min-width: 0;
     width: 100%;
   }
 }
