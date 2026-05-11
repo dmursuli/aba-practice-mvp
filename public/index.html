@@ -304,6 +304,21 @@
             Client notes
             <textarea name="profileNotes" rows="3" placeholder="General notes for onboarding, strengths, preferences, or clinical context"></textarea>
           </label>
+          <section class="report-form-section" aria-labelledby="mastery-criteria-title">
+            <div class="block-heading">
+              <h3 id="mastery-criteria-title">Mastery criteria</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                Independent performance at or above
+                <input type="number" name="masteryThresholdPercent" min="1" max="100" step="1" placeholder="90">
+              </label>
+              <label>
+                Consecutive sessions required
+                <input type="number" name="masteryConsecutiveSessions" min="1" max="10" step="1" placeholder="2">
+              </label>
+            </div>
+          </section>
           <section class="report-form-section" aria-labelledby="authorization-title">
             <div class="block-heading">
               <h3 id="authorization-title">Authorization</h3>

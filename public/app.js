@@ -947,6 +947,8 @@ function readClientProfileForm() {
     diagnosis: values.get("diagnosis"),
     communication: values.get("communication"),
     profileNotes: values.get("profileNotes"),
+    masteryThresholdPercent: values.get("masteryThresholdPercent"),
+    masteryConsecutiveSessions: values.get("masteryConsecutiveSessions"),
     authorizationNumber: values.get("authorizationNumber"),
     funder: values.get("funder"),
     authorizationStart: values.get("authorizationStart"),
@@ -1140,6 +1142,8 @@ function syncClientProfileForm() {
   clientProfileForm.elements.diagnosis.value = client.profile?.diagnosis || client.diagnosis || "Autism Spectrum Disorder";
   clientProfileForm.elements.communication.value = client.profile?.communication || "";
   clientProfileForm.elements.profileNotes.value = client.profile?.notes || client.profileNotes || "";
+  clientProfileForm.elements.masteryThresholdPercent.value = client.profile?.masteryCriteria?.thresholdPercent || 90;
+  clientProfileForm.elements.masteryConsecutiveSessions.value = client.profile?.masteryCriteria?.consecutiveSessions || 2;
   clientProfileForm.elements.authorizationNumber.value = client.profile?.authorization?.number || "";
   clientProfileForm.elements.funder.value = client.profile?.authorization?.funder || "";
   clientProfileForm.elements.authorizationStart.value = client.profile?.authorization?.startDate || "";
@@ -1480,6 +1484,13 @@ function currentParentTrainingGoals() {
   return structuredClone(currentClient()?.profile?.parentTrainingGoals || []);
 }
 
+function currentMasteryCriteria() {
+  return {
+    thresholdPercent: Number(currentClient()?.profile?.masteryCriteria?.thresholdPercent || 90),
+    consecutiveSessions: Number(currentClient()?.profile?.masteryCriteria?.consecutiveSessions || 2)
+  };
+}
+
 function switchView(view) {
   if (!allowedViews().includes(view)) {
     view = allowedViews()[0] || "session";
@@ -1534,6 +1545,43 @@ function roleLabel(role) {
 function syncSettingFromClient() {
   const client = currentClient();
   if (client && !form.elements.setting.value) form.elements.setting.value = client.defaultSetting;
+}
+
+function masteryReviewForTarget(programId, targetId) {
+  const target = clientPrograms().find((program) => program.id === programId)?.targets?.find((item) => item.id === targetId);
+  if (target?.status === "mastered") {
+    return { state: "mastered", threshold: 0, consecutiveSessions: 0, matchedDates: [], previewScores: [] };
+  }
+  const criteria = currentMasteryCriteria();
+  const qualifyingSessions = currentSessions()
+    .filter((session) => (session.serviceType || "97153") === "97153")
+    .map((session) => {
+      const entry = targetEntries(session).find((target) => target.programId === programId && target.targetId === targetId);
+      return entry ? { session, entry } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const aValue = `${a.session.date}T${a.session.startTime || "00:00"}`;
+      const bValue = `${b.session.date}T${b.session.startTime || "00:00"}`;
+      return bValue.localeCompare(aValue);
+    });
+
+  if (qualifyingSessions.length < criteria.consecutiveSessions) {
+    return { state: "none", threshold: criteria.thresholdPercent, consecutiveSessions: criteria.consecutiveSessions, matchedDates: [], previewScores: [] };
+  }
+
+  const recentSessions = qualifyingSessions.slice(0, criteria.consecutiveSessions);
+  const scores = recentSessions.map(({ entry }) => Number(entry.independence || 0));
+  const eligible = scores.every((score) => score >= criteria.thresholdPercent);
+  const nearThreshold = scores.every((score) => score >= Math.max(criteria.thresholdPercent - 10, 0));
+  const averageScore = scores.length ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length) : 0;
+  return {
+    state: eligible ? "ready" : (nearThreshold && averageScore >= criteria.thresholdPercent - 5 ? "close" : "none"),
+    threshold: criteria.thresholdPercent,
+    consecutiveSessions: criteria.consecutiveSessions,
+    matchedDates: eligible ? recentSessions.map(({ session }) => session.date).reverse() : [],
+    previewScores: scores.reverse()
+  };
 }
 
 function renderSummary() {
@@ -2379,7 +2427,7 @@ function renderPlanProgram(program) {
       </label>
       <div class="plan-target-list">
         ${(program.targets || []).map((target) => `
-          <div class="plan-target">
+          <div class="plan-target ${masteryReviewClass(program, target)}">
             <label>
               Target
               <input type="text" value="${escapeHtml(target.name)}" data-target-name="${program.id}:${target.id}" aria-label="Target name">
@@ -2396,11 +2444,49 @@ function renderPlanProgram(program) {
               BCBA note
               <input type="text" value="${escapeHtml(target.note || "")}" data-target-note="${program.id}:${target.id}" placeholder="Optional">
             </label>
+            ${renderMasteryReviewHint(program, target)}
           </div>
         `).join("")}
       </div>
     </section>
   `;
+}
+
+function renderMasteryReviewHint(program, target) {
+  const review = masteryReviewForTarget(program.id, target.id);
+  if (review.state === "none") return "";
+  if (review.state === "mastered") {
+    return `
+      <div class="mastery-review-hint mastery-review-hint-mastered">
+        <strong>Already mastered</strong>
+        <span>${escapeHtml(target.name)} is already marked mastered in the treatment plan.</span>
+      </div>
+    `;
+  }
+  if (review.state === "ready") {
+    return `
+      <div class="mastery-review-hint mastery-review-hint-ready">
+        <strong>Ready for mastery review</strong>
+        <span>${escapeHtml(target.name)} met ${review.threshold}%+ for ${review.consecutiveSessions} consecutive sessions (${review.matchedDates.map(formatDate).join(", ")}).</span>
+      </div>
+    `;
+  }
+  return `
+    <div class="mastery-review-hint mastery-review-hint-close">
+      <strong>Close to mastery</strong>
+      <span>${escapeHtml(target.name)} is trending near the mastery rule (${review.previewScores.join("%, ")}% across recent sessions).</span>
+    </div>
+  `;
+}
+
+function masteryReviewClass(program, target) {
+  const review = masteryReviewForTarget(program.id, target.id);
+  return {
+    mastered: "mastered-target",
+    ready: "mastery-ready-target",
+    close: "mastery-close-target",
+    none: ""
+  }[review.state] || "";
 }
 
 async function handleAddProgram(event) {
@@ -3515,6 +3601,8 @@ function currentClientProfilePayload(client = currentClient()) {
     diagnosis: client?.profile?.diagnosis || "",
     communication: client?.profile?.communication || "",
     profileNotes: client?.profile?.notes || "",
+    masteryThresholdPercent: client?.profile?.masteryCriteria?.thresholdPercent || 90,
+    masteryConsecutiveSessions: client?.profile?.masteryCriteria?.consecutiveSessions || 2,
     authorizationNumber: client?.profile?.authorization?.number || "",
     funder: client?.profile?.authorization?.funder || "",
     authorizationStart: client?.profile?.authorization?.startDate || "",

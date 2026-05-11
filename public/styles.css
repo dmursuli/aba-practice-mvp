@@ -892,6 +892,51 @@ button:focus-visible {
   align-items: end;
 }
 
+.mastery-ready-target {
+  padding: 10px;
+  border: 1px solid #e4c96d;
+  border-radius: 8px;
+  background: var(--gold-soft);
+}
+
+.mastery-close-target {
+  padding: 10px;
+  border: 1px solid #e7da8e;
+  border-radius: 8px;
+  background: #fffbe8;
+}
+
+.mastered-target {
+  padding: 10px;
+  border: 1px solid #a8d29a;
+  border-radius: 8px;
+  background: #eef8e8;
+}
+
+.mastery-review-hint {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 2px;
+  color: var(--brand-deep);
+  font-size: 0.92rem;
+}
+
+.mastery-review-hint strong {
+  color: #8f6100;
+}
+
+.mastery-review-hint-close strong {
+  color: #9d7f13;
+}
+
+.mastery-review-hint-ready strong {
+  color: #8f6100;
+}
+
+.mastery-review-hint-mastered strong {
+  color: #45712a;
+}
+
 .chart-panel {
   padding: 14px;
 }

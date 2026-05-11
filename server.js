@@ -1151,6 +1151,10 @@ function sanitizeClientProfile(payload) {
       fileName: text(payload.assessmentFileName),
       notes: text(payload.assessmentNotes)
     },
+    masteryCriteria: {
+      thresholdPercent: sanitizeNumber(payload.masteryThresholdPercent, 90, 1, 100),
+      consecutiveSessions: sanitizeNumber(payload.masteryConsecutiveSessions, 2, 1, 10)
+    },
     parentTrainingGoals: sanitizeParentGoals(payload.parentTrainingGoals || []),
     intakeInterview: sanitizeIntakeInterview(payload.intakeInterview || {}),
     documents: Array.isArray(payload.documents) ? payload.documents : []
@@ -1162,6 +1166,12 @@ function authorizationService(hours, units) {
     hours: text(hours),
     units: text(units)
   };
+}
+
+function sanitizeNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(parsed)));
 }
 
 function sanitizeIntakeInterview(interview) {
