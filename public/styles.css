@@ -847,6 +847,28 @@ button:focus-visible {
   border-bottom: 1px solid var(--line);
 }
 
+.supervision-note-panel summary {
+  cursor: pointer;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--ink);
+  list-style: none;
+}
+
+.supervision-note-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.supervision-note-panel summary::before {
+  content: "Show ";
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.supervision-note-panel[open] summary::before {
+  content: "Hide ";
+}
+
 .note-97155-editor {
   min-height: 220px;
 }

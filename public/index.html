@@ -907,17 +907,18 @@
 
       <section class="soap-panel" aria-labelledby="soap-title">
         <div class="section-heading">
-          <p class="eyebrow">97153</p>
+          <p class="eyebrow" id="soap-code-label">Session notes</p>
           <h2 id="soap-title">SOAP note</h2>
         </div>
         <div id="soap-client-summary" class="summary-strip"></div>
-        <section class="supervision-note-panel" aria-labelledby="note-97155-title">
-          <h3 id="note-97155-title">97155 note</h3>
+        <details class="supervision-note-panel" id="supervision-note-panel">
+          <summary id="note-97155-title">Client-wide 97155 treatment plan note</summary>
+          <p class="muted">This is the standing protocol-modification note for the client, not the selected session note.</p>
           <textarea id="note-97155" class="soap-editor note-97155-editor" rows="8" aria-label="Editable 97155 note"></textarea>
           <p id="note-97155-status" class="form-message" role="status"></p>
-        </section>
+        </details>
         <div class="block-heading">
-          <h3 id="selected-soap-note-title">97153 note</h3>
+          <h3 id="selected-soap-note-title">Selected session note</h3>
           <div class="button-row">
             <button type="button" class="secondary-button" id="print-soap-note">Print note</button>
             <button type="button" class="secondary-button" id="download-soap-text">Download .txt</button>

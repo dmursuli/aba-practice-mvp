@@ -89,6 +89,7 @@ const downloadFunderTextButton = document.querySelector("#download-funder-text")
 const downloadFunderHtmlButton = document.querySelector("#download-funder-html");
 const funderExportStatus = document.querySelector("#funder-export-status");
 const soapClientSummary = document.querySelector("#soap-client-summary");
+const soapCodeLabel = document.querySelector("#soap-code-label");
 const planReview = document.querySelector("#plan-review");
 const planDomainTabs = document.querySelector("#plan-domain-tabs");
 const clientManagementSummary = document.querySelector("#client-management-summary");
@@ -107,6 +108,7 @@ const addProgramForm = document.querySelector("#add-program-form");
 const addDomainButton = document.querySelector("#add-domain");
 const note97155Editor = document.querySelector("#note-97155");
 const note97155Status = document.querySelector("#note-97155-status");
+const supervisionNotePanel = document.querySelector("#supervision-note-panel");
 const generate97155Button = document.querySelector("#generate-97155-note");
 const planMessage = document.querySelector("#plan-message");
 const parentMessage = document.querySelector("#parent-message");
@@ -2181,10 +2183,12 @@ function setSimpleReportFieldFromInterview(name, value, force = false) {
 function renderSoapSummary() {
   const client = currentClient();
   const session = selectedSession();
+  soapCodeLabel.textContent = session ? sessionCodeLabel(session) : "Session notes";
   soapClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
       <div><strong>${session ? formatDate(session.date) : "None"}</strong><span>Selected session</span></div>
+      <div><strong>${session ? sessionCodeLabel(session) : "None"}</strong><span>Service code</span></div>
       <div><strong>${session?.finalized ? "Finalized" : "Draft"}</strong><span>Note status</span></div>
     `
     : "";
@@ -2611,6 +2615,7 @@ async function handleSave97155Note() {
 function render97155Note() {
   note97155Editor.value = currentClient()?.note97155 || "";
   note97155Status.textContent = "";
+  if (supervisionNotePanel) supervisionNotePanel.open = false;
 }
 
 function renderRbtFidelityRows() {
@@ -2776,7 +2781,7 @@ function renderHistory() {
     return `
       <div class="history-item ${active}">
         <button type="button" class="history-select" data-session-id="${session.id}">
-          <span><strong>${formatDate(session.date)}</strong> ${session.startTime}-${session.endTime}</span>
+          <span><strong>${sessionCodeLabel(session)}</strong> • <strong>${formatDate(session.date)}</strong> ${session.startTime}-${session.endTime}</span>
           <span>${programSummary}</span>
           <span>${session.finalized ? "Finalized" : "Draft note"}</span>
         </button>
@@ -3355,7 +3360,7 @@ function renderReportProgramInfo(program) {
 function renderNote() {
   const session = selectedSession();
   if (!session) {
-    selectedSoapNoteTitle.textContent = "97153 note";
+    selectedSoapNoteTitle.textContent = "Selected session note";
     soapEditor.value = "";
     soapEditor.placeholder = "Save or select a session to generate a SOAP note.";
     soapEditor.readOnly = false;
@@ -3365,7 +3370,7 @@ function renderNote() {
     downloadSoapHtmlButton.disabled = true;
     return;
   }
-  selectedSoapNoteTitle.textContent = session.serviceType === "parent-training" ? "97156 note" : "97153 note";
+  selectedSoapNoteTitle.textContent = `${sessionCodeLabel(session)} session note`;
   soapEditor.value = session.soapNote || generateSoapNote(session, lookups());
   soapEditor.readOnly = session.finalized;
   finalizeButton.disabled = session.finalized;
@@ -3543,6 +3548,10 @@ function currentSessions() {
 function selectedSession() {
   const sessions = currentSessions();
   return sessions.find((session) => session.id === state.selectedSessionId) || sessions[0];
+}
+
+function sessionCodeLabel(session) {
+  return session?.serviceType === "parent-training" ? "97156" : (session?.serviceType || "97153");
 }
 
 function lookups() {
