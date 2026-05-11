@@ -93,6 +93,13 @@ export async function updateClientProfile(clientId, profile) {
   return parseResponse(response);
 }
 
+export async function deleteClient(clientId) {
+  const response = await fetch(`/api/clients/${clientId}`, {
+    method: "DELETE"
+  });
+  return parseResponse(response);
+}
+
 export async function uploadClientDocument(clientId, document) {
   const response = await fetch(`/api/clients/${clientId}/documents`, {
     method: "POST",

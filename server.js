@@ -482,6 +482,41 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    const clientMatch = url.pathname.match(/^\/api\/clients\/([^/]+)$/);
+    if (req.method === "DELETE" && clientMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin"])) return;
+      const client = db.clients.find((item) => item.id === clientMatch[1]);
+      if (!client) {
+        sendJson(res, 404, { errors: ["Client not found."] });
+        return;
+      }
+
+      for (const document of client.profile?.documents || []) {
+        if (document.s3Key && documentStore === "s3") {
+          const { deleteS3Object } = await import("./lib/s3-storage.mjs");
+          await deleteS3Object(s3Config(), document.s3Key).catch(() => {});
+        } else if (document.relativePath) {
+          await unlink(join(root, document.relativePath)).catch(() => {});
+        }
+      }
+
+      const removedSessions = db.sessions.filter((session) => session.clientId === client.id).length;
+      db.sessions = db.sessions.filter((session) => session.clientId !== client.id);
+      db.clients = db.clients.filter((item) => item.id !== client.id);
+      db.auditLog = (db.auditLog || []).filter((entry) => entry.clientId !== client.id && entry.clientName !== client.name);
+      logAudit(db, req, currentUser(req, db), "client-deleted", {
+        details: {
+          clientName: client.name,
+          sessionsDeleted: removedSessions,
+          documentsDeleted: (client.profile?.documents || []).length
+        }
+      });
+      await writeDb(db);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
     const profileMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/profile$/);
     if (req.method === "PUT" && profileMatch) {
       const db = await readDbWithUsers();

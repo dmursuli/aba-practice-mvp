@@ -1,4 +1,4 @@
-import { createAuditEvent, createClient, createSession, createUser, deleteClientDocument, deleteSession, getAuditLog, getCurrentUser, getData, getPracticeBackup, getUsers, login, logout, restorePracticeBackup, updateClientPlan, updateClientProfile, updateNote, updateUser, uploadClientDocument } from "./api.js";
+import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, getAuditLog, getCurrentUser, getData, getPracticeBackup, getUsers, login, logout, restorePracticeBackup, updateClientPlan, updateClientProfile, updateNote, updateUser, uploadClientDocument } from "./api.js";
 import { drawLineChart } from "./charts.js";
 import { generateSoapNote } from "./soap.js";
 
@@ -55,6 +55,7 @@ const userManagementMessage = document.querySelector("#user-management-message")
 const refreshUsersButton = document.querySelector("#refresh-users");
 const form = document.querySelector("#session-form");
 const clientProfileForm = document.querySelector("#client-profile-form");
+const deleteClientButton = document.querySelector("#delete-client-button");
 const clientDocumentForm = document.querySelector("#client-document-form");
 const newClientForm = document.querySelector("#new-client-form");
 const intakeForm = document.querySelector("#intake-form");
@@ -318,6 +319,7 @@ function bindEvents() {
   });
   form.addEventListener("submit", handleSubmit);
   clientProfileForm.addEventListener("submit", handleClientProfileSubmit);
+  deleteClientButton.addEventListener("click", handleDeleteClient);
   clientDocumentForm.addEventListener("submit", handleClientDocumentSubmit);
   clientDocumentList.addEventListener("click", handleClientDocumentClick);
   exportClientPackageButton.addEventListener("click", handleExportClientPackage);
@@ -481,6 +483,10 @@ function populateSelect(select, items, selected = "") {
     `<option value="${item.id}">${item.name}${item.status === "archived" ? " (archived)" : ""}</option>`
   )).join("");
   if (selected) select.value = selected;
+}
+
+function workflowClients() {
+  return state.clients.filter((client) => client.status !== "archived");
 }
 
 function setActiveClient(clientId, { resetSession = true } = {}) {
@@ -713,6 +719,27 @@ async function handleClientProfileSubmit(event) {
     clientSelect.value = updated.id;
     clientProfileMessage.textContent = "Client profile saved.";
     render();
+  } catch (error) {
+    clientProfileMessage.textContent = error.message;
+  }
+}
+
+async function handleDeleteClient() {
+  const client = currentClient();
+  if (!client) return;
+  const sessionCount = state.sessions.filter((session) => session.clientId === client.id).length;
+  const confirmMessage = `Delete ${client.name}? This will also remove ${sessionCount} session${sessionCount === 1 ? "" : "s"} and any uploaded documents for this client.`;
+  if (!window.confirm(confirmMessage)) return;
+
+  clientProfileMessage.textContent = "";
+  try {
+    await deleteClient(client.id);
+    await refreshData();
+    state.activeClientId = workflowClients()[0]?.id || state.clients[0]?.id || "";
+    state.selectedSessionId = null;
+    resetRows();
+    render();
+    clientProfileMessage.textContent = `${client.name} deleted.`;
   } catch (error) {
     clientProfileMessage.textContent = error.message;
   }
@@ -1100,6 +1127,8 @@ function syncClientProfileForm() {
   clientProfileForm.querySelectorAll("input, select, textarea, button").forEach((field) => {
     field.disabled = !client;
   });
+  deleteClientButton.classList.toggle("hidden", !canEditAdmin());
+  deleteClientButton.disabled = !client || !canEditAdmin();
   if (!client) return;
   managementClientSelect.value = client.id;
   clientProfileForm.elements.status.value = client.status === "archived" ? "archived" : "active";
@@ -1392,14 +1421,18 @@ function resetRows() {
 }
 
 function render() {
-  const selectedClientId = state.activeClientId || workspaceClientSelect.value || clientSelect.value || state.clients[0]?.id || "";
+  const availableClients = workflowClients();
+  const selectedClientId = availableClients.find((client) => client.id === state.activeClientId)?.id
+    || availableClients[0]?.id
+    || state.clients[0]?.id
+    || "";
   state.activeClientId = selectedClientId;
-  populateSelect(workspaceClientSelect, state.clients, selectedClientId);
-  populateSelect(clientSelect, state.clients, selectedClientId);
+  populateSelect(workspaceClientSelect, availableClients, selectedClientId);
+  populateSelect(clientSelect, availableClients, selectedClientId);
   populateSelect(managementClientSelect, state.clients, selectedClientId);
-  populateSelect(bcbaClientSelect, state.clients, selectedClientId);
-  populateSelect(parentClientSelect, state.clients, selectedClientId);
-  populateSelect(intakeClientSelect, state.clients, selectedClientId);
+  populateSelect(bcbaClientSelect, availableClients, selectedClientId);
+  populateSelect(parentClientSelect, availableClients, selectedClientId);
+  populateSelect(intakeClientSelect, availableClients, selectedClientId);
   populateDomainSelect(addProgramForm.elements.programDomain, addProgramForm.elements.programDomain.value || clientDomains()[0]);
   syncSettingFromClient();
   restoreSessionDraft();
@@ -3466,7 +3499,9 @@ async function handleFinalize() {
 }
 
 function currentClient() {
-  return state.clients.find((client) => client.id === state.activeClientId) || state.clients[0];
+  return state.clients.find((client) => client.id === state.activeClientId)
+    || workflowClients()[0]
+    || state.clients[0];
 }
 
 function currentClientProfilePayload(client = currentClient()) {
