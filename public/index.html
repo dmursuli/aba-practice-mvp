@@ -911,12 +911,6 @@
           <h2 id="soap-title">SOAP note</h2>
         </div>
         <div id="soap-client-summary" class="summary-strip"></div>
-        <details class="supervision-note-panel" id="supervision-note-panel">
-          <summary id="note-97155-title">Client-wide 97155 treatment plan note</summary>
-          <p class="muted">This is the standing protocol-modification note for the client, not the selected session note.</p>
-          <textarea id="note-97155" class="soap-editor note-97155-editor" rows="8" aria-label="Editable 97155 note"></textarea>
-          <p id="note-97155-status" class="form-message" role="status"></p>
-        </details>
         <div class="block-heading">
           <h3 id="selected-soap-note-title">Selected session note</h3>
           <div class="button-row">
@@ -1388,6 +1382,12 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
         </section>
         <p class="form-message" id="plan-message" role="status"></p>
         <button type="button" class="primary-button" id="generate-97155-note">Generate 97155 note</button>
+        <section class="supervision-note-panel">
+          <h3 id="note-97155-title">97155 treatment plan note</h3>
+          <p class="muted">This protocol-modification note belongs to treatment planning rather than an individual session.</p>
+          <textarea id="note-97155" class="soap-editor note-97155-editor" rows="8" aria-label="Editable 97155 note"></textarea>
+          <p id="note-97155-status" class="form-message" role="status"></p>
+        </section>
       </section>
     </main>
 

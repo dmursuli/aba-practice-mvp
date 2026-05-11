@@ -108,7 +108,6 @@ const addProgramForm = document.querySelector("#add-program-form");
 const addDomainButton = document.querySelector("#add-domain");
 const note97155Editor = document.querySelector("#note-97155");
 const note97155Status = document.querySelector("#note-97155-status");
-const supervisionNotePanel = document.querySelector("#supervision-note-panel");
 const generate97155Button = document.querySelector("#generate-97155-note");
 const planMessage = document.querySelector("#plan-message");
 const parentMessage = document.querySelector("#parent-message");
@@ -2604,7 +2603,7 @@ async function handleGenerate97155Note() {
   note97155Editor.value = note;
   await savePlan(clientPrograms(), clientBehaviors(), null, note);
   note97155Status.textContent = "97155 note generated.";
-  planMessage.textContent = "97155 note generated. View or edit it under SOAP Notes.";
+  planMessage.textContent = "97155 note generated. Review or edit it below.";
 }
 
 async function handleSave97155Note() {
@@ -2615,7 +2614,6 @@ async function handleSave97155Note() {
 function render97155Note() {
   note97155Editor.value = currentClient()?.note97155 || "";
   note97155Status.textContent = "";
-  if (supervisionNotePanel) supervisionNotePanel.open = false;
 }
 
 function renderRbtFidelityRows() {
