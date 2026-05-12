@@ -1153,7 +1153,9 @@ function sanitizeClientProfile(payload) {
     },
     masteryCriteria: {
       thresholdPercent: sanitizeNumber(payload.masteryThresholdPercent, 90, 1, 100),
-      consecutiveSessions: sanitizeNumber(payload.masteryConsecutiveSessions, 2, 1, 10)
+      consecutiveSessions: sanitizeNumber(payload.masteryConsecutiveSessions, 2, 1, 10),
+      stagnantConsecutiveSessions: sanitizeNumber(payload.stagnantConsecutiveSessions, 3, 2, 10),
+      stagnantMinimumGain: sanitizeNumber(payload.stagnantMinimumGain, 5, 1, 50)
     },
     parentTrainingGoals: sanitizeParentGoals(payload.parentTrainingGoals || []),
     intakeInterview: sanitizeIntakeInterview(payload.intakeInterview || {}),

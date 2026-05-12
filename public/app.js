@@ -949,6 +949,8 @@ function readClientProfileForm() {
     profileNotes: values.get("profileNotes"),
     masteryThresholdPercent: values.get("masteryThresholdPercent"),
     masteryConsecutiveSessions: values.get("masteryConsecutiveSessions"),
+    stagnantConsecutiveSessions: values.get("stagnantConsecutiveSessions"),
+    stagnantMinimumGain: values.get("stagnantMinimumGain"),
     authorizationNumber: values.get("authorizationNumber"),
     funder: values.get("funder"),
     authorizationStart: values.get("authorizationStart"),
@@ -1144,6 +1146,8 @@ function syncClientProfileForm() {
   clientProfileForm.elements.profileNotes.value = client.profile?.notes || client.profileNotes || "";
   clientProfileForm.elements.masteryThresholdPercent.value = client.profile?.masteryCriteria?.thresholdPercent || 90;
   clientProfileForm.elements.masteryConsecutiveSessions.value = client.profile?.masteryCriteria?.consecutiveSessions || 2;
+  clientProfileForm.elements.stagnantConsecutiveSessions.value = client.profile?.masteryCriteria?.stagnantConsecutiveSessions || 3;
+  clientProfileForm.elements.stagnantMinimumGain.value = client.profile?.masteryCriteria?.stagnantMinimumGain || 5;
   clientProfileForm.elements.authorizationNumber.value = client.profile?.authorization?.number || "";
   clientProfileForm.elements.funder.value = client.profile?.authorization?.funder || "";
   clientProfileForm.elements.authorizationStart.value = client.profile?.authorization?.startDate || "";
@@ -1487,7 +1491,9 @@ function currentParentTrainingGoals() {
 function currentMasteryCriteria() {
   return {
     thresholdPercent: Number(currentClient()?.profile?.masteryCriteria?.thresholdPercent || 90),
-    consecutiveSessions: Number(currentClient()?.profile?.masteryCriteria?.consecutiveSessions || 2)
+    consecutiveSessions: Number(currentClient()?.profile?.masteryCriteria?.consecutiveSessions || 2),
+    stagnantConsecutiveSessions: Number(currentClient()?.profile?.masteryCriteria?.stagnantConsecutiveSessions || 3),
+    stagnantMinimumGain: Number(currentClient()?.profile?.masteryCriteria?.stagnantMinimumGain || 5)
   };
 }
 
@@ -1567,7 +1573,13 @@ function masteryReviewForTarget(programId, targetId) {
     });
 
   if (qualifyingSessions.length < criteria.consecutiveSessions) {
-    return { state: "none", threshold: criteria.thresholdPercent, consecutiveSessions: criteria.consecutiveSessions, matchedDates: [], previewScores: [] };
+    return stagnantReviewForTarget(criteria, qualifyingSessions, {
+      state: "none",
+      threshold: criteria.thresholdPercent,
+      consecutiveSessions: criteria.consecutiveSessions,
+      matchedDates: [],
+      previewScores: []
+    });
   }
 
   const recentSessions = qualifyingSessions.slice(0, criteria.consecutiveSessions);
@@ -1575,13 +1587,40 @@ function masteryReviewForTarget(programId, targetId) {
   const eligible = scores.every((score) => score >= criteria.thresholdPercent);
   const nearThreshold = scores.every((score) => score >= Math.max(criteria.thresholdPercent - 10, 0));
   const averageScore = scores.length ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length) : 0;
-  return {
+  return stagnantReviewForTarget(criteria, qualifyingSessions, {
     state: eligible ? "ready" : (nearThreshold && averageScore >= criteria.thresholdPercent - 5 ? "close" : "none"),
     threshold: criteria.thresholdPercent,
     consecutiveSessions: criteria.consecutiveSessions,
     matchedDates: eligible ? recentSessions.map(({ session }) => session.date).reverse() : [],
     previewScores: scores.reverse()
-  };
+  });
+}
+
+function stagnantReviewForTarget(criteria, qualifyingSessions, baseResult) {
+  if (baseResult.state !== "none") return baseResult;
+  if (qualifyingSessions.length < criteria.stagnantConsecutiveSessions) return baseResult;
+
+  const stagnantSessions = qualifyingSessions.slice(0, criteria.stagnantConsecutiveSessions).reverse();
+  const stagnantScores = stagnantSessions.map(({ entry }) => Number(entry.independence || 0));
+  const newestScore = stagnantScores[stagnantScores.length - 1] || 0;
+  const oldestScore = stagnantScores[0] || 0;
+  const improvement = newestScore - oldestScore;
+  const scoreRange = Math.max(...stagnantScores) - Math.min(...stagnantScores);
+  const averageScore = Math.round(stagnantScores.reduce((sum, score) => sum + score, 0) / stagnantScores.length);
+  const stagnant = improvement < criteria.stagnantMinimumGain
+    && scoreRange <= criteria.stagnantMinimumGain
+    && averageScore < criteria.thresholdPercent - 5;
+
+  return stagnant
+    ? {
+        ...baseResult,
+        state: "stagnant",
+        stagnantConsecutiveSessions: criteria.stagnantConsecutiveSessions,
+        stagnantMinimumGain: criteria.stagnantMinimumGain,
+        matchedDates: stagnantSessions.map(({ session }) => session.date),
+        previewScores: stagnantScores
+      }
+    : baseResult;
 }
 
 function renderSummary() {
@@ -2471,6 +2510,14 @@ function renderMasteryReviewHint(program, target) {
       </div>
     `;
   }
+  if (review.state === "stagnant") {
+    return `
+      <div class="mastery-review-hint mastery-review-hint-stagnant">
+        <strong>Stagnant target</strong>
+        <span>${escapeHtml(target.name)} showed less than ${review.stagnantMinimumGain}% improvement across ${review.stagnantConsecutiveSessions} sessions (${review.previewScores.join("%, ")}%). Consider revising or placing on hold.</span>
+      </div>
+    `;
+  }
   return `
     <div class="mastery-review-hint mastery-review-hint-close">
       <strong>Close to mastery</strong>
@@ -2484,6 +2531,7 @@ function masteryReviewClass(program, target) {
   return {
     mastered: "mastered-target",
     ready: "mastery-ready-target",
+    stagnant: "stagnant-target",
     close: "mastery-close-target",
     none: ""
   }[review.state] || "";
@@ -3603,6 +3651,8 @@ function currentClientProfilePayload(client = currentClient()) {
     profileNotes: client?.profile?.notes || "",
     masteryThresholdPercent: client?.profile?.masteryCriteria?.thresholdPercent || 90,
     masteryConsecutiveSessions: client?.profile?.masteryCriteria?.consecutiveSessions || 2,
+    stagnantConsecutiveSessions: client?.profile?.masteryCriteria?.stagnantConsecutiveSessions || 3,
+    stagnantMinimumGain: client?.profile?.masteryCriteria?.stagnantMinimumGain || 5,
     authorizationNumber: client?.profile?.authorization?.number || "",
     funder: client?.profile?.authorization?.funder || "",
     authorizationStart: client?.profile?.authorization?.startDate || "",

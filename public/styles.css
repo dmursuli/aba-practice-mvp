@@ -913,6 +913,13 @@ button:focus-visible {
   background: #eef8e8;
 }
 
+.stagnant-target {
+  padding: 10px;
+  border: 1px solid #e1a9b0;
+  border-radius: 8px;
+  background: #fff0f2;
+}
+
 .mastery-review-hint {
   grid-column: 1 / -1;
   display: grid;
@@ -935,6 +942,10 @@ button:focus-visible {
 
 .mastery-review-hint-mastered strong {
   color: #45712a;
+}
+
+.mastery-review-hint-stagnant strong {
+  color: #a03d4b;
 }
 
 .chart-panel {

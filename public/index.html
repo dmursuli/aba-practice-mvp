@@ -318,6 +318,16 @@
                 <input type="number" name="masteryConsecutiveSessions" min="1" max="10" step="1" placeholder="2">
               </label>
             </div>
+            <div class="form-grid">
+              <label>
+                Flag stagnant after this many sessions
+                <input type="number" name="stagnantConsecutiveSessions" min="2" max="10" step="1" placeholder="3">
+              </label>
+              <label>
+                Minimum improvement expected across those sessions
+                <input type="number" name="stagnantMinimumGain" min="1" max="50" step="1" placeholder="5">
+              </label>
+            </div>
           </section>
           <section class="report-form-section" aria-labelledby="authorization-title">
             <div class="block-heading">
