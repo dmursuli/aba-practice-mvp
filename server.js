@@ -14,6 +14,8 @@ const host = process.env.HOST || "127.0.0.1";
 const dataStore = process.env.DATA_STORE || (process.env.DB_HOST || process.env.DATABASE_URL ? "postgres" : "json");
 const documentStore = process.env.DOCUMENT_STORE || (process.env.S3_BUCKET ? "s3" : "local");
 const sessions = new Map();
+const AGENCIES = ["Triumph ABA", "One Clinical Care"];
+const DEFAULT_AGENCY = AGENCIES[0];
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -39,7 +41,9 @@ async function readDb() {
 
 async function readDbWithUsers() {
   const db = await readDb();
-  if (ensureDefaultUsers(db)) await writeDb(db);
+  let changed = ensureDefaultUsers(db);
+  if (ensureAgencyScoping(db)) changed = true;
+  if (changed) await writeDb(db);
   return db;
 }
 
@@ -224,6 +228,7 @@ function validateSession(payload, db) {
       providerCredential: payload.providerCredential?.trim() || "",
       soapNote: payload.soapNote || "",
       finalized: false,
+      agency: normalizeAgency(client?.agency),
       createdAt: new Date().toISOString()
     }
   };
@@ -252,10 +257,18 @@ async function serveStatic(req, res) {
   }
 }
 
-async function serveUpload(req, res) {
+async function serveUpload(req, res, db, user) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const requested = decodeURIComponent(url.pathname.replace(/^\/uploads\/?/, ""));
   const safePath = normalize(requested).replace(/^(\.\.[/\\])+/, "");
+  const clientId = safePath.split(/[\\/]/)[0];
+  const client = (db.clients || []).find((item) => item.id === clientId);
+
+  if (!client || !canAccessClient(user, client)) {
+    res.writeHead(403);
+    res.end("Forbidden");
+    return;
+  }
 
   if (documentStore === "s3") {
     if (!safePath || safePath.startsWith("..")) {
@@ -299,6 +312,63 @@ async function serveUpload(req, res) {
   }
 }
 
+function ensureAgencyScoping(db) {
+  let changed = false;
+  db.users = Array.isArray(db.users) ? db.users : [];
+  db.clients = Array.isArray(db.clients) ? db.clients : [];
+  db.sessions = Array.isArray(db.sessions) ? db.sessions : [];
+  db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
+
+  db.users.forEach((user) => {
+    const normalizedAgency = normalizeAgency(user.agency);
+    if (user.agency !== normalizedAgency) {
+      user.agency = normalizedAgency;
+      changed = true;
+    }
+    if (typeof user.isMasterAdmin !== "boolean") {
+      user.isMasterAdmin = false;
+      changed = true;
+    }
+  });
+
+  if (!db.users.some((user) => isMasterAdmin(user))) {
+    const fallbackMaster = db.users.find((user) => user.role === "admin" && user.active !== false)
+      || db.users.find((user) => user.role === "admin");
+    if (fallbackMaster) {
+      fallbackMaster.isMasterAdmin = true;
+      changed = true;
+    }
+  }
+
+  db.clients.forEach((client) => {
+    const normalizedAgency = normalizeAgency(client.agency);
+    if (client.agency !== normalizedAgency) {
+      client.agency = normalizedAgency;
+      changed = true;
+    }
+  });
+
+  db.sessions.forEach((session) => {
+    const client = db.clients.find((item) => item.id === session.clientId);
+    const normalizedAgency = normalizeAgency(session.agency || client?.agency);
+    if (session.agency !== normalizedAgency) {
+      session.agency = normalizedAgency;
+      changed = true;
+    }
+  });
+
+  db.auditLog.forEach((entry) => {
+    const client = db.clients.find((item) => item.id === entry.clientId);
+    const normalizedAgency = normalizeAgency(entry.agency || client?.agency);
+    if (entry.agency !== normalizedAgency) {
+      entry.agency = normalizedAgency;
+      changed = true;
+    }
+  });
+
+  return changed;
+}
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -340,8 +410,12 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/data") {
       const db = await readDbWithUsers();
-      if (!requireAuth(req, res, db)) return;
-      sendJson(res, 200, redactDb(db));
+      const user = currentUser(req, db);
+      if (!user) {
+        sendJson(res, 401, { errors: ["Not signed in."] });
+        return;
+      }
+      sendJson(res, 200, redactDb(db, user));
       return;
     }
 
@@ -349,6 +423,10 @@ const server = createServer(async (req, res) => {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin"])) return;
       const user = currentUser(req, db);
+      if (!isMasterAdmin(user)) {
+        sendJson(res, 403, { errors: ["Master admin access is required."] });
+        return;
+      }
       logAudit(db, req, user, "practice-backup-exported", {
         details: {
           clients: (db.clients || []).length,
@@ -365,6 +443,10 @@ const server = createServer(async (req, res) => {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin"])) return;
       const user = currentUser(req, db);
+      if (!isMasterAdmin(user)) {
+        sendJson(res, 403, { errors: ["Master admin access is required."] });
+        return;
+      }
       const payload = await readBody(req);
       let restoredDb;
       try {
@@ -381,21 +463,21 @@ const server = createServer(async (req, res) => {
         }
       });
       await writeDb(restoredDb);
-      sendJson(res, 200, redactDb(restoredDb));
+      sendJson(res, 200, redactDb(restoredDb, user));
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/audit") {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin", "bcba"])) return;
-      sendJson(res, 200, { auditLog: db.auditLog || [] });
+      sendJson(res, 200, { auditLog: visibleAuditLog(db, currentUser(req, db)) });
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/users") {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin"])) return;
-      sendJson(res, 200, { users: (db.users || []).map(publicUser) });
+      sendJson(res, 200, { users: visibleUsers(db, currentUser(req, db)).map(publicUser) });
       return;
     }
 
@@ -403,10 +485,11 @@ const server = createServer(async (req, res) => {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin"])) return;
       const payload = await readBody(req);
-      const user = createUserRecord(payload, db.users || []);
+      const actor = currentUser(req, db);
+      const user = createUserRecord(payload, db.users || [], actor);
       db.users.push(user);
-      logAudit(db, req, currentUser(req, db), "user-created", {
-        details: { username: user.username, role: user.role }
+      logAudit(db, req, actor, "user-created", {
+        details: { username: user.username, role: user.role, agency: user.agency, isMasterAdmin: user.isMasterAdmin }
       });
       await writeDb(db);
       sendJson(res, 201, publicUser(user));
@@ -418,14 +501,19 @@ const server = createServer(async (req, res) => {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin"])) return;
       const payload = await readBody(req);
+      const actor = currentUser(req, db);
       const targetUser = (db.users || []).find((item) => item.id === userMatch[1]);
       if (!targetUser) {
         sendJson(res, 404, { errors: ["User not found."] });
         return;
       }
+      if (!isMasterAdmin(actor) && (isMasterAdmin(targetUser) || userAgency(targetUser) !== userAgency(actor))) {
+        sendJson(res, 403, { errors: ["You can only manage users in your agency."] });
+        return;
+      }
       const before = userAuditSnapshot(targetUser);
-      updateUserRecord(targetUser, payload);
-      logAudit(db, req, currentUser(req, db), payload.password ? "user-password-reset" : "user-updated", {
+      updateUserRecord(targetUser, payload, actor, db.users || []);
+      logAudit(db, req, actor, payload.password ? "user-password-reset" : "user-updated", {
         details: {
           username: targetUser.username,
           before,
@@ -446,6 +534,13 @@ const server = createServer(async (req, res) => {
         return;
       }
       const payload = await readBody(req);
+      if (payload.clientId) {
+        const client = db.clients.find((item) => item.id === payload.clientId);
+        if (!client || !canAccessClient(user, client)) {
+          sendJson(res, 403, { errors: ["You cannot record events for this client."] });
+          return;
+        }
+      }
       logAudit(db, req, user, payload.action || "event-recorded", {
         clientId: payload.clientId,
         details: payload.details || {}
@@ -458,7 +553,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname.startsWith("/uploads/")) {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin", "bcba", "read-only"])) return;
-      await serveUpload(req, res);
+      await serveUpload(req, res, db, currentUser(req, db));
       return;
     }
 
@@ -466,16 +561,17 @@ const server = createServer(async (req, res) => {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin"])) return;
       const payload = await readBody(req);
+      const actor = currentUser(req, db);
       const name = String(payload.name || "").trim();
       if (!name) {
         sendJson(res, 400, { errors: ["Client name is required."] });
         return;
       }
-      const client = createClientRecord(payload, db.clients || []);
+      const client = createClientRecord(payload, db.clients || [], actor);
       db.clients.push(client);
-      logAudit(db, req, currentUser(req, db), "client-created", {
+      logAudit(db, req, actor, "client-created", {
         clientId: client.id,
-        details: { name: client.name }
+        details: { name: client.name, agency: client.agency }
       });
       await writeDb(db);
       sendJson(res, 201, client);
@@ -486,9 +582,14 @@ const server = createServer(async (req, res) => {
     if (req.method === "DELETE" && clientMatch) {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin"])) return;
+      const actor = currentUser(req, db);
       const client = db.clients.find((item) => item.id === clientMatch[1]);
       if (!client) {
         sendJson(res, 404, { errors: ["Client not found."] });
+        return;
+      }
+      if (!canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
 
@@ -505,7 +606,7 @@ const server = createServer(async (req, res) => {
       db.sessions = db.sessions.filter((session) => session.clientId !== client.id);
       db.clients = db.clients.filter((item) => item.id !== client.id);
       db.auditLog = (db.auditLog || []).filter((entry) => entry.clientId !== client.id && entry.clientName !== client.name);
-      logAudit(db, req, currentUser(req, db), "client-deleted", {
+      logAudit(db, req, actor, "client-deleted", {
         details: {
           clientName: client.name,
           sessionsDeleted: removedSessions,
@@ -522,9 +623,14 @@ const server = createServer(async (req, res) => {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin", "bcba"])) return;
       const payload = await readBody(req);
+      const actor = currentUser(req, db);
       const client = db.clients.find((item) => item.id === profileMatch[1]);
       if (!client) {
         sendJson(res, 404, { errors: ["Client not found."] });
+        return;
+      }
+      if (!canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
       const name = String(payload.name || "").trim();
@@ -533,9 +639,9 @@ const server = createServer(async (req, res) => {
         return;
       }
       const before = clientProfileAuditSnapshot(client);
-      updateClientRecord(client, payload);
+      updateClientRecord(client, payload, actor);
       const after = clientProfileAuditSnapshot(client);
-      logAudit(db, req, currentUser(req, db), "client-profile-updated", {
+      logAudit(db, req, actor, "client-profile-updated", {
         clientId: client.id,
         details: {
           before,
@@ -551,15 +657,20 @@ const server = createServer(async (req, res) => {
     const documentCollectionMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/documents$/);
     if (req.method === "POST" && documentCollectionMatch) {
       const db = await readDbWithUsers();
-      if (!requireRole(req, res, db, ["admin"])) return;
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
       const payload = await readBody(req);
+      const actor = currentUser(req, db);
       const client = db.clients.find((item) => item.id === documentCollectionMatch[1]);
       if (!client) {
         sendJson(res, 404, { errors: ["Client not found."] });
         return;
       }
+      if (!canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
       const document = await saveClientDocument(client, payload);
-      logAudit(db, req, currentUser(req, db), "document-uploaded", {
+      logAudit(db, req, actor, "document-uploaded", {
         clientId: client.id,
         details: { type: document.type, fileName: document.fileName }
       });
@@ -571,10 +682,15 @@ const server = createServer(async (req, res) => {
     const documentMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/documents\/([^/]+)$/);
     if (req.method === "DELETE" && documentMatch) {
       const db = await readDbWithUsers();
-      if (!requireRole(req, res, db, ["admin"])) return;
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
       const client = db.clients.find((item) => item.id === documentMatch[1]);
       if (!client) {
         sendJson(res, 404, { errors: ["Client not found."] });
+        return;
+      }
+      if (!canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
       const documents = client.profile?.documents || [];
@@ -591,7 +707,7 @@ const server = createServer(async (req, res) => {
         await unlink(join(root, document.relativePath)).catch(() => {});
       }
       client.updatedAt = new Date().toISOString();
-      logAudit(db, req, currentUser(req, db), "document-deleted", {
+      logAudit(db, req, actor, "document-deleted", {
         clientId: client.id,
         details: { before: documentAuditSnapshot(document) }
       });
@@ -605,9 +721,14 @@ const server = createServer(async (req, res) => {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin", "bcba"])) return;
       const payload = await readBody(req);
+      const actor = currentUser(req, db);
       const client = db.clients.find((item) => item.id === planMatch[1]);
       if (!client) {
         sendJson(res, 404, { errors: ["Client not found."] });
+        return;
+      }
+      if (!canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
       const before = treatmentPlanAuditSnapshot(client);
@@ -619,7 +740,7 @@ const server = createServer(async (req, res) => {
       client.note97155 = String(payload.note97155 ?? client.note97155 ?? "");
       client.planUpdatedAt = new Date().toISOString();
       const after = treatmentPlanAuditSnapshot(client);
-      logAudit(db, req, currentUser(req, db), "treatment-plan-updated", {
+      logAudit(db, req, actor, "treatment-plan-updated", {
         clientId: client.id,
         details: {
           before: before.summary,
@@ -648,6 +769,11 @@ const server = createServer(async (req, res) => {
         sendJson(res, 403, { errors: ["RBT users can only enter 97153 sessions."] });
         return;
       }
+      const client = db.clients.find((item) => item.id === payload.clientId);
+      if (!client || !canAccessClient(user, client)) {
+        sendJson(res, 403, { errors: ["You cannot create sessions for this client."] });
+        return;
+      }
       const { errors, session } = validateSession(payload, db);
       if (errors.length) {
         sendJson(res, 400, { errors });
@@ -667,14 +793,19 @@ const server = createServer(async (req, res) => {
     if (req.method === "DELETE" && sessionMatch) {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
       const session = db.sessions.find((item) => item.id === sessionMatch[1]);
+      if (session && !canAccessAgency(actor, session.agency)) {
+        sendJson(res, 403, { errors: ["You cannot access this session."] });
+        return;
+      }
       const originalLength = db.sessions.length;
       db.sessions = db.sessions.filter((item) => item.id !== sessionMatch[1]);
       if (db.sessions.length === originalLength) {
         sendJson(res, 404, { errors: ["Session not found."] });
         return;
       }
-      logAudit(db, req, currentUser(req, db), "session-deleted", {
+      logAudit(db, req, actor, "session-deleted", {
         clientId: session?.clientId,
         details: { serviceType: session?.serviceType || "97153", date: session?.date || "" }
       });
@@ -688,16 +819,21 @@ const server = createServer(async (req, res) => {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin", "bcba", "rbt"])) return;
       const payload = await readBody(req);
+      const actor = currentUser(req, db);
       const session = db.sessions.find((item) => item.id === noteMatch[1]);
       if (!session) {
         sendJson(res, 404, { errors: ["Session not found."] });
+        return;
+      }
+      if (!canAccessAgency(actor, session.agency)) {
+        sendJson(res, 403, { errors: ["You cannot access this session."] });
         return;
       }
       const before = soapNoteAuditSnapshot(session);
       session.soapNote = String(payload.soapNote || "");
       session.finalized = Boolean(payload.finalized);
       session.updatedAt = new Date().toISOString();
-      logAudit(db, req, currentUser(req, db), session.finalized ? "soap-note-finalized" : "soap-note-updated", {
+      logAudit(db, req, actor, session.finalized ? "soap-note-finalized" : "soap-note-updated", {
         clientId: session.clientId,
         details: {
           sessionId: session.id,
@@ -742,17 +878,23 @@ function defaultUser(username, name, role, password) {
     username,
     name,
     role,
+    agency: DEFAULT_AGENCY,
+    isMasterAdmin: role === "admin",
     passwordHash: hashPassword(password),
     active: true,
     createdAt: new Date().toISOString()
   };
 }
 
-function createUserRecord(payload, existingUsers) {
+function createUserRecord(payload, existingUsers, actor = null) {
   const username = String(payload.username || "").trim().toLowerCase();
   const name = text(payload.name);
   const password = String(payload.password || "");
   const role = validRole(payload.role);
+  const agency = isMasterAdmin(actor)
+    ? normalizeAgency(payload.agency, actor?.agency)
+    : normalizeAgency(actor?.agency || payload.agency);
+  const allowMasterAdmin = isMasterAdmin(actor) && role === "admin" && Boolean(payload.isMasterAdmin);
   if (!username) throw new Error("Username is required.");
   if (!name) throw new Error("Name is required.");
   if (password.length < 6) throw new Error("Password must be at least 6 characters.");
@@ -764,18 +906,28 @@ function createUserRecord(payload, existingUsers) {
     username,
     name,
     role,
+    agency,
+    isMasterAdmin: allowMasterAdmin,
     passwordHash: hashPassword(password),
     active: true,
     createdAt: new Date().toISOString()
   };
 }
 
-function updateUserRecord(user, payload) {
+function updateUserRecord(user, payload, actor, existingUsers = []) {
   const name = text(payload.name);
   if (!name) throw new Error("Name is required.");
   user.name = name;
   user.role = validRole(payload.role);
+  user.agency = isMasterAdmin(actor)
+    ? normalizeAgency(payload.agency, user.agency)
+    : normalizeAgency(actor?.agency || user.agency);
+  user.isMasterAdmin = user.role === "admin" && isMasterAdmin(actor) ? Boolean(payload.isMasterAdmin) : false;
   user.active = Boolean(payload.active);
+  if (!existingUsers.some((item) => item.id !== user.id && item.role === "admin" && item.active !== false && item.isMasterAdmin)
+    && !(user.role === "admin" && user.active !== false && user.isMasterAdmin)) {
+    throw new Error("At least one active master admin is required.");
+  }
   if (payload.password) {
     const password = String(payload.password);
     if (password.length < 6) throw new Error("Password must be at least 6 characters.");
@@ -787,6 +939,11 @@ function updateUserRecord(user, payload) {
 
 function validRole(role) {
   return ["admin", "bcba", "rbt", "read-only"].includes(role) ? role : "rbt";
+}
+
+function normalizeAgency(value, fallback = DEFAULT_AGENCY) {
+  const agency = text(value);
+  return AGENCIES.includes(agency) ? agency : fallback;
 }
 
 function hashPassword(password) {
@@ -812,6 +969,14 @@ function currentUser(req, db) {
     return null;
   }
   return user;
+}
+
+function isMasterAdmin(user) {
+  return user?.role === "admin" && user?.isMasterAdmin === true;
+}
+
+function userAgency(user) {
+  return normalizeAgency(user?.agency);
 }
 
 function sessionToken(req) {
@@ -845,12 +1010,48 @@ function requireRole(req, res, db, roles) {
   return true;
 }
 
+function canAccessAgency(user, agency) {
+  return Boolean(user) && (isMasterAdmin(user) || userAgency(user) === normalizeAgency(agency));
+}
+
+function canAccessClient(user, client) {
+  return Boolean(client) && canAccessAgency(user, client.agency);
+}
+
+function visibleClients(db, user) {
+  return isMasterAdmin(user)
+    ? (db.clients || [])
+    : (db.clients || []).filter((client) => canAccessClient(user, client));
+}
+
+function visibleSessions(db, user) {
+  const clientIds = new Set(visibleClients(db, user).map((client) => client.id));
+  return (db.sessions || []).filter((session) => clientIds.has(session.clientId));
+}
+
+function visibleUsers(db, user) {
+  return isMasterAdmin(user)
+    ? (db.users || [])
+    : (db.users || []).filter((candidate) => !isMasterAdmin(candidate) && userAgency(candidate) === userAgency(user));
+}
+
+function visibleAuditLog(db, user) {
+  if (isMasterAdmin(user)) return db.auditLog || [];
+  const clientIds = new Set(visibleClients(db, user).map((client) => client.id));
+  return (db.auditLog || []).filter((entry) => {
+    if (entry.clientId) return clientIds.has(entry.clientId);
+    return normalizeAgency(entry.agency) === userAgency(user);
+  });
+}
+
 function publicUser(user) {
   return {
     id: user.id,
     username: user.username,
     name: user.name,
     role: user.role,
+    agency: normalizeAgency(user.agency),
+    isMasterAdmin: isMasterAdmin(user),
     active: user.active !== false,
     createdAt: user.createdAt || "",
     updatedAt: user.updatedAt || "",
@@ -858,9 +1059,13 @@ function publicUser(user) {
   };
 }
 
-function redactDb(db) {
+function redactDb(db, user) {
   const { users, auditLog, ...publicDb } = db;
-  return publicDb;
+  return {
+    ...publicDb,
+    clients: visibleClients(db, user),
+    sessions: visibleSessions(db, user)
+  };
 }
 
 function practiceBackupPayload(db) {
@@ -908,6 +1113,7 @@ function logAudit(db, req, user, action, options = {}) {
     action: String(action || "event-recorded"),
     clientId: options.clientId || "",
     clientName: client?.name || "",
+    agency: normalizeAgency(options.agency || client?.agency || user?.agency),
     details: cleanAuditDetails(options.details || {}),
     ip: req.socket.remoteAddress || ""
   });
@@ -927,6 +1133,8 @@ function userAuditSnapshot(user) {
     name: user.name || "",
     username: user.username || "",
     role: user.role || "",
+    agency: normalizeAgency(user.agency),
+    isMasterAdmin: isMasterAdmin(user),
     active: user.active !== false
   };
 }
@@ -934,6 +1142,7 @@ function userAuditSnapshot(user) {
 function clientProfileAuditSnapshot(client) {
   return {
     name: client.name || "",
+    agency: normalizeAgency(client.agency),
     dob: client.dob || "",
     defaultSetting: client.defaultSetting || "",
     status: client.status || "active",
@@ -1087,11 +1296,14 @@ function objectivesChanged(beforePrograms, afterPrograms) {
   });
 }
 
-function createClientRecord(payload, existingClients) {
+function createClientRecord(payload, existingClients, actor = null) {
   const name = text(payload.name);
   return {
     id: uniqueSlug(name, "client", existingClients.map((client) => client.id)),
     name,
+    agency: isMasterAdmin(actor)
+      ? normalizeAgency(payload.agency, actor?.agency)
+      : normalizeAgency(actor?.agency || payload.agency),
     dob: text(payload.dob),
     defaultSetting: text(payload.defaultSetting) || "Clinic",
     status: "active",
@@ -1112,8 +1324,11 @@ function createClientRecord(payload, existingClients) {
   };
 }
 
-function updateClientRecord(client, payload) {
+function updateClientRecord(client, payload, actor = null) {
   client.name = text(payload.name);
+  client.agency = canEditClientAgency(actor)
+    ? normalizeAgency(payload.agency, client.agency)
+    : normalizeAgency(client.agency);
   client.dob = text(payload.dob);
   client.defaultSetting = text(payload.defaultSetting) || "Clinic";
   client.status = payload.status === "archived" ? "archived" : "active";
@@ -1122,6 +1337,10 @@ function updateClientRecord(client, payload) {
     documents: client.profile?.documents || []
   };
   client.updatedAt = new Date().toISOString();
+}
+
+function canEditClientAgency(user) {
+  return user?.role === "admin";
 }
 
 function sanitizeClientProfile(payload) {

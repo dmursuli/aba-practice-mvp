@@ -220,10 +220,21 @@
               </select>
             </label>
             <label>
+              Agency
+              <select name="agency" id="new-user-agency">
+                <option value="Triumph ABA">Triumph ABA</option>
+                <option value="One Clinical Care">One Clinical Care</option>
+              </select>
+            </label>
+            <label>
               Temporary password
               <input type="password" name="password" autocomplete="new-password" required>
             </label>
           </div>
+          <label class="hidden" data-master-admin-only>
+            <input type="checkbox" name="isMasterAdmin" value="true">
+            Master admin
+          </label>
           <p class="form-message" id="new-user-message" role="status"></p>
         </form>
 
@@ -244,7 +255,7 @@
           <p class="eyebrow">Practice setup</p>
           <h2 id="client-management-title">Client management</h2>
         </div>
-        <div class="button-row">
+        <div class="button-row" id="client-admin-toolbar">
           <button type="button" class="secondary-button" id="export-client-package">Export client package</button>
           <button type="button" class="secondary-button" id="download-practice-backup">Download practice backup</button>
           <button type="button" class="secondary-button danger-button" id="restore-practice-backup">Restore practice backup</button>
@@ -274,6 +285,13 @@
             <label>
               Client name
               <input type="text" name="name" required>
+            </label>
+            <label class="hidden" data-admin-only>
+              Agency
+              <select name="agency" id="client-agency-select">
+                <option value="Triumph ABA">Triumph ABA</option>
+                <option value="One Clinical Care">One Clinical Care</option>
+              </select>
             </label>
             <label>
               Date of birth
@@ -458,7 +476,7 @@
           <div id="client-document-list" class="document-list"></div>
         </section>
 
-        <form id="new-client-form" class="session-form">
+        <form id="new-client-form" class="session-form" data-admin-only>
           <div class="block-heading">
             <h3>Add new client</h3>
             <button type="submit" class="primary-button">Create client</button>
@@ -467,6 +485,13 @@
             <label>
               Client name
               <input type="text" name="name" placeholder="Client name" required>
+            </label>
+            <label>
+              Agency
+              <select name="agency" id="new-client-agency">
+                <option value="Triumph ABA">Triumph ABA</option>
+                <option value="One Clinical Care">One Clinical Care</option>
+              </select>
             </label>
             <label>
               Date of birth

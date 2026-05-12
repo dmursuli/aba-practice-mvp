@@ -19,7 +19,7 @@ const state = {
 
 const roleViews = {
   admin: ["clients", "users", "session", "intake", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
-  bcba: ["session", "intake", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
+  bcba: ["clients", "session", "intake", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
   rbt: ["session", "graphs", "soap"],
   "read-only": ["graphs", "report", "soap"]
 };
@@ -41,6 +41,8 @@ const defaultRbtPerformanceAreas = [
   { id: "engagement", label: "Maintained client engagement and instructional pace" },
   { id: "professional", label: "Responded to feedback and communicated professionally" }
 ];
+
+const agencyOptions = ["Triumph ABA", "One Clinical Care"];
 
 const loginScreen = document.querySelector("#login-screen");
 const loginForm = document.querySelector("#login-form");
@@ -99,6 +101,7 @@ const clientManagementSummary = document.querySelector("#client-management-summa
 const clientProfileMessage = document.querySelector("#client-profile-message");
 const clientDocumentMessage = document.querySelector("#client-document-message");
 const clientDocumentList = document.querySelector("#client-document-list");
+const clientAdminToolbar = document.querySelector("#client-admin-toolbar");
 const exportClientPackageButton = document.querySelector("#export-client-package");
 const downloadPracticeBackupButton = document.querySelector("#download-practice-backup");
 const restorePracticeBackupButton = document.querySelector("#restore-practice-backup");
@@ -285,6 +288,7 @@ function bindEvents() {
   loginForm.addEventListener("submit", handleLogin);
   logoutButton.addEventListener("click", handleLogout);
   newUserForm.addEventListener("submit", handleCreateUser);
+  newUserForm.elements.role?.addEventListener("change", syncUserRoleControls);
   userList.addEventListener("click", handleUserListClick);
   userList.addEventListener("change", handleUserListChange);
   refreshUsersButton.addEventListener("click", refreshUsers);
@@ -406,9 +410,12 @@ async function handleCreateUser(event) {
       name: values.get("name"),
       username: values.get("username"),
       role: values.get("role"),
-      password: values.get("password")
+      password: values.get("password"),
+      agency: values.get("agency"),
+      isMasterAdmin: values.get("isMasterAdmin") === "true"
     });
     newUserForm.reset();
+    syncAdminAgencyControls();
     newUserMessage.textContent = "User created.";
     await refreshUsers(false);
     await refreshAuditLog(false);
@@ -420,6 +427,9 @@ async function handleCreateUser(event) {
 async function handleUserListChange(event) {
   const row = event.target.closest("[data-user-row]");
   if (!row || !event.target.matches("[data-user-field]")) return;
+  if (event.target.matches('[data-user-field="role"]')) {
+    syncUserRowRoleControls(row);
+  }
   await saveUserRow(row, false);
 }
 
@@ -442,6 +452,8 @@ async function saveUserRow(row, resetPassword, password = "") {
     await updateUser(row.dataset.userRow, {
       name: row.querySelector('[data-user-field="name"]').value,
       role: row.querySelector('[data-user-field="role"]').value,
+      agency: row.querySelector('[data-user-field="agency"]')?.value,
+      isMasterAdmin: row.querySelector('[data-user-field="isMasterAdmin"]')?.checked || false,
       active: row.querySelector('[data-user-field="active"]').value === "true",
       password: resetPassword ? password : ""
     });
@@ -461,7 +473,9 @@ function showLogin() {
 function showApp() {
   loginScreen.classList.add("hidden");
   appRoot.classList.remove("hidden");
-  currentUserLabel.textContent = `${state.currentUser?.name || "User"} (${roleLabel(state.currentUser?.role)})`;
+  const agencySuffix = state.currentUser?.agency ? ` - ${state.currentUser.agency}` : "";
+  const masterSuffix = state.currentUser?.isMasterAdmin ? ", Master admin" : "";
+  currentUserLabel.textContent = `${state.currentUser?.name || "User"} (${roleLabel(state.currentUser?.role)}${masterSuffix}${agencySuffix})`;
   applyRoleAccess();
 }
 
@@ -480,9 +494,15 @@ function setDefaultDate() {
 
 function populateSelect(select, items, selected = "") {
   select.innerHTML = items.map((item) => (
-    `<option value="${item.id}">${item.name}${item.status === "archived" ? " (archived)" : ""}</option>`
+    `<option value="${item.id}">${clientOptionLabel(item)}</option>`
   )).join("");
   if (selected) select.value = selected;
+}
+
+function clientOptionLabel(client) {
+  const archivedSuffix = client.status === "archived" ? " (archived)" : "";
+  const agencySuffix = state.currentUser?.isMasterAdmin && client.agency ? ` - ${client.agency}` : "";
+  return `${client.name}${agencySuffix}${archivedSuffix}`;
 }
 
 function workflowClients() {
@@ -753,11 +773,13 @@ async function handleNewClientSubmit(event) {
   try {
     const client = await createClient({
       name: values.get("name"),
+      agency: values.get("agency"),
       dob: values.get("dob"),
       defaultSetting: values.get("defaultSetting"),
       diagnosis: values.get("diagnosis")
     });
     newClientForm.reset();
+    syncAdminAgencyControls();
     await refreshData();
     state.activeClientId = client.id;
     setActiveClient(client.id);
@@ -939,6 +961,7 @@ function readClientProfileForm() {
   const values = new FormData(clientProfileForm);
   return {
     name: values.get("name"),
+    agency: values.get("agency"),
     dob: values.get("dob"),
     defaultSetting: values.get("defaultSetting"),
     status: values.get("status"),
@@ -1133,10 +1156,16 @@ function syncClientProfileForm() {
   });
   deleteClientButton.classList.toggle("hidden", !canEditAdmin());
   deleteClientButton.disabled = !client || !canEditAdmin();
+  clientAdminToolbar?.classList.toggle("hidden", !canEditAdmin());
+  document.querySelectorAll("[data-admin-only]").forEach((section) => {
+    section.classList.toggle("hidden", !canEditAdmin());
+  });
+  syncAdminAgencyControls();
   if (!client) return;
   managementClientSelect.value = client.id;
   clientProfileForm.elements.status.value = client.status === "archived" ? "archived" : "active";
   clientProfileForm.elements.name.value = client.name || "";
+  if (clientProfileForm.elements.agency) clientProfileForm.elements.agency.value = client.agency || state.currentUser?.agency || agencyOptions[0];
   clientProfileForm.elements.dob.value = client.dob || "";
   clientProfileForm.elements.defaultSetting.value = client.defaultSetting || "";
   clientProfileForm.elements.caregivers.value = client.profile?.caregivers || client.caregivers || "";
@@ -1539,6 +1568,10 @@ function canEditClinical() {
   return ["admin", "bcba"].includes(state.currentUser?.role);
 }
 
+function canManageAcrossAgencies() {
+  return canEditAdmin() && Boolean(state.currentUser?.isMasterAdmin);
+}
+
 function roleLabel(role) {
   return {
     admin: "Admin",
@@ -1733,7 +1766,7 @@ function renderClientManagementSummary() {
   clientManagementSummary.innerHTML = `
     <div><strong>${state.clients.length}</strong><span>Total clients</span></div>
     <div><strong>${activeClients} / ${archivedClients}</strong><span>Active / archived</span></div>
-    <div><strong>${client?.name || "None"}</strong><span>Selected client</span></div>
+    <div><strong>${client?.name || "None"}</strong><span>${client?.agency || "Selected client"}</span></div>
   `;
 }
 
@@ -1766,25 +1799,81 @@ function renderUsers() {
         </select>
       </label>
       <label>
+        Agency
+        <select data-user-field="agency" ${canManageAcrossAgencies() ? "" : "disabled"}>
+          ${agencyOptions.map((agency) => `
+            <option value="${escapeHtml(agency)}" ${user.agency === agency ? "selected" : ""}>${escapeHtml(agency)}</option>
+          `).join("")}
+        </select>
+      </label>
+      <label>
         Status
         <select data-user-field="active">
           <option value="true" ${user.active ? "selected" : ""}>Active</option>
           <option value="false" ${!user.active ? "selected" : ""}>Inactive</option>
         </select>
       </label>
+      ${canManageAcrossAgencies() ? `
+        <label>
+          Master admin
+          <input type="checkbox" data-user-field="isMasterAdmin" value="true" ${user.isMasterAdmin ? "checked" : ""} ${user.role !== "admin" ? "disabled" : ""}>
+        </label>
+      ` : ""}
       <div class="button-row">
         <button type="button" class="secondary-button" data-save-user>Save</button>
         <button type="button" class="delete-button" data-reset-password>Reset password</button>
       </div>
     </div>
   `).join("");
+  userList.querySelectorAll("[data-user-row]").forEach((row) => syncUserRowRoleControls(row));
+}
+
+function syncAdminAgencyControls() {
+  const masterOnlyVisible = canManageAcrossAgencies();
+  document.querySelectorAll("[data-master-admin-only]").forEach((section) => {
+    section.classList.toggle("hidden", !masterOnlyVisible);
+  });
+  if (newUserForm?.elements.agency) {
+    newUserForm.elements.agency.value = state.currentUser?.agency || agencyOptions[0];
+    newUserForm.elements.agency.disabled = !masterOnlyVisible;
+  }
+  if (clientProfileForm?.elements.agency) {
+    clientProfileForm.elements.agency.disabled = !canEditAdmin() || !masterOnlyVisible;
+  }
+  if (newClientForm?.elements.agency) {
+    newClientForm.elements.agency.value = state.currentUser?.agency || agencyOptions[0];
+    newClientForm.elements.agency.disabled = !masterOnlyVisible;
+  }
+  if (newUserForm?.elements.isMasterAdmin) {
+    newUserForm.elements.isMasterAdmin.checked = false;
+  }
+  syncUserRoleControls();
+}
+
+function syncUserRoleControls() {
+  if (!newUserForm?.elements.role) return;
+  const isAdminRole = newUserForm.elements.role.value === "admin";
+  const masterField = newUserForm.elements.isMasterAdmin;
+  if (masterField) {
+    masterField.disabled = !canManageAcrossAgencies() || !isAdminRole;
+    if (!isAdminRole) masterField.checked = false;
+  }
+}
+
+function syncUserRowRoleControls(row) {
+  const roleField = row.querySelector('[data-user-field="role"]');
+  const masterField = row.querySelector('[data-user-field="isMasterAdmin"]');
+  if (!roleField || !masterField) return;
+  const isAdminRole = roleField.value === "admin";
+  masterField.disabled = !isAdminRole;
+  if (!isAdminRole) masterField.checked = false;
 }
 
 function renderClientDocuments() {
   const client = currentClient();
   const documents = client?.profile?.documents || [];
   clientDocumentForm.querySelectorAll("input, select, textarea, button").forEach((field) => {
-    field.disabled = !client;
+    field.disabled = !client || !canEditClinical();
   });
   if (!client) {
     clientDocumentList.innerHTML = '<p class="muted">Select a client to upload documents.</p>';
@@ -1803,7 +1892,7 @@ function renderClientDocuments() {
       </div>
       <div class="button-row">
         <a class="secondary-link" href="${escapeHtml(document.url)}" target="_blank" rel="noopener">Open</a>
-        <button type="button" class="delete-button" data-delete-document="${escapeHtml(document.id)}">Delete</button>
+        ${canEditClinical() ? `<button type="button" class="delete-button" data-delete-document="${escapeHtml(document.id)}">Delete</button>` : ""}
       </div>
     </div>
   `).join("");
@@ -3641,6 +3730,7 @@ function currentClient() {
 function currentClientProfilePayload(client = currentClient()) {
   return {
     name: client?.name || "",
+    agency: client?.agency || state.currentUser?.agency || agencyOptions[0],
     dob: client?.dob || "",
     defaultSetting: client?.defaultSetting || "",
     status: client?.status || "active",
