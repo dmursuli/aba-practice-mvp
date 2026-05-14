@@ -738,6 +738,7 @@ const server = createServer(async (req, res) => {
       client.behaviors = sanitizeBehaviors(payload.behaviors || client.behaviors || []);
       client.rbtPerformanceAreas = sanitizeRbtPerformanceAreas(payload.rbtPerformanceAreas || client.rbtPerformanceAreas || []);
       client.planChangeLog = sanitizePlanChangeLog(payload.planChangeLog || client.planChangeLog || []);
+      client.note97151 = String(payload.note97151 ?? client.note97151 ?? "");
       client.note97155 = String(payload.note97155 ?? client.note97155 ?? "");
       client.planUpdatedAt = new Date().toISOString();
       const after = treatmentPlanAuditSnapshot(client);
@@ -1318,6 +1319,7 @@ function createClientRecord(payload, existingClients, actor = null) {
     programs: [],
     behaviors: [],
     planChangeLog: [],
+    note97151: "",
     note97155: "",
     rbtPerformanceAreas: [],
     createdAt: new Date().toISOString(),

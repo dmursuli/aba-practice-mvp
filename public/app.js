@@ -96,6 +96,12 @@ const printFunderReportButton = document.querySelector("#print-funder-report");
 const downloadFunderTextButton = document.querySelector("#download-funder-text");
 const downloadFunderHtmlButton = document.querySelector("#download-funder-html");
 const funderExportStatus = document.querySelector("#funder-export-status");
+const note97151Editor = document.querySelector("#note-97151");
+const note97151Status = document.querySelector("#note-97151-status");
+const generate97151Button = document.querySelector("#generate-97151-note");
+const planNote97151Editor = document.querySelector("#plan-note-97151");
+const planNote97151Status = document.querySelector("#plan-note-97151-status");
+const generatePlan97151Button = document.querySelector("#generate-plan-97151-note");
 const soapClientSummary = document.querySelector("#soap-client-summary");
 const soapCodeLabel = document.querySelector("#soap-code-label");
 const planReview = document.querySelector("#plan-review");
@@ -358,6 +364,10 @@ function bindEvents() {
   printFunderReportButton.addEventListener("click", () => window.print());
   downloadFunderTextButton.addEventListener("click", () => handleDownloadFunderReport("txt"));
   downloadFunderHtmlButton.addEventListener("click", () => handleDownloadFunderReport("html"));
+  generate97151Button.addEventListener("click", handleGenerate97151Note);
+  note97151Editor.addEventListener("blur", handleSave97151Note);
+  generatePlan97151Button.addEventListener("click", handleGenerate97151Note);
+  planNote97151Editor.addEventListener("blur", handleSave97151Note);
   generate97155Button.addEventListener("click", handleGenerate97155Note);
   note97155Editor.addEventListener("blur", handleSave97155Note);
   planReview.addEventListener("change", handlePlanStatusChange);
@@ -886,6 +896,7 @@ function handleExportClientPackage() {
     },
     sessions: currentSessions(),
     notes: {
+      note97151: client.note97151 || "",
       note97155: client.note97155 || "",
       soapNotes: currentSessions().map((session) => ({
         sessionId: session.id,
@@ -1520,6 +1531,7 @@ function render() {
   renderPlanReview();
   renderParentSummary();
   renderRbtFidelityRows();
+  render97151Note();
   render97155Note();
   renderHistory();
   renderCharts();
@@ -2459,8 +2471,8 @@ function renderPlanReview() {
   const programs = clientPrograms();
   const behaviors = clientBehaviors();
   const client = currentClient();
-  const activePrograms = programs.filter((program) => (program.status || "active") !== "mastered").length;
-  const masteredPrograms = programs.filter((program) => program.status === "mastered").length;
+  const activePrograms = programs.filter((program) => programHasPlanContentForTab(program, "active")).length;
+  const masteredPrograms = programs.filter((program) => programHasPlanContentForTab(program, "mastered")).length;
   const activeTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "active").length;
   const maintenanceTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "maintenance").length;
   const pausedTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "paused").length;
@@ -2486,11 +2498,7 @@ function renderPlanReview() {
   }
 
   renderPlanStatusTabs(programs);
-  const visiblePrograms = programs.filter((program) => (
-    state.activePlanProgramTab === "mastered"
-      ? program.status === "mastered"
-      : program.status !== "mastered"
-  ));
+  const visiblePrograms = programs.filter((program) => programHasPlanContentForTab(program, state.activePlanProgramTab));
   if (!visiblePrograms.length) {
     planDomainTabs.innerHTML = "";
     planReview.innerHTML = state.activePlanProgramTab === "mastered"
@@ -2512,7 +2520,7 @@ function renderPlanReview() {
         <h3>${escapeHtml(domain)}</h3>
         <span>${domainPrograms.length} program${domainPrograms.length === 1 ? "" : "s"}</span>
       </div>
-      ${domainPrograms.map((program) => renderPlanProgram(program)).join("")}
+      ${domainPrograms.map((program) => renderPlanProgram(program, state.activePlanProgramTab)).join("")}
     </section>
   `).join("")}
     ${state.activePlanProgramTab === "active" ? renderPlanBehaviorSection(behaviors) : ""}
@@ -2524,8 +2532,8 @@ function renderPlanReview() {
 function renderPlanStatusTabs(programs) {
   if (!planStatusTabs) return;
   const counts = {
-    active: programs.filter((program) => program.status !== "mastered").length,
-    mastered: programs.filter((program) => program.status === "mastered").length
+    active: programs.filter((program) => programHasPlanContentForTab(program, "active")).length,
+    mastered: programs.filter((program) => programHasPlanContentForTab(program, "mastered")).length
   };
   if (!counts.active && counts.mastered) {
     state.activePlanProgramTab = "mastered";
@@ -2595,6 +2603,26 @@ function renderPlanBehaviorSection(behaviors) {
   `;
 }
 
+function targetMatchesPlanTab(target, tab) {
+  const status = target?.status || "active";
+  return tab === "mastered" ? status === "mastered" : status !== "mastered";
+}
+
+function filteredTargetsForPlanProgram(program, tab) {
+  return (program.targets || []).filter((target) => targetMatchesPlanTab(target, tab));
+}
+
+function programHasPlanContentForTab(program, tab) {
+  const visibleTargets = filteredTargetsForPlanProgram(program, tab);
+  if (visibleTargets.length) return true;
+  if (!(program.targets || []).length) {
+    const status = program.status || "active";
+    return tab === "mastered" ? status === "mastered" : status !== "mastered";
+  }
+  const status = program.status || "active";
+  return tab === "mastered" ? status === "mastered" : false;
+}
+
 function renderPlanDomainTabs(domains) {
   if (!domains.length) {
     planDomainTabs.innerHTML = "";
@@ -2616,7 +2644,8 @@ function renderPlanDomainTabs(domains) {
   });
 }
 
-function renderPlanProgram(program) {
+function renderPlanProgram(program, tab = state.activePlanProgramTab) {
+  const visibleTargets = filteredTargetsForPlanProgram(program, tab);
   return `
     <section class="plan-program">
       <div class="plan-program-heading">
@@ -2647,7 +2676,7 @@ function renderPlanProgram(program) {
         <textarea rows="3" data-program-objective="${program.id}" aria-label="${program.name} objective">${escapeHtml(program.objective || "")}</textarea>
       </label>
       <div class="plan-target-list">
-        ${(program.targets || []).map((target) => `
+        ${visibleTargets.length ? visibleTargets.map((target) => `
           <div class="plan-target ${masteryReviewClass(program, target)}">
             <label>
               Target
@@ -2667,7 +2696,7 @@ function renderPlanProgram(program) {
             </label>
             ${renderMasteryReviewHint(program, target)}
           </div>
-        `).join("")}
+        `).join("") : '<p class="muted">No targets in this status view.</p>'}
       </div>
     </section>
   `;
@@ -2925,7 +2954,8 @@ async function savePlan(
   change = null,
   note97155 = currentClient()?.note97155 || "",
   domains = clientDomains(),
-  rbtPerformanceAreas = clientRbtPerformanceAreas()
+  rbtPerformanceAreas = clientRbtPerformanceAreas(),
+  note97151 = currentClient()?.note97151 || ""
 ) {
   const planChangeLog = change
     ? [...(currentClient()?.planChangeLog || []), {
@@ -2941,6 +2971,7 @@ async function savePlan(
     behaviors,
     planChangeLog,
     note97155,
+    note97151,
     rbtPerformanceAreas
   });
   const index = state.clients.findIndex((item) => item.id === updated.id);
@@ -2955,6 +2986,78 @@ async function handleGenerate97155Note() {
   await savePlan(clientPrograms(), clientBehaviors(), null, note);
   note97155Status.textContent = "97155 note generated.";
   planMessage.textContent = "97155 note generated. Review or edit it below.";
+}
+
+function generate97151Note() {
+  const client = currentClient();
+  const values = new FormData(reportForm);
+  const startDate = values.get("startDate");
+  const endDate = values.get("endDate");
+  const preparedBy = values.get("preparedBy") || values.get("assessmentConductedBy") || state.currentUser?.name || "BCBA";
+  const credential = values.get("credential") || "BCBA";
+  const assessmentDate = values.get("assessmentDate") || new Date().toISOString().slice(0, 10);
+  const assessmentType = values.get("indirectAssessmentType") || "caregiver interview and record review";
+  const standardizedType = values.get("standardizedAssessmentType") || "clinical observation";
+  const sessions = filteredReportSessions();
+  const metrics = funderReportMetrics(sessions);
+  const activePrograms = clientPrograms().filter((program) => (program.status || "active") !== "mastered").length;
+  const activeBehaviors = clientBehaviors().filter((behavior) => behavior.status !== "inactive").length;
+
+  return [
+    `S: ${preparedBy} completed a 97151 behavior identification assessment for ${client?.name || "the client"} on ${formatDate(assessmentDate)}. Activities included caregiver interview, direct and indirect assessment, review of records, data analysis, funder report update, and treatment planning. The review period covered ${formatDate(startDate)} through ${formatDate(endDate)}.`,
+    "",
+    `O: The assessment included ${assessmentType} and ${standardizedType}. ${sessions.length} session${sessions.length === 1 ? "" : "s"} were reviewed. Average target independence during the review period was ${metrics.averageIndependence}%, with ${metrics.targetsReviewed} targets showing measurable data and ${metrics.totalBehaviorFrequency} total behavior incidents documented across tracked behaviors. Current treatment planning reflects ${activePrograms} active program${activePrograms === 1 ? "" : "s"} and ${activeBehaviors} active behavior${activeBehaviors === 1 ? "" : "s"}.`,
+    "",
+    "A: Findings support the continued medical necessity of ABA services and indicate that goals, maintenance planning, and behavior targets should be updated based on current performance trends, caregiver report, and assessment findings.",
+    "",
+    "P: Finalize the updated funder report, revise the treatment plan as indicated, and continue monitoring acquisition, maintenance, and behavior data to guide clinical decision-making.",
+    "",
+    signatureBlock(preparedBy, credential, assessmentDate)
+  ].join("\n");
+}
+
+async function handleGenerate97151Note() {
+  const note = generate97151Note();
+  note97151Editor.value = note;
+  planNote97151Editor.value = note;
+  await savePlan(
+    clientPrograms(),
+    clientBehaviors(),
+    null,
+    currentClient()?.note97155 || "",
+    clientDomains(),
+    clientRbtPerformanceAreas(),
+    note
+  );
+  note97151Status.textContent = "97151 note generated.";
+  planNote97151Status.textContent = "97151 note generated.";
+  funderExportStatus.textContent = "97151 assessment note generated. Review or edit it below.";
+  planMessage.textContent = "97151 assessment note generated. Review or edit it below.";
+}
+
+async function handleSave97151Note() {
+  const note = document.activeElement === planNote97151Editor ? planNote97151Editor.value : note97151Editor.value;
+  note97151Editor.value = note;
+  planNote97151Editor.value = note;
+  await savePlan(
+    clientPrograms(),
+    clientBehaviors(),
+    null,
+    currentClient()?.note97155 || "",
+    clientDomains(),
+    clientRbtPerformanceAreas(),
+    note
+  );
+  note97151Status.textContent = "97151 note saved.";
+  planNote97151Status.textContent = "97151 note saved.";
+}
+
+function render97151Note() {
+  const note = currentClient()?.note97151 || "";
+  note97151Editor.value = note;
+  planNote97151Editor.value = note;
+  note97151Status.textContent = "";
+  planNote97151Status.textContent = "";
 }
 
 async function handleSave97155Note() {

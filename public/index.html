@@ -1304,6 +1304,20 @@ The client demonstrated improved engagement when provided with structure and rei
             <textarea name="medicalNecessity" rows="7">Clinical Summary Justifying Hours Requested:
 Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of direct treatment plus direct and indirect supervision and caregiver training. However, certain programs for severe destructive behavior may require more than 30 hours per week of direct therapy, for example day treatment or inpatient programming for severe self-injurious behavior. This BCBA is requesting 30 RBT hours a week (2,880 total units), BCBA direct protocol modification 6 hours per week (576 total units), and 1 BCBA family/caregiver training hour per week (96 total units) to help the client increase their quality of life and decrease maladaptive behaviors.</textarea>
           </label>
+          <section class="report-form-section" aria-labelledby="note-97151-title">
+            <div class="block-heading">
+              <div>
+                <h3 id="note-97151-title">97151 assessment note</h3>
+                <p class="muted">Use this for behavior identification assessment, data analysis, report writing, and treatment planning tied to reassessment work.</p>
+              </div>
+              <button type="button" class="secondary-button" id="generate-97151-note">Generate 97151 note</button>
+            </div>
+            <label>
+              97151 note
+              <textarea id="note-97151" class="soap-editor note-97151-editor" rows="8" aria-label="Editable 97151 assessment note"></textarea>
+            </label>
+            <p id="note-97151-status" class="form-message" role="status"></p>
+          </section>
           <div class="button-row">
             <button type="submit" class="primary-button">Generate funder report</button>
             <button type="button" class="secondary-button" id="print-funder-report">Print report</button>
@@ -1442,6 +1456,17 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
           </label>
         </section>
         <p class="form-message" id="plan-message" role="status"></p>
+        <section class="supervision-note-panel">
+          <div class="block-heading">
+            <div>
+              <h3 id="plan-note-97151-title">97151 assessment note</h3>
+              <p class="muted">Use this when treatment planning includes reassessment, data analysis, and funder-report update work.</p>
+            </div>
+            <button type="button" class="secondary-button" id="generate-plan-97151-note">Generate 97151 note</button>
+          </div>
+          <textarea id="plan-note-97151" class="soap-editor note-97151-editor" rows="8" aria-label="Editable 97151 assessment note in treatment plan"></textarea>
+          <p id="plan-note-97151-status" class="form-message" role="status"></p>
+        </section>
         <button type="button" class="primary-button" id="generate-97155-note">Generate 97155 note</button>
         <section class="supervision-note-panel">
           <h3 id="note-97155-title">97155 treatment plan note</h3>
