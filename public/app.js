@@ -13,7 +13,9 @@ const state = {
   selectedSessionId: null,
   activeClientId: "",
   activeDomain: "",
+  activeSessionTargetTab: "active",
   activePlanDomain: "",
+  activePlanProgramTab: "active",
   currentUser: null
 };
 
@@ -76,6 +78,7 @@ const bcbaClientSelect = document.querySelector("#bcba-client-select");
 const parentClientSelect = document.querySelector("#parent-client-select");
 const intakeClientSelect = document.querySelector("#intake-client-select");
 const programList = document.querySelector("#program-list");
+const targetStatusTabs = document.querySelector("#target-status-tabs");
 const parentGoalList = document.querySelector("#parent-goal-list");
 const domainTabs = document.querySelector("#domain-tabs");
 const behaviorList = document.querySelector("#behavior-list");
@@ -109,6 +112,7 @@ const newClientMessage = document.querySelector("#new-client-message");
 const intakeMessage = document.querySelector("#intake-message");
 const intakeSummary = document.querySelector("#intake-summary");
 const planClientSummary = document.querySelector("#plan-client-summary");
+const planStatusTabs = document.querySelector("#plan-status-tabs");
 const parentClientSummary = document.querySelector("#parent-client-summary");
 const addProgramForm = document.querySelector("#add-program-form");
 const addDomainButton = document.querySelector("#add-domain");
@@ -535,12 +539,13 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
 function addProgramRow(programId = "", targetId = "", values = {}) {
   const node = document.querySelector("#program-template").content.cloneNode(true);
   const row = node.querySelector(".program-row");
+  const entryMode = values.entryMode || "active";
   populateSelect(row.querySelector('[data-field="programId"]'), clientPrograms(), programId);
+  row.querySelector('[data-field="entryMode"]').value = entryMode;
   syncTargetOptions(row, targetId);
-  updateRowDomain(row);
   row.querySelector('[data-field="trials"]').value = values.trials ?? 10;
   row.querySelector('[data-field="correct"]').value = values.correct ?? 0;
-  row.querySelector('[data-field="incorrect"]').value = values.incorrect ?? 0;
+  row.querySelector('[data-field="incorrect"]').value = values.incorrect ?? Math.max((values.trials ?? 10) - (values.correct ?? 0), 0);
   row.querySelector('[data-field="promptLevel"]').value = values.promptLevel || "independent";
   row.querySelector('[data-field="phase"]').value = values.phase || "intervention";
   row.querySelector("[data-remove]").addEventListener("click", () => {
@@ -551,11 +556,13 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
   });
   row.querySelectorAll("input, select").forEach((input) => {
     input.addEventListener("input", () => {
+      syncTrialBalance(row, input.dataset.field);
       updateProgramIndependence(row);
       saveSessionDraft();
     });
   });
   programList.append(row);
+  syncTrialBalance(row);
   updateProgramIndependence(row);
   renderDomainTabs();
   refreshTargetAvailability();
@@ -565,15 +572,15 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
 function preloadTargetRows() {
   programList.innerHTML = "";
   clientPrograms().forEach((program) => {
-    (program.targets || []).filter((target) => target.status === "active").forEach((target) => addProgramRow(program.id, target.id));
+    if ((program.status || "active") === "mastered") return;
+    (program.targets || []).filter((target) => target.status === "active").forEach((target) => addProgramRow(program.id, target.id, { entryMode: "active" }));
   });
+  state.activeSessionTargetTab = "active";
 }
 
 function addFirstAvailableTargetRow(status = "active") {
   const used = selectedTargetKeys();
-  const available = clientPrograms().flatMap((program) => (
-    (program.targets || []).filter((target) => target.status === status).map((target) => ({ program, target }))
-  )).find(({ program, target }) => !used.has(targetKey(program.id, target.id)));
+  const available = sessionAssignableTargets(status).find(({ program, target }) => !used.has(targetKey(program.id, target.id)));
 
   if (!available) {
     formMessage.textContent = status === "maintenance"
@@ -581,7 +588,7 @@ function addFirstAvailableTargetRow(status = "active") {
       : "All active targets are already on this session.";
     return;
   }
-  addProgramRow(available.program.id, available.target.id);
+  addProgramRow(available.program.id, available.target.id, { entryMode: status });
 }
 
 function addBehaviorRow(behaviorId = "", values = {}) {
@@ -705,6 +712,32 @@ function updateProgramIndependence(row) {
   const denominator = trials || correct + incorrect;
   const independence = denominator > 0 ? Math.round((correct / denominator) * 100) : 0;
   row.querySelector("[data-independence]").textContent = `${independence}%`;
+}
+
+function syncTrialBalance(row, sourceField = "") {
+  const trialsField = row.querySelector('[data-field="trials"]');
+  const correctField = row.querySelector('[data-field="correct"]');
+  const incorrectField = row.querySelector('[data-field="incorrect"]');
+  const trials = Math.max(Number(trialsField.value || 0), 0);
+  let correct = Math.max(Number(correctField.value || 0), 0);
+  let incorrect = Math.max(Number(incorrectField.value || 0), 0);
+
+  if (trials <= 0) {
+    if (sourceField === "correct") {
+      incorrect = 0;
+    } else if (sourceField === "incorrect") {
+      correct = 0;
+    }
+  } else if (sourceField === "incorrect") {
+    incorrect = Math.min(incorrect, trials);
+    correct = Math.max(trials - incorrect, 0);
+  } else {
+    correct = Math.min(correct, trials);
+    incorrect = Math.max(trials - correct, 0);
+  }
+
+  correctField.value = String(correct);
+  incorrectField.value = String(incorrect);
 }
 
 async function handleSubmit(event) {
@@ -1670,6 +1703,24 @@ function renderSummary() {
     : "<p>No client selected.</p>";
 }
 
+function sessionAssignableTargets(status = "active") {
+  return clientPrograms().flatMap((program) => {
+    const programStatus = program.status || "active";
+    if (status === "active" && programStatus === "mastered") return [];
+    return (program.targets || [])
+      .filter((target) => sessionTargetMatchesTab(programStatus, target, status))
+      .map((target) => ({ program, target }));
+  });
+}
+
+function sessionTargetMatchesTab(programStatus, target, tab) {
+  if (tab === "maintenance") {
+    if (programStatus === "mastered") return target.status !== "paused";
+    return target.status === "maintenance";
+  }
+  return target.status === "active";
+}
+
 function renderGraphsSummary() {
   const client = currentClient();
   const sessions = currentSessions();
@@ -2408,7 +2459,7 @@ function renderPlanReview() {
   const programs = clientPrograms();
   const behaviors = clientBehaviors();
   const client = currentClient();
-  const activePrograms = programs.filter((program) => (program.status || "active") === "active").length;
+  const activePrograms = programs.filter((program) => (program.status || "active") !== "mastered").length;
   const masteredPrograms = programs.filter((program) => program.status === "mastered").length;
   const activeTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "active").length;
   const maintenanceTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "maintenance").length;
@@ -2424,6 +2475,7 @@ function renderPlanReview() {
     : "";
 
   if (!programs.length) {
+    planStatusTabs.innerHTML = "";
     planDomainTabs.innerHTML = "";
     planReview.innerHTML = `
       <p class="muted">No treatment plan targets configured.</p>
@@ -2433,7 +2485,24 @@ function renderPlanReview() {
     return;
   }
 
-  const groupedPrograms = groupedProgramsByDomain(programs);
+  renderPlanStatusTabs(programs);
+  const visiblePrograms = programs.filter((program) => (
+    state.activePlanProgramTab === "mastered"
+      ? program.status === "mastered"
+      : program.status !== "mastered"
+  ));
+  if (!visiblePrograms.length) {
+    planDomainTabs.innerHTML = "";
+    planReview.innerHTML = state.activePlanProgramTab === "mastered"
+      ? '<p class="muted">No mastered goals yet.</p>'
+      : `
+        <p class="muted">No active goals yet.</p>
+        ${renderPlanBehaviorSection(behaviors)}
+      `;
+    bindPlanReviewInputs();
+    return;
+  }
+  const groupedPrograms = groupedProgramsByDomain(visiblePrograms);
   renderPlanDomainTabs(groupedPrograms.map(([domain]) => domain));
 
   planReview.innerHTML = `
@@ -2446,10 +2515,34 @@ function renderPlanReview() {
       ${domainPrograms.map((program) => renderPlanProgram(program)).join("")}
     </section>
   `).join("")}
-    ${renderPlanBehaviorSection(behaviors)}
+    ${state.activePlanProgramTab === "active" ? renderPlanBehaviorSection(behaviors) : ""}
   `;
 
   bindPlanReviewInputs();
+}
+
+function renderPlanStatusTabs(programs) {
+  if (!planStatusTabs) return;
+  const counts = {
+    active: programs.filter((program) => program.status !== "mastered").length,
+    mastered: programs.filter((program) => program.status === "mastered").length
+  };
+  if (!counts.active && counts.mastered) {
+    state.activePlanProgramTab = "mastered";
+  } else if (state.activePlanProgramTab !== "mastered") {
+    state.activePlanProgramTab = "active";
+  }
+  planStatusTabs.innerHTML = ["active", "mastered"].map((tab) => `
+    <button type="button" class="domain-tab ${tab === state.activePlanProgramTab ? "active" : ""}" data-plan-status-tab="${tab}">
+      ${tab === "active" ? "Active goals" : "Mastered goals"}${counts[tab] ? ` (${counts[tab]})` : ""}
+    </button>
+  `).join("");
+  planStatusTabs.querySelectorAll("[data-plan-status-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activePlanProgramTab = button.dataset.planStatusTab;
+      renderPlanReview();
+    });
+  });
 }
 
 function bindPlanReviewInputs() {
@@ -3835,6 +3928,7 @@ function syncTargetOptions(row, selected = "") {
   const program = clientPrograms().find((item) => item.id === programId);
   populateSelect(row.querySelector('[data-field="targetId"]'), program?.targets || [], selected);
   updateRowDomain(row);
+  updateProgramDisplay(row);
 }
 
 function updateRowDomain(row) {
@@ -3843,12 +3937,22 @@ function updateRowDomain(row) {
   row.dataset.domain = program?.domain || "General";
 }
 
+function updateProgramDisplay(row) {
+  const programId = row.querySelector('[data-field="programId"]').value;
+  const program = clientPrograms().find((item) => item.id === programId);
+  const display = row.querySelector("[data-program-display]");
+  if (display) display.textContent = program?.name || "Program";
+}
+
 function renderDomainTabs() {
+  renderTargetStatusTabs();
   const domains = [...new Set([...programList.querySelectorAll(".program-row")]
+    .filter((row) => (row.querySelector('[data-field="entryMode"]')?.value || "active") === state.activeSessionTargetTab)
     .map((row) => row.dataset.domain || "General"))];
 
   if (!domains.length) {
     domainTabs.innerHTML = "";
+    applySessionTargetFilter();
     return;
   }
 
@@ -3869,12 +3973,35 @@ function renderDomainTabs() {
     });
   });
 
-  applyDomainFilter();
+  applySessionTargetFilter();
 }
 
-function applyDomainFilter() {
+function renderTargetStatusTabs() {
+  if (!targetStatusTabs) return;
+  const counts = {
+    active: [...programList.querySelectorAll('.program-row [data-field="entryMode"]')].filter((field) => field.value === "active").length,
+    maintenance: [...programList.querySelectorAll('.program-row [data-field="entryMode"]')].filter((field) => field.value === "maintenance").length
+  };
+  targetStatusTabs.innerHTML = ["active", "maintenance"].map((tab) => `
+    <button type="button" class="domain-tab ${tab === state.activeSessionTargetTab ? "active" : ""}" data-target-status-tab="${tab}">
+      ${tab === "active" ? "Active targets" : "Maintenance"}${counts[tab] ? ` (${counts[tab]})` : ""}
+    </button>
+  `).join("");
+  targetStatusTabs.querySelectorAll("[data-target-status-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activeSessionTargetTab = button.dataset.targetStatusTab;
+      renderDomainTabs();
+    });
+  });
+  document.querySelector("#add-program")?.classList.toggle("hidden", state.activeSessionTargetTab !== "active");
+  document.querySelector("#add-maintenance-target")?.classList.toggle("hidden", state.activeSessionTargetTab !== "maintenance");
+}
+
+function applySessionTargetFilter() {
   [...programList.querySelectorAll(".program-row")].forEach((row) => {
-    row.classList.toggle("hidden", (row.dataset.domain || "General") !== state.activeDomain);
+    const rowMode = row.querySelector('[data-field="entryMode"]')?.value || "active";
+    const domainMatches = !state.activeDomain || (row.dataset.domain || "General") === state.activeDomain;
+    row.classList.toggle("hidden", rowMode !== state.activeSessionTargetTab || !domainMatches);
   });
 }
 

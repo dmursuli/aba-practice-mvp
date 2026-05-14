@@ -348,8 +348,48 @@ button:focus-visible {
   background: var(--soft);
 }
 
+.program-row {
+  grid-template-columns: minmax(180px, 1.6fr) repeat(5, minmax(92px, 1fr)) 72px 34px;
+}
+
 .behavior-row {
   grid-template-columns: minmax(150px, 1.2fr) repeat(4, minmax(92px, 1fr)) 34px;
+}
+
+.program-display-card {
+  display: grid;
+  gap: 6px;
+  grid-column: 1 / -1;
+  align-self: stretch;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.program-display-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.program-display-card strong {
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.35;
+  color: var(--ink);
+}
+
+.visually-hidden-control {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .parent-goal-row {
@@ -1075,6 +1115,51 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+  body {
+    font-size: 16px;
+  }
+
+  .topbar {
+    min-height: auto;
+    gap: 16px;
+    padding: 16px 14px 14px;
+    align-items: start;
+  }
+
+  .topbar h1 {
+    font-size: 2rem;
+  }
+
+  .header-image {
+    display: none;
+  }
+
+  .user-box {
+    gap: 6px;
+  }
+
+  .workspace-toolbar {
+    margin-top: 10px;
+  }
+
+  .view-switcher {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    margin-top: 14px;
+    scrollbar-width: none;
+  }
+
+  .view-switcher::-webkit-scrollbar {
+    display: none;
+  }
+
+  .view-tab {
+    flex: 0 0 auto;
+    min-height: 42px;
+    padding: 10px 12px;
+  }
+
   .app-shell {
     padding: 10px;
   }
@@ -1099,6 +1184,108 @@ button:disabled {
     max-width: none;
     min-width: 0;
     width: 100%;
+  }
+
+  .entry-panel,
+  .profile-panel,
+  .soap-panel,
+  .graphs-panel,
+  .bcba-session-panel,
+  .plan-review-panel,
+  .audit-panel,
+  .user-panel,
+  .client-panel,
+  .report-panel,
+  .parent-panel {
+    padding: 14px;
+  }
+
+  .section-heading {
+    margin-bottom: 14px;
+  }
+
+  .block-heading {
+    align-items: start;
+  }
+
+  .button-row {
+    justify-content: stretch;
+  }
+
+  .button-row > * {
+    flex: 1 1 140px;
+  }
+
+  .domain-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+  }
+
+  .domain-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .domain-tab {
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding: 9px 12px;
+  }
+
+  .program-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .program-row > label:first-of-type {
+    grid-column: 1 / -1;
+  }
+
+  .program-row .metric-pill,
+  .program-row .icon-button {
+    min-height: 48px;
+  }
+
+  .program-row .metric-pill {
+    grid-column: 1 / 2;
+  }
+
+  .program-row .icon-button {
+    grid-column: 2 / 3;
+  }
+
+  .behavior-row,
+  .parent-goal-row,
+  .fade-plan-row,
+  .service-hours-row {
+    gap: 10px;
+  }
+
+  input,
+  select,
+  textarea,
+  .secondary-button,
+  .primary-button,
+  .delete-button,
+  .secondary-link,
+  .icon-button {
+    min-height: 46px;
+  }
+
+  #session-form > .primary-button {
+    position: sticky;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+    z-index: 20;
+    box-shadow: 0 12px 24px rgba(16, 56, 91, 0.18);
+  }
+
+  .notes-layout {
+    gap: 12px;
+  }
+
+  .history-item {
+    gap: 8px;
   }
 }
 

@@ -16,6 +16,7 @@ const documentStore = process.env.DOCUMENT_STORE || (process.env.S3_BUCKET ? "s3
 const sessions = new Map();
 const AGENCIES = ["Triumph ABA", "One Clinical Care"];
 const DEFAULT_AGENCY = AGENCIES[0];
+const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -95,7 +96,7 @@ function sendJson(res, status, payload) {
 
 function sendAuthCookie(res, token) {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("set-cookie", `aba_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${secure}`);
+  res.setHeader("set-cookie", `aba_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}${secure}`);
 }
 
 function clearAuthCookie(res) {
