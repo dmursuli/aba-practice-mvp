@@ -3034,6 +3034,16 @@ async function handlePlanStatusChange(event) {
     if (!program) return;
     const previousStatus = program.status || "active";
     program.status = programControl.value;
+    if (programControl.value === "mastered") {
+      (program.targets || []).forEach((target) => {
+        if (target.status !== "paused") {
+          target.status = "mastered";
+        }
+      });
+      state.activePlanProgramTab = "mastered";
+    } else if (previousStatus === "mastered") {
+      state.activePlanProgramTab = "active";
+    }
     try {
       await savePlan(programs, clientBehaviors(), previousStatus !== programControl.value ? {
         type: "program-status-changed",
