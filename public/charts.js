@@ -33,6 +33,7 @@ export function drawLineChart(canvas, series, options = {}) {
 
   drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options);
   drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions);
+  drawPhaseMarkers(ctx, margin, plotHeight, options.phaseMarkers || [], dates, xPositions);
 
   dates.forEach((date, index) => {
     const x = xPositions[index];
@@ -164,6 +165,51 @@ function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPosit
   ctx.restore();
 
   return phaseBoundary;
+}
+
+function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions) {
+  markers.forEach((marker) => {
+    const lineX = xPositionForMarkerDate(marker.date, dates, xPositions);
+    if (!Number.isFinite(lineX)) return;
+
+    ctx.save();
+    ctx.strokeStyle = "#7a4f00";
+    ctx.lineWidth = 2;
+    if (marker.dashed) ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    ctx.moveTo(lineX, margin.top);
+    ctx.lineTo(lineX, margin.top + plotHeight);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = "#7a4f00";
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(marker.label || "Marker", lineX, margin.top + 14);
+    ctx.restore();
+  });
+}
+
+function xPositionForMarkerDate(date, dates, xPositions) {
+  const exactIndex = dates.indexOf(date);
+  if (exactIndex >= 0) return xPositions[exactIndex];
+
+  const markerValue = `${date}T00:00`;
+  let previousIndex = -1;
+  let nextIndex = -1;
+
+  dates.forEach((existingDate, index) => {
+    const value = `${existingDate}T00:00`;
+    if (value < markerValue) previousIndex = index;
+    if (nextIndex === -1 && value > markerValue) nextIndex = index;
+  });
+
+  if (previousIndex >= 0 && nextIndex >= 0) {
+    return xPositions[previousIndex] + (xPositions[nextIndex] - xPositions[previousIndex]) / 2;
+  }
+  if (previousIndex >= 0) return xPositions[previousIndex];
+  if (nextIndex >= 0) return xPositions[nextIndex];
+  return NaN;
 }
 
 function drawPhaseSegments(ctx, points, phaseBoundary) {

@@ -992,6 +992,8 @@
           <h2 id="graphs-title">Graphs</h2>
         </div>
         <div id="graphs-client-summary" class="summary-strip"></div>
+        <div id="graph-scope-tabs" class="domain-tabs" aria-label="Graph type"></div>
+        <div id="graph-domain-tabs" class="domain-tabs" aria-label="Graph domains"></div>
         <div class="chart-zone">
           <div id="skill-charts" class="chart-zone"></div>
           <article class="chart-panel">
@@ -1644,6 +1646,23 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
         <button type="button" class="icon-button" data-remove aria-label="Remove behavior">x</button>
       </div>
     </template>
+
+    <div id="program-graph-modal" class="modal-shell hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-program-graph></div>
+      <section class="modal-panel program-graph-modal-panel" role="dialog" aria-modal="true" aria-labelledby="program-graph-modal-title">
+        <div class="block-heading">
+          <div>
+            <p class="eyebrow">Treatment plan review</p>
+            <h3 id="program-graph-modal-title">Program graph</h3>
+          </div>
+          <button type="button" class="secondary-button" data-close-program-graph>Close</button>
+        </div>
+        <p id="program-graph-modal-subtitle" class="muted"></p>
+        <article class="chart-panel">
+          <canvas id="program-graph-modal-canvas" width="760" height="320"></canvas>
+        </article>
+      </section>
+    </div>
     </div>
 
     <script type="module" src="/app.js"></script>

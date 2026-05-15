@@ -920,9 +920,16 @@ button:focus-visible {
 
 .plan-program-heading {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(160px, 0.7fr) auto;
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, 0.7fr) minmax(140px, auto) auto;
   gap: 10px;
   align-items: end;
+}
+
+.plan-program-actions {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+  flex-wrap: wrap;
 }
 
 .plan-target {
@@ -990,6 +997,41 @@ button:focus-visible {
 
 .chart-panel {
   padding: 14px;
+}
+
+.modal-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+}
+
+.modal-shell.hidden {
+  display: none;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.48);
+}
+
+.modal-panel {
+  position: relative;
+  z-index: 1;
+  width: min(960px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.18);
+}
+
+.program-graph-modal-panel .chart-panel {
+  padding: 0;
 }
 
 canvas {
@@ -1079,6 +1121,32 @@ canvas {
 .health-badge.low {
   background: var(--brand-soft);
   color: var(--brand-deep);
+}
+
+.mastery-close-badge {
+  background: #fffbe8;
+  color: #9d7f13;
+}
+
+.mastery-ready-badge {
+  background: var(--gold-soft);
+  color: #8f6100;
+}
+
+.mastered-badge {
+  background: #eef8e8;
+  color: #45712a;
+}
+
+.stagnant-badge {
+  background: #fff0f2;
+  color: #a03d4b;
+}
+
+.plan-status-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .health-table td {

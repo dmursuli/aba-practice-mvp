@@ -16,6 +16,8 @@ const state = {
   activeSessionTargetTab: "active",
   activePlanDomain: "",
   activePlanProgramTab: "active",
+  activeGraphTab: "skills",
+  activeGraphDomain: "",
   currentUser: null
 };
 
@@ -85,6 +87,8 @@ const behaviorList = document.querySelector("#behavior-list");
 const skillCharts = document.querySelector("#skill-charts");
 const behaviorCharts = document.querySelector("#behavior-charts");
 const graphsClientSummary = document.querySelector("#graphs-client-summary");
+const graphScopeTabs = document.querySelector("#graph-scope-tabs");
+const graphDomainTabs = document.querySelector("#graph-domain-tabs");
 const reportClientSummary = document.querySelector("#report-client-summary");
 const reportForm = document.querySelector("#funder-report-form");
 const reportPreview = document.querySelector("#funder-report-preview");
@@ -106,6 +110,10 @@ const soapClientSummary = document.querySelector("#soap-client-summary");
 const soapCodeLabel = document.querySelector("#soap-code-label");
 const planReview = document.querySelector("#plan-review");
 const planDomainTabs = document.querySelector("#plan-domain-tabs");
+const programGraphModal = document.querySelector("#program-graph-modal");
+const programGraphModalTitle = document.querySelector("#program-graph-modal-title");
+const programGraphModalSubtitle = document.querySelector("#program-graph-modal-subtitle");
+const programGraphModalCanvas = document.querySelector("#program-graph-modal-canvas");
 const clientManagementSummary = document.querySelector("#client-management-summary");
 const clientProfileMessage = document.querySelector("#client-profile-message");
 const clientDocumentMessage = document.querySelector("#client-document-message");
@@ -261,12 +269,21 @@ async function restoreSession() {
 async function startAuthenticatedApp() {
   showApp();
   await refreshData();
+  const requested = requestedWorkspaceState();
+  if (requested.clientId && state.clients.some((client) => client.id === requested.clientId)) {
+    state.activeClientId = requested.clientId;
+  }
   preloadTargetRows();
   preloadBehaviorRows();
   preloadParentRows();
   preloadFadePlanRows();
   preloadServiceHourRows();
   render();
+  if (requested.view) {
+    switchView(requested.view);
+  } else {
+    syncWorkspaceUrl(currentView());
+  }
 }
 
 async function refreshData() {
@@ -303,7 +320,7 @@ function bindEvents() {
   userList.addEventListener("change", handleUserListChange);
   refreshUsersButton.addEventListener("click", refreshUsers);
   document.querySelectorAll("[data-view-button]").forEach((button) => {
-    button.addEventListener("click", () => switchView(button.dataset.viewButton));
+    button.addEventListener("click", (event) => handleViewTabClick(event, button.dataset.viewButton));
   });
   document.querySelector("#add-program").addEventListener("click", () => addFirstAvailableTargetRow());
   document.querySelector("#add-maintenance-target").addEventListener("click", () => addFirstAvailableTargetRow("maintenance"));
@@ -372,6 +389,7 @@ function bindEvents() {
   note97155Editor.addEventListener("blur", handleSave97155Note);
   planReview.addEventListener("change", handlePlanStatusChange);
   planReview.addEventListener("click", handlePlanClick);
+  programGraphModal?.addEventListener("click", handleProgramGraphModalClick);
   finalizeButton.addEventListener("click", handleFinalize);
   printSoapNoteButton.addEventListener("click", handlePrintSoapNote);
   downloadSoapTextButton.addEventListener("click", () => handleDownloadSoapNote("txt"));
@@ -540,10 +558,12 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
     state.selectedSessionId = null;
     state.activeDomain = "";
     state.activePlanDomain = "";
+    state.activeGraphDomain = "";
     syncSettingFromClient();
     resetRows();
   }
   render();
+  syncWorkspaceUrl(currentView());
 }
 
 function addProgramRow(programId = "", targetId = "", values = {}) {
@@ -1571,6 +1591,45 @@ function currentMasteryCriteria() {
   };
 }
 
+function requestedWorkspaceState() {
+  const url = new URL(window.location.href);
+  return {
+    view: url.searchParams.get("view") || "",
+    clientId: url.searchParams.get("client") || ""
+  };
+}
+
+function currentView() {
+  return document.querySelector("[data-view-button].active")?.dataset.viewButton || allowedViews()[0] || "session";
+}
+
+function buildWorkspaceUrl({ view = currentView(), clientId = state.activeClientId } = {}) {
+  const url = new URL(window.location.href);
+  if (view) {
+    url.searchParams.set("view", view);
+  } else {
+    url.searchParams.delete("view");
+  }
+  if (clientId) {
+    url.searchParams.set("client", clientId);
+  } else {
+    url.searchParams.delete("client");
+  }
+  return url;
+}
+
+function syncWorkspaceUrl(view = currentView()) {
+  window.history.replaceState({}, "", buildWorkspaceUrl({ view }).toString());
+}
+
+function handleViewTabClick(event, view) {
+  if ((event.metaKey || event.ctrlKey || event.shiftKey) && allowedViews().includes(view)) {
+    window.open(buildWorkspaceUrl({ view }).toString(), "_blank", "noopener");
+    return;
+  }
+  switchView(view);
+}
+
 function switchView(view) {
   if (!allowedViews().includes(view)) {
     view = allowedViews()[0] || "session";
@@ -1587,6 +1646,7 @@ function switchView(view) {
   if (view === "audit") refreshAuditLog(false);
   if (view === "health") runDataHealthCheck();
   if (view === "users") refreshUsers(false);
+  syncWorkspaceUrl(view);
 }
 
 function applyRoleAccess() {
@@ -1662,15 +1722,41 @@ function masteryReviewForTarget(programId, targetId) {
 
   const recentSessions = qualifyingSessions.slice(0, criteria.consecutiveSessions);
   const scores = recentSessions.map(({ entry }) => Number(entry.independence || 0));
-  const eligible = scores.every((score) => score >= criteria.thresholdPercent);
+  const masteryWindow = findMasteryWindow(qualifyingSessions, criteria.consecutiveSessions, criteria.thresholdPercent);
+  const eligible = Boolean(masteryWindow);
   const nearThreshold = scores.every((score) => score >= Math.max(criteria.thresholdPercent - 10, 0));
   const averageScore = scores.length ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length) : 0;
   return stagnantReviewForTarget(criteria, qualifyingSessions, {
     state: eligible ? "ready" : (nearThreshold && averageScore >= criteria.thresholdPercent - 5 ? "close" : "none"),
     threshold: criteria.thresholdPercent,
     consecutiveSessions: criteria.consecutiveSessions,
-    matchedDates: eligible ? recentSessions.map(({ session }) => session.date).reverse() : [],
+    matchedDates: eligible ? masteryWindow.map(({ session }) => session.date).reverse() : [],
     previewScores: scores.reverse()
+  });
+}
+
+function findMasteryWindow(qualifyingSessions, consecutiveSessions, thresholdPercent) {
+  for (let start = 0; start <= qualifyingSessions.length - consecutiveSessions; start += 1) {
+    const window = qualifyingSessions.slice(start, start + consecutiveSessions);
+    if (window.every(({ entry }) => Number(entry.independence || 0) >= thresholdPercent)) {
+      return window;
+    }
+  }
+  return null;
+}
+
+function masteryReviewCounts() {
+  return clientPrograms().flatMap((program) => (
+    (program.targets || []).map((target) => masteryReviewForTarget(program.id, target.id).state)
+  )).reduce((counts, stateValue) => {
+    counts[stateValue] = (counts[stateValue] || 0) + 1;
+    return counts;
+  }, {
+    ready: 0,
+    close: 0,
+    stagnant: 0,
+    mastered: 0,
+    none: 0
   });
 }
 
@@ -2476,6 +2562,7 @@ function renderPlanReview() {
   const activeTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "active").length;
   const maintenanceTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "maintenance").length;
   const pausedTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "paused").length;
+  const masteryCounts = masteryReviewCounts();
   planClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
@@ -2483,6 +2570,7 @@ function renderPlanReview() {
       <div><strong>${activeTargets}</strong><span>Active targets</span></div>
       <div><strong>${maintenanceTargets} / ${pausedTargets}</strong><span>Maintenance / paused</span></div>
       <div><strong>${behaviors.filter((behavior) => behavior.status !== "inactive").length}</strong><span>Active behaviors</span></div>
+      <div><strong>${masteryCounts.ready} / ${masteryCounts.close} / ${masteryCounts.stagnant}</strong><span>Ready / close / stagnant</span></div>
     `
     : "";
 
@@ -2514,6 +2602,12 @@ function renderPlanReview() {
   renderPlanDomainTabs(groupedPrograms.map(([domain]) => domain));
 
   planReview.innerHTML = `
+    <section class="plan-status-legend">
+      <span class="health-badge mastery-close-badge">Close (${masteryCounts.close})</span>
+      <span class="health-badge mastery-ready-badge">Ready (${masteryCounts.ready})</span>
+      <span class="health-badge mastered-badge">Mastered (${masteryCounts.mastered})</span>
+      <span class="health-badge stagnant-badge">Stagnant (${masteryCounts.stagnant})</span>
+    </section>
     ${groupedPrograms.map(([domain, domainPrograms]) => `
     <section class="plan-domain ${domain === state.activePlanDomain ? "" : "hidden"}" data-plan-domain="${escapeHtml(domain)}">
       <div class="plan-domain-heading">
@@ -2669,7 +2763,10 @@ function renderPlanProgram(program, tab = state.activePlanProgramTab) {
             `).join("")}
           </select>
         </label>
-        <button type="button" class="secondary-button" data-add-target="${program.id}">Add target</button>
+        <div class="plan-program-actions">
+          <button type="button" class="secondary-button" data-open-plan-graph="${program.id}">View graph</button>
+          <button type="button" class="secondary-button" data-add-target="${program.id}">Add target</button>
+        </div>
       </div>
       <label>
         Objective
@@ -2789,6 +2886,11 @@ async function handleAddDomain() {
 }
 
 async function handlePlanClick(event) {
+  const openProgramGraph = event.target.closest("[data-open-plan-graph]");
+  if (openProgramGraph) {
+    openProgramGraphModal(openProgramGraph.dataset.openPlanGraph);
+    return;
+  }
   const addBehavior = event.target.closest("[data-add-plan-behavior]");
   if (addBehavior) {
     const name = window.prompt("Behavior name");
@@ -2844,6 +2946,36 @@ async function handlePlanClick(event) {
     targetName: newTarget.name,
     toStatus: "active"
   });
+}
+
+function handleProgramGraphModalClick(event) {
+  if (event.target.closest("[data-close-program-graph]")) {
+    closeProgramGraphModal();
+  }
+}
+
+function openProgramGraphModal(programId) {
+  const program = clientPrograms().find((item) => item.id === programId);
+  if (!program) return;
+  const chart = buildProgramSkillChart(program, currentSessions().slice().reverse());
+  programGraphModalTitle.textContent = program.name;
+  programGraphModalSubtitle.textContent = `${program.domain || "General"}${chart.series.length ? ` - ${chart.series.length} target graph${chart.series.length === 1 ? "" : "s"}` : ""}`;
+  programGraphModal.classList.remove("hidden");
+  programGraphModal.setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => {
+    drawLineChart(programGraphModalCanvas, chart.series, {
+      maxY: 100,
+      yStep: 10,
+      yLabel: "% independence",
+      emptyMessage: "No target data for this program",
+      phaseMarkers: masteryMarkersForProgram(program.id)
+    });
+  });
+}
+
+function closeProgramGraphModal() {
+  programGraphModal.classList.add("hidden");
+  programGraphModal.setAttribute("aria-hidden", "true");
 }
 
 async function handlePlanTextEdit(event) {
@@ -3646,10 +3778,25 @@ function drawFunderReportCharts(sessions) {
 
 function renderCharts() {
   const sessions = currentSessions().slice().reverse();
-  renderSkillCharts(sessions);
+  renderGraphScopeTabs();
+  if (state.activeGraphTab === "skills") {
+    renderSkillCharts(sessions);
+    graphDomainTabs.classList.remove("hidden");
+    behaviorCharts.innerHTML = "";
+    const behaviorCanvas = document.querySelector("#behavior-chart");
+    if (behaviorCanvas) {
+      drawLineChart(behaviorCanvas, [], {
+        yStep: 1,
+        yLabel: "frequency",
+        emptyMessage: "Behavior graphs are available in the Behaviors tab"
+      });
+    }
+    return;
+  }
 
+  graphDomainTabs.classList.add("hidden");
+  skillCharts.innerHTML = "";
   const behaviorSeries = behaviorChartSeries(sessions);
-
   drawLineChart(document.querySelector("#behavior-chart"), behaviorSeries, {
     yStep: 1,
     yLabel: "frequency",
@@ -3658,8 +3805,144 @@ function renderCharts() {
   drawBehaviorChartSet(sessions, behaviorCharts, "behavior-single-chart");
 }
 
+function renderGraphScopeTabs() {
+  if (!graphScopeTabs) return;
+  graphScopeTabs.innerHTML = ["skills", "behaviors"].map((tab) => `
+    <button type="button" class="domain-tab ${tab === state.activeGraphTab ? "active" : ""}" data-graph-scope-tab="${tab}">
+      ${tab === "skills" ? "Skills" : "Behaviors"}
+    </button>
+  `).join("");
+  graphScopeTabs.querySelectorAll("[data-graph-scope-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activeGraphTab = button.dataset.graphScopeTab;
+      renderCharts();
+    });
+  });
+}
+
 function renderSkillCharts(sessions) {
-  drawSkillChartSet(sessions, skillCharts, "program-chart");
+  const groups = buildSkillChartsByDomain(sessions);
+  renderGraphDomainTabs(groups);
+
+  if (!groups.length) {
+    skillCharts.innerHTML = `
+      <article class="chart-panel">
+        <h3>Skill acquisition</h3>
+        <canvas data-empty-skill width="760" height="320"></canvas>
+      </article>
+    `;
+    drawLineChart(skillCharts.querySelector("canvas"), [], {
+      maxY: 100,
+      yStep: 10,
+      yLabel: "% independence",
+      emptyMessage: "Save a session to graph target independence"
+    });
+    return;
+  }
+
+  const visibleGroups = groups.filter((group) => !state.activeGraphDomain || group.domain === state.activeGraphDomain);
+  skillCharts.innerHTML = visibleGroups.map((group) => `
+    <section class="graph-domain-group">
+      <div class="plan-domain-heading">
+        <h3>${escapeHtml(group.domain)}</h3>
+        <span>${group.charts.length} program${group.charts.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="chart-zone">
+        ${group.charts.map((chart) => `
+          <article class="chart-panel">
+            <h3>${chart.program.name}</h3>
+            <canvas data-program-chart="${chart.program.id}" width="760" height="320"></canvas>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `).join("");
+
+  visibleGroups.flatMap((group) => group.charts).forEach((chart) => {
+    drawLineChart(skillCharts.querySelector(`[data-program-chart="${chart.program.id}"]`), chart.series, {
+      maxY: 100,
+      yStep: 10,
+      yLabel: "% independence",
+      emptyMessage: "No target data for this program",
+      phaseMarkers: masteryMarkersForProgram(chart.program.id)
+    });
+  });
+}
+
+function buildSkillChartsByDomain(sessions) {
+  return groupedProgramsByDomain(clientPrograms())
+    .map(([domain, domainPrograms]) => ({
+      domain,
+      charts: domainPrograms.map((program) => buildProgramSkillChart(program, sessions)).filter((chart) => chart.series.length)
+    }))
+    .filter((group) => group.charts.length);
+}
+
+function buildProgramSkillChart(program, sessions) {
+  const targets = configuredTargetsForProgram(program);
+  const series = targets.map((target) => ({
+    name: target.name,
+    points: sessions.flatMap((session) => {
+      const entry = targetEntries(session)
+        .filter(isActualTargetEntry)
+        .find((item) => item.programId === program.id && item.targetId === target.id);
+      return entry ? [{ x: session.date, y: entry.independence, phase: entry.phase || "intervention" }] : [];
+    })
+  })).filter((item) => item.points.length);
+  return { program, series };
+}
+
+function masteryMarkersForProgram(programId) {
+  const markers = (currentClient()?.planChangeLog || [])
+    .filter((change) => (
+      change.type === "target-status-changed"
+      && change.programId === programId
+      && change.toStatus === "mastered"
+      && change.date
+    ))
+    .reduce((map, change) => {
+      if (!map.has(change.date)) {
+        map.set(change.date, []);
+      }
+      map.get(change.date).push(change.targetName);
+      return map;
+    }, new Map());
+
+  return [...markers.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, targetNames]) => ({
+      date,
+      label: "Target mastered",
+      detail: targetNames.join(", "),
+      dashed: true
+    }));
+}
+
+function renderGraphDomainTabs(groups) {
+  if (!graphDomainTabs) return;
+  if (!groups.length) {
+    graphDomainTabs.innerHTML = "";
+    state.activeGraphDomain = "";
+    return;
+  }
+  const domains = groups.map((group) => group.domain);
+  if (!state.activeGraphDomain || !domains.includes(state.activeGraphDomain)) {
+    state.activeGraphDomain = domains[0];
+  }
+  graphDomainTabs.innerHTML = domains.map((domain) => {
+    const group = groups.find((item) => item.domain === domain);
+    return `
+      <button type="button" class="domain-tab ${domain === state.activeGraphDomain ? "active" : ""}" data-graph-domain-tab="${escapeHtml(domain)}">
+        ${escapeHtml(domain)}${group?.charts?.length ? ` (${group.charts.length})` : ""}
+      </button>
+    `;
+  }).join("");
+  graphDomainTabs.querySelectorAll("[data-graph-domain-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activeGraphDomain = button.dataset.graphDomainTab;
+      renderCharts();
+    });
+  });
 }
 
 function drawSkillChartSet(sessions, container, chartAttribute, includeProgramInfo = false) {
