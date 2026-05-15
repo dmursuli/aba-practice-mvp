@@ -606,8 +606,17 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
 function preloadTargetRows() {
   programList.innerHTML = "";
   clientPrograms().forEach((program) => {
-    if ((program.status || "active") === "mastered") return;
-    (program.targets || []).filter((target) => target.status === "active").forEach((target) => addProgramRow(program.id, target.id, { entryMode: "active" }));
+    const programStatus = normalizePlanStatus(program.status || "active");
+    (program.targets || []).forEach((target) => {
+      const targetStatus = normalizePlanStatus(target.status || "active");
+      if (programStatus !== "mastered" && targetStatus === "active") {
+        addProgramRow(program.id, target.id, { entryMode: "active" });
+        return;
+      }
+      if (sessionTargetMatchesTab(programStatus, target, "maintenance")) {
+        addProgramRow(program.id, target.id, { entryMode: "maintenance" });
+      }
+    });
   });
   state.activeSessionTargetTab = "active";
 }
@@ -1797,7 +1806,10 @@ function renderSummary() {
   const client = currentClient();
   const sessions = currentSessions();
   const activeTargets = clientPrograms().flatMap((program) => program.targets || []).filter((target) => target.status === "active").length;
-  const maintenanceTargets = clientPrograms().flatMap((program) => program.targets || []).filter((target) => target.status === "maintenance").length;
+  const maintenanceTargets = clientPrograms().flatMap((program) => {
+    const programStatus = normalizePlanStatus(program.status || "active");
+    return (program.targets || []).filter((target) => sessionTargetMatchesTab(programStatus, target, "maintenance"));
+  }).length;
   document.querySelector("#client-summary").innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
@@ -1809,7 +1821,7 @@ function renderSummary() {
 
 function sessionAssignableTargets(status = "active") {
   return clientPrograms().flatMap((program) => {
-    const programStatus = program.status || "active";
+    const programStatus = normalizePlanStatus(program.status || "active");
     if (status === "active" && programStatus === "mastered") return [];
     return (program.targets || [])
       .filter((target) => sessionTargetMatchesTab(programStatus, target, status))
@@ -1818,11 +1830,12 @@ function sessionAssignableTargets(status = "active") {
 }
 
 function sessionTargetMatchesTab(programStatus, target, tab) {
+  const targetStatus = normalizePlanStatus(target?.status || "active");
   if (tab === "maintenance") {
-    if (programStatus === "mastered") return target.status !== "paused";
-    return target.status === "maintenance";
+    if (programStatus === "mastered") return targetStatus !== "paused";
+    return targetStatus === "mastered";
   }
-  return target.status === "active";
+  return targetStatus === "active";
 }
 
 function renderGraphsSummary() {
@@ -2570,17 +2583,17 @@ function renderPlanReview() {
   const behaviors = clientBehaviors();
   const client = currentClient();
   const activePrograms = programs.filter((program) => programHasPlanContentForTab(program, "active")).length;
+  const pausedPrograms = programs.filter((program) => programHasPlanContentForTab(program, "paused")).length;
   const masteredPrograms = programs.filter((program) => programHasPlanContentForTab(program, "mastered")).length;
   const activeTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "active").length;
-  const maintenanceTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "maintenance").length;
-  const pausedTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "paused").length;
+  const pausedTargets = programs.flatMap((program) => program.targets || []).filter((target) => normalizePlanStatus(target.status) === "paused").length;
   const masteryCounts = masteryReviewCounts();
   planClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
-      <div><strong>${activePrograms} / ${masteredPrograms}</strong><span>Active / mastered goals</span></div>
+      <div><strong>${activePrograms} / ${pausedPrograms} / ${masteredPrograms}</strong><span>Active / on hold / mastered goals</span></div>
       <div><strong>${activeTargets}</strong><span>Active targets</span></div>
-      <div><strong>${maintenanceTargets} / ${pausedTargets}</strong><span>Maintenance / paused</span></div>
+      <div><strong>${pausedTargets}</strong><span>On hold targets</span></div>
       <div><strong>${behaviors.filter((behavior) => behavior.status !== "inactive").length}</strong><span>Active behaviors</span></div>
       <div><strong>${masteryCounts.ready} / ${masteryCounts.close} / ${masteryCounts.stagnant}</strong><span>Ready / close / stagnant</span></div>
     `
@@ -2603,10 +2616,12 @@ function renderPlanReview() {
     planDomainTabs.innerHTML = "";
     planReview.innerHTML = state.activePlanProgramTab === "mastered"
       ? '<p class="muted">No mastered goals yet.</p>'
-      : `
-        <p class="muted">No active goals yet.</p>
-        ${renderPlanBehaviorSection(behaviors)}
-      `;
+      : state.activePlanProgramTab === "paused"
+        ? '<p class="muted">No on-hold goals yet.</p>'
+        : `
+          <p class="muted">No active goals yet.</p>
+          ${renderPlanBehaviorSection(behaviors)}
+        `;
     bindPlanReviewInputs();
     return;
   }
@@ -2639,16 +2654,21 @@ function renderPlanStatusTabs(programs) {
   if (!planStatusTabs) return;
   const counts = {
     active: programs.filter((program) => programHasPlanContentForTab(program, "active")).length,
+    paused: programs.filter((program) => programHasPlanContentForTab(program, "paused")).length,
     mastered: programs.filter((program) => programHasPlanContentForTab(program, "mastered")).length
   };
-  if (!counts.active && counts.mastered) {
-    state.activePlanProgramTab = "mastered";
-  } else if (state.activePlanProgramTab !== "mastered") {
-    state.activePlanProgramTab = "active";
+  if (!counts[state.activePlanProgramTab]) {
+    if (counts.active) {
+      state.activePlanProgramTab = "active";
+    } else if (counts.paused) {
+      state.activePlanProgramTab = "paused";
+    } else if (counts.mastered) {
+      state.activePlanProgramTab = "mastered";
+    }
   }
-  planStatusTabs.innerHTML = ["active", "mastered"].map((tab) => `
+  planStatusTabs.innerHTML = ["active", "paused", "mastered"].map((tab) => `
     <button type="button" class="domain-tab ${tab === state.activePlanProgramTab ? "active" : ""}" data-plan-status-tab="${tab}">
-      ${tab === "active" ? "Active goals" : "Mastered goals"}${counts[tab] ? ` (${counts[tab]})` : ""}
+      ${tab === "active" ? "Active goals" : tab === "paused" ? "On hold" : "Mastered goals"}${counts[tab] ? ` (${counts[tab]})` : ""}
     </button>
   `).join("");
   planStatusTabs.querySelectorAll("[data-plan-status-tab]").forEach((button) => {
@@ -2657,6 +2677,12 @@ function renderPlanStatusTabs(programs) {
       renderPlanReview();
     });
   });
+}
+
+function normalizePlanStatus(status = "active") {
+  if (status === "maintenance") return "mastered";
+  if (status === "paused") return "paused";
+  return status === "mastered" ? "mastered" : "active";
 }
 
 function bindPlanReviewInputs() {
@@ -2710,8 +2736,8 @@ function renderPlanBehaviorSection(behaviors) {
 }
 
 function targetMatchesPlanTab(target, tab) {
-  const status = target?.status || "active";
-  return tab === "mastered" ? status === "mastered" : status !== "mastered";
+  const status = normalizePlanStatus(target?.status || "active");
+  return status === tab;
 }
 
 function filteredTargetsForPlanProgram(program, tab) {
@@ -2722,11 +2748,11 @@ function programHasPlanContentForTab(program, tab) {
   const visibleTargets = filteredTargetsForPlanProgram(program, tab);
   if (visibleTargets.length) return true;
   if (!(program.targets || []).length) {
-    const status = program.status || "active";
-    return tab === "mastered" ? status === "mastered" : status !== "mastered";
+    const status = normalizePlanStatus(program.status || "active");
+    return status === tab;
   }
-  const status = program.status || "active";
-  return tab === "mastered" ? status === "mastered" : false;
+  const status = normalizePlanStatus(program.status || "active");
+  return status === tab && tab !== "active";
 }
 
 function renderPlanDomainTabs(domains) {
@@ -2752,6 +2778,7 @@ function renderPlanDomainTabs(domains) {
 
 function renderPlanProgram(program, tab = state.activePlanProgramTab) {
   const visibleTargets = filteredTargetsForPlanProgram(program, tab);
+  const displayedProgramStatus = normalizePlanStatus(program.status || "active");
   return `
     <section class="plan-program">
       <div class="plan-program-heading">
@@ -2770,8 +2797,8 @@ function renderPlanProgram(program, tab = state.activePlanProgramTab) {
         <label>
           Goal status
           <select data-plan-program-status="${program.id}" aria-label="${program.name} goal status">
-            ${["active", "maintenance", "mastered", "paused"].map((status) => `
-              <option value="${status}" ${(program.status || "active") === status ? "selected" : ""}>${status}</option>
+            ${["active", "paused", "mastered"].map((status) => `
+              <option value="${status}" ${displayedProgramStatus === status ? "selected" : ""}>${status === "paused" ? "on hold" : status}</option>
             `).join("")}
           </select>
         </label>
@@ -2794,8 +2821,8 @@ function renderPlanProgram(program, tab = state.activePlanProgramTab) {
             <label>
               Status
               <select data-plan-program="${program.id}" data-plan-target="${target.id}" aria-label="${target.name} status">
-                ${["active", "maintenance", "mastered", "paused"].map((status) => `
-                  <option value="${status}" ${target.status === status ? "selected" : ""}>${status}</option>
+                ${["active", "paused", "mastered"].map((status) => `
+                  <option value="${status}" ${normalizePlanStatus(target.status || "active") === status ? "selected" : ""}>${status === "paused" ? "on hold" : status}</option>
                 `).join("")}
               </select>
             </label>
@@ -3066,16 +3093,26 @@ async function handlePlanStatusChange(event) {
     const programs = structuredClone(clientPrograms());
     const program = programs.find((item) => item.id === programControl.dataset.planProgramStatus);
     if (!program) return;
-    const previousStatus = program.status || "active";
+    const previousStatus = normalizePlanStatus(program.status || "active");
     program.status = programControl.value;
     if (programControl.value === "mastered") {
       (program.targets || []).forEach((target) => {
-        if (target.status !== "paused") {
+        if (normalizePlanStatus(target.status || "active") !== "paused") {
           target.status = "mastered";
+          if (!target.maintenanceDate) target.maintenanceDate = new Date().toISOString().slice(0, 10);
         }
       });
       state.activePlanProgramTab = "mastered";
+    } else if (programControl.value === "paused") {
+      (program.targets || []).forEach((target) => {
+        if (normalizePlanStatus(target.status || "active") !== "mastered") {
+          target.status = "paused";
+        }
+      });
+      state.activePlanProgramTab = "paused";
     } else if (previousStatus === "mastered") {
+      state.activePlanProgramTab = "active";
+    } else if (previousStatus === "paused") {
       state.activePlanProgramTab = "active";
     }
     try {
@@ -3101,14 +3138,18 @@ async function handlePlanStatusChange(event) {
   const target = program?.targets?.find((item) => item.id === control.dataset.planTarget);
   if (!target) return;
 
-  const previousStatus = target.status;
+  const previousStatus = normalizePlanStatus(target.status || "active");
   target.status = control.value;
-  if (control.value === "maintenance" && !target.maintenanceDate) {
+  if (control.value === "mastered" && !target.maintenanceDate) {
     target.maintenanceDate = new Date().toISOString().slice(0, 10);
   }
   if (control.value === "mastered") {
     state.activePlanProgramTab = "mastered";
+  } else if (control.value === "paused") {
+    state.activePlanProgramTab = "paused";
   } else if (previousStatus === "mastered") {
+    state.activePlanProgramTab = "active";
+  } else if (previousStatus === "paused") {
     state.activePlanProgramTab = "active";
   }
 
