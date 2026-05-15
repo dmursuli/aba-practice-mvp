@@ -2562,16 +2562,26 @@ function renderSoapSummary() {
   const client = currentClient();
   const entry = selectedSoapEntry();
   const session = entry?.type === "session" ? entry.session : null;
-  const serviceCode = entry?.type === "97151" ? "97151" : (session ? sessionCodeLabel(session) : "Session notes");
-  const selectedLabel = entry?.type === "97151" ? "Assessment note" : (session ? formatDate(session.date) : "None");
+  const serviceCode = entry?.type === "97151"
+    ? "97151"
+    : entry?.type === "97155"
+      ? "97155"
+      : (session ? sessionCodeLabel(session) : "Session notes");
+  const selectedLabel = entry?.type === "97151"
+    ? "Assessment note"
+    : entry?.type === "97155"
+      ? "Treatment plan note"
+      : (session ? formatDate(session.date) : "None");
   const statusLabel = entry?.type === "97151"
     ? (String(currentClient()?.note97151 || "").trim() ? "Saved" : "Not generated")
+    : entry?.type === "97155"
+      ? (String(currentClient()?.note97155 || "").trim() ? "Saved" : "Not generated")
     : (session?.finalized ? "Finalized" : "Draft");
   soapCodeLabel.textContent = serviceCode;
   soapClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
-      <div><strong>${selectedLabel}</strong><span>${entry?.type === "97151" ? "Selected note" : "Selected session"}</span></div>
+      <div><strong>${selectedLabel}</strong><span>${entry?.type === "session" ? "Selected session" : "Selected note"}</span></div>
       <div><strong>${serviceCode}</strong><span>Service code</span></div>
       <div><strong>${statusLabel}</strong><span>Note status</span></div>
     `
@@ -3249,8 +3259,12 @@ async function handleGenerate97155Note() {
   const note = generate97155Note();
   note97155Editor.value = note;
   await savePlan(clientPrograms(), clientBehaviors(), null, note);
+  state.selectedSoapEntryKey = "note-97155";
   note97155Status.textContent = "97155 note generated.";
   planMessage.textContent = "97155 note generated. Review or edit it below.";
+  renderHistory();
+  renderNote();
+  renderSoapSummary();
 }
 
 function generate97151Note() {
@@ -3339,7 +3353,15 @@ function render97151Note() {
 
 async function handleSave97155Note() {
   await savePlan(clientPrograms(), clientBehaviors(), null, note97155Editor.value);
+  if (note97155Editor.value.trim()) {
+    state.selectedSoapEntryKey = "note-97155";
+  } else if (state.selectedSoapEntryKey === "note-97155") {
+    state.selectedSoapEntryKey = "";
+  }
   note97155Status.textContent = "97155 note saved.";
+  renderHistory();
+  renderNote();
+  renderSoapSummary();
 }
 
 function render97155Note() {
@@ -3510,6 +3532,18 @@ function renderHistory() {
         <div class="history-item ${active}">
           <button type="button" class="history-select" data-soap-entry="${entry.key}">
             <span><strong>97151</strong> • <strong>Assessment note</strong></span>
+            <span>${escapeHtml(preview)}</span>
+            <span>Saved note</span>
+          </button>
+        </div>
+      `;
+    }
+    if (entry.type === "97155") {
+      const preview = String(entry.note || "").trim().split(/\n+/)[0] || "Treatment plan note generated from protocol modification work.";
+      return `
+        <div class="history-item ${active}">
+          <button type="button" class="history-select" data-soap-entry="${entry.key}">
+            <span><strong>97155</strong> • <strong>Treatment plan note</strong></span>
             <span>${escapeHtml(preview)}</span>
             <span>Saved note</span>
           </button>
@@ -4277,6 +4311,17 @@ function renderNote() {
     noteStatus.textContent = "This 97151 assessment note is managed from Treatment Plan or Funder Report.";
     return;
   }
+  if (entry.type === "97155") {
+    selectedSoapNoteTitle.textContent = "97155 treatment plan note";
+    soapEditor.value = currentClient()?.note97155 || "";
+    soapEditor.readOnly = true;
+    finalizeButton.disabled = true;
+    printSoapNoteButton.disabled = false;
+    downloadSoapTextButton.disabled = false;
+    downloadSoapHtmlButton.disabled = false;
+    noteStatus.textContent = "This 97155 treatment plan note is managed from Treatment Plan.";
+    return;
+  }
   selectedSoapNoteTitle.textContent = `${sessionCodeLabel(session)} session note`;
   soapEditor.value = session.soapNote || generateSoapNote(session, lookups());
   soapEditor.readOnly = session.finalized;
@@ -4335,6 +4380,9 @@ function handleDownloadSoapNote(format) {
 function soapNoteFileBase(entry) {
   if (entry?.type === "97151") {
     return `${safeFilename(currentClient()?.name || "Client")}-97151-assessment-note`;
+  }
+  if (entry?.type === "97155") {
+    return `${safeFilename(currentClient()?.name || "Client")}-97155-treatment-plan-note`;
   }
   const session = entry?.session || entry;
   return `${safeFilename(lookups().clientName(session.clientId))}-${session.serviceType || "97153"}-${session.date}`;
@@ -4477,6 +4525,13 @@ function soapHistoryEntries() {
     type: "session",
     session
   }));
+  if (String(currentClient()?.note97155 || "").trim()) {
+    entries.unshift({
+      key: "note-97155",
+      type: "97155",
+      note: currentClient().note97155
+    });
+  }
   if (String(currentClient()?.note97151 || "").trim()) {
     entries.unshift({
       key: "note-97151",
