@@ -11,6 +11,7 @@ const state = {
   healthIssues: [],
   users: [],
   selectedSessionId: null,
+  selectedSoapEntryKey: "",
   activeClientId: "",
   activeDomain: "",
   activeSessionTargetTab: "active",
@@ -130,6 +131,7 @@ const planStatusTabs = document.querySelector("#plan-status-tabs");
 const parentClientSummary = document.querySelector("#parent-client-summary");
 const addProgramForm = document.querySelector("#add-program-form");
 const addDomainButton = document.querySelector("#add-domain");
+const deleteDomainButton = document.querySelector("#delete-domain");
 const note97155Editor = document.querySelector("#note-97155");
 const note97155Status = document.querySelector("#note-97155-status");
 const generate97155Button = document.querySelector("#generate-97155-note");
@@ -374,6 +376,7 @@ function bindEvents() {
   addRbtPerformanceAreaButton.addEventListener("click", handleAddRbtPerformanceArea);
   addProgramForm.addEventListener("submit", handleAddProgram);
   addDomainButton.addEventListener("click", handleAddDomain);
+  deleteDomainButton.addEventListener("click", handleDeleteDomain);
   reportForm.addEventListener("submit", handleGenerateFunderReport);
   reportForm.addEventListener("change", renderReportSummary);
   addFadeRowButton.addEventListener("click", () => addFadePlanRow());
@@ -556,6 +559,7 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
   });
   if (resetSession) {
     state.selectedSessionId = null;
+    state.selectedSoapEntryKey = "";
     state.activeDomain = "";
     state.activePlanDomain = "";
     state.activeGraphDomain = "";
@@ -779,6 +783,7 @@ async function handleSubmit(event) {
     payload.soapNote = generateSoapNote(payload, lookups());
     const saved = await createSession(payload);
     state.selectedSessionId = saved.id;
+    state.selectedSoapEntryKey = saved.id;
     clearSessionDraft(payload.clientId);
     formMessage.textContent = "Session saved. Graphs and SOAP note updated.";
     await refreshData();
@@ -820,6 +825,7 @@ async function handleDeleteClient() {
     await refreshData();
     state.activeClientId = workflowClients()[0]?.id || state.clients[0]?.id || "";
     state.selectedSessionId = null;
+    state.selectedSoapEntryKey = "";
     resetRows();
     render();
     clientProfileMessage.textContent = `${client.name} deleted.`;
@@ -2541,14 +2547,20 @@ function setSimpleReportFieldFromInterview(name, value, force = false) {
 
 function renderSoapSummary() {
   const client = currentClient();
-  const session = selectedSession();
-  soapCodeLabel.textContent = session ? sessionCodeLabel(session) : "Session notes";
+  const entry = selectedSoapEntry();
+  const session = entry?.type === "session" ? entry.session : null;
+  const serviceCode = entry?.type === "97151" ? "97151" : (session ? sessionCodeLabel(session) : "Session notes");
+  const selectedLabel = entry?.type === "97151" ? "Assessment note" : (session ? formatDate(session.date) : "None");
+  const statusLabel = entry?.type === "97151"
+    ? (String(currentClient()?.note97151 || "").trim() ? "Saved" : "Not generated")
+    : (session?.finalized ? "Finalized" : "Draft");
+  soapCodeLabel.textContent = serviceCode;
   soapClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
-      <div><strong>${session ? formatDate(session.date) : "None"}</strong><span>Selected session</span></div>
-      <div><strong>${session ? sessionCodeLabel(session) : "None"}</strong><span>Service code</span></div>
-      <div><strong>${session?.finalized ? "Finalized" : "Draft"}</strong><span>Note status</span></div>
+      <div><strong>${selectedLabel}</strong><span>${entry?.type === "97151" ? "Selected note" : "Selected session"}</span></div>
+      <div><strong>${serviceCode}</strong><span>Service code</span></div>
+      <div><strong>${statusLabel}</strong><span>Note status</span></div>
     `
     : "";
 }
@@ -2885,6 +2897,28 @@ async function handleAddDomain() {
   planMessage.textContent = "Domain added.";
 }
 
+async function handleDeleteDomain() {
+  const domain = state.activePlanDomain;
+  if (!domain) {
+    planMessage.textContent = "Select a domain before deleting it.";
+    return;
+  }
+  const programsInDomain = clientPrograms().filter((program) => (program.domain || clientDomains()[0]) === domain);
+  if (programsInDomain.length) {
+    planMessage.textContent = `Move all ${programsInDomain.length} program${programsInDomain.length === 1 ? "" : "s"} out of ${domain} before deleting the domain.`;
+    return;
+  }
+  if (!window.confirm(`Delete the ${domain} domain? This only removes the empty domain shell.`)) return;
+  const remainingDomains = clientDomains().filter((item) => item !== domain);
+  state.activePlanDomain = remainingDomains[0] || "";
+  state.activeDomain = remainingDomains[0] || "";
+  await savePlan(clientPrograms(), clientBehaviors(), {
+    type: "domain-removed",
+    domain
+  }, currentClient()?.note97155 || "", remainingDomains, clientRbtPerformanceAreas(), currentClient()?.note97151 || "");
+  planMessage.textContent = "Domain removed.";
+}
+
 async function handlePlanClick(event) {
   const openProgramGraph = event.target.closest("[data-open-plan-graph]");
   if (openProgramGraph) {
@@ -3072,6 +3106,11 @@ async function handlePlanStatusChange(event) {
   if (control.value === "maintenance" && !target.maintenanceDate) {
     target.maintenanceDate = new Date().toISOString().slice(0, 10);
   }
+  if (control.value === "mastered") {
+    state.activePlanProgramTab = "mastered";
+  } else if (previousStatus === "mastered") {
+    state.activePlanProgramTab = "active";
+  }
 
   try {
     await savePlan(programs, clientBehaviors(), previousStatus !== control.value ? {
@@ -3171,10 +3210,14 @@ async function handleGenerate97151Note() {
     clientRbtPerformanceAreas(),
     note
   );
+  state.selectedSoapEntryKey = "note-97151";
   note97151Status.textContent = "97151 note generated.";
   planNote97151Status.textContent = "97151 note generated.";
   funderExportStatus.textContent = "97151 assessment note generated. Review or edit it below.";
   planMessage.textContent = "97151 assessment note generated. Review or edit it below.";
+  renderHistory();
+  renderNote();
+  renderSoapSummary();
 }
 
 async function handleSave97151Note() {
@@ -3190,8 +3233,16 @@ async function handleSave97151Note() {
     clientRbtPerformanceAreas(),
     note
   );
+  if (note.trim()) {
+    state.selectedSoapEntryKey = "note-97151";
+  } else if (state.selectedSoapEntryKey === "note-97151") {
+    state.selectedSoapEntryKey = "";
+  }
   note97151Status.textContent = "97151 note saved.";
   planNote97151Status.textContent = "97151 note saved.";
+  renderHistory();
+  renderNote();
+  renderSoapSummary();
 }
 
 function render97151Note() {
@@ -3361,20 +3412,33 @@ async function saveRbtPerformanceAreas(areas, message) {
 }
 
 function renderHistory() {
-  const sessions = currentSessions();
+  const entries = soapHistoryEntries();
   const container = document.querySelector("#session-history");
-  if (!sessions.length) {
+  if (!entries.length) {
     container.innerHTML = '<p class="muted">No sessions saved yet.</p>';
     return;
   }
-  container.innerHTML = sessions.map((session) => {
-    const active = selectedSession()?.id === session.id ? "active" : "";
+  container.innerHTML = entries.map((entry) => {
+    const active = selectedSoapEntry()?.key === entry.key ? "active" : "";
+    if (entry.type === "97151") {
+      const preview = String(entry.note || "").trim().split(/\n+/)[0] || "Assessment note generated from intake, report, and treatment planning data.";
+      return `
+        <div class="history-item ${active}">
+          <button type="button" class="history-select" data-soap-entry="${entry.key}">
+            <span><strong>97151</strong> • <strong>Assessment note</strong></span>
+            <span>${escapeHtml(preview)}</span>
+            <span>Saved note</span>
+          </button>
+        </div>
+      `;
+    }
+    const session = entry.session;
     const programSummary = targetEntries(session)
       .map((target) => `${lookups().targetName(target.programId, target.targetId)} ${target.independence}%`)
       .join(", ") || "No target data recorded";
     return `
       <div class="history-item ${active}">
-        <button type="button" class="history-select" data-session-id="${session.id}">
+        <button type="button" class="history-select" data-soap-entry="${entry.key}" data-session-id="${session.id}">
           <span><strong>${sessionCodeLabel(session)}</strong> • <strong>${formatDate(session.date)}</strong> ${session.startTime}-${session.endTime}</span>
           <span>${programSummary}</span>
           <span>${session.finalized ? "Finalized" : "Draft note"}</span>
@@ -3384,9 +3448,10 @@ function renderHistory() {
     `;
   }).join("");
 
-  container.querySelectorAll("[data-session-id]").forEach((button) => {
+  container.querySelectorAll("[data-soap-entry]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.selectedSessionId = button.dataset.sessionId;
+      state.selectedSoapEntryKey = button.dataset.soapEntry;
+      if (button.dataset.sessionId) state.selectedSessionId = button.dataset.sessionId;
       renderHistory();
       renderNote();
       renderSoapSummary();
@@ -3405,6 +3470,7 @@ async function handleDeleteSession(sessionId) {
   try {
     await deleteSession(sessionId);
     if (state.selectedSessionId === sessionId) state.selectedSessionId = null;
+    if (state.selectedSoapEntryKey === sessionId) state.selectedSoapEntryKey = "";
     await refreshData();
     render();
   } catch (error) {
@@ -4103,9 +4169,10 @@ function renderReportProgramInfo(program) {
 }
 
 function renderNote() {
-  const session = selectedSession();
-  if (!session) {
-    selectedSoapNoteTitle.textContent = "Selected session note";
+  const entry = selectedSoapEntry();
+  const session = entry?.type === "session" ? entry.session : null;
+  if (!entry) {
+    selectedSoapNoteTitle.textContent = "Selected note";
     soapEditor.value = "";
     soapEditor.placeholder = "Save or select a session to generate a SOAP note.";
     soapEditor.readOnly = false;
@@ -4113,6 +4180,17 @@ function renderNote() {
     printSoapNoteButton.disabled = true;
     downloadSoapTextButton.disabled = true;
     downloadSoapHtmlButton.disabled = true;
+    return;
+  }
+  if (entry.type === "97151") {
+    selectedSoapNoteTitle.textContent = "97151 assessment note";
+    soapEditor.value = currentClient()?.note97151 || "";
+    soapEditor.readOnly = true;
+    finalizeButton.disabled = true;
+    printSoapNoteButton.disabled = false;
+    downloadSoapTextButton.disabled = false;
+    downloadSoapHtmlButton.disabled = false;
+    noteStatus.textContent = "This 97151 assessment note is managed from Treatment Plan or Funder Report.";
     return;
   }
   selectedSoapNoteTitle.textContent = `${sessionCodeLabel(session)} session note`;
@@ -4126,8 +4204,9 @@ function renderNote() {
 }
 
 function handlePrintSoapNote() {
-  const session = selectedSession();
-  if (!session) return;
+  const entry = selectedSoapEntry();
+  if (!entry) return;
+  const session = entry.type === "session" ? entry.session : null;
   const noteWindow = window.open("", "_blank");
   if (!noteWindow) {
     noteStatus.textContent = "Popup blocked. Allow popups to print the note.";
@@ -4137,7 +4216,7 @@ function handlePrintSoapNote() {
     <!doctype html>
     <html>
       <head>
-        <title>${escapeHtml(soapNoteFileBase(session))}</title>
+        <title>${escapeHtml(soapNoteFileBase(entry))}</title>
         <style>
           body { font-family: Arial, sans-serif; color: #17212b; margin: 32px; line-height: 1.5; }
           h1 { font-size: 22px; margin: 0 0 8px; }
@@ -4148,7 +4227,7 @@ function handlePrintSoapNote() {
       </head>
       <body>
         <h1>${escapeHtml(selectedSoapNoteTitle.textContent)}</h1>
-        <p>${escapeHtml(lookups().clientName(session.clientId))} - ${formatDate(session.date)}</p>
+        <p>${escapeHtml(currentClient()?.name || "Client")}${session ? ` - ${formatDate(session.date)}` : ""}</p>
         <pre>${escapeHtml(soapEditor.value)}</pre>
       </body>
     </html>
@@ -4159,26 +4238,31 @@ function handlePrintSoapNote() {
 }
 
 function handleDownloadSoapNote(format) {
-  const session = selectedSession();
-  if (!session) return;
-  const base = soapNoteFileBase(session);
+  const entry = selectedSoapEntry();
+  if (!entry) return;
+  const base = soapNoteFileBase(entry);
   if (format === "html") {
-    downloadFile(`${base}.html`, soapNoteHtml(session), "text/html");
+    downloadFile(`${base}.html`, soapNoteHtml(entry), "text/html");
     return;
   }
   downloadFile(`${base}.txt`, soapEditor.value, "text/plain");
 }
 
-function soapNoteFileBase(session) {
+function soapNoteFileBase(entry) {
+  if (entry?.type === "97151") {
+    return `${safeFilename(currentClient()?.name || "Client")}-97151-assessment-note`;
+  }
+  const session = entry?.session || entry;
   return `${safeFilename(lookups().clientName(session.clientId))}-${session.serviceType || "97153"}-${session.date}`;
 }
 
-function soapNoteHtml(session) {
+function soapNoteHtml(entry) {
+  const session = entry?.type === "session" ? entry.session : null;
   return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <title>${escapeHtml(soapNoteFileBase(session))}</title>
+    <title>${escapeHtml(soapNoteFileBase(entry))}</title>
     <style>
       body { font-family: Arial, sans-serif; color: #17212b; margin: 32px; line-height: 1.5; }
       h1 { font-size: 22px; margin: 0 0 8px; }
@@ -4188,7 +4272,7 @@ function soapNoteHtml(session) {
   </head>
   <body>
     <h1>${escapeHtml(selectedSoapNoteTitle.textContent)}</h1>
-    <p>${escapeHtml(lookups().clientName(session.clientId))} - ${formatDate(session.date)}</p>
+    <p>${escapeHtml(currentClient()?.name || "Client")}${session ? ` - ${formatDate(session.date)}` : ""}</p>
     <pre>${escapeHtml(soapEditor.value)}</pre>
   </body>
 </html>`;
@@ -4300,6 +4384,27 @@ function currentSessions() {
 function selectedSession() {
   const sessions = currentSessions();
   return sessions.find((session) => session.id === state.selectedSessionId) || sessions[0];
+}
+
+function soapHistoryEntries() {
+  const entries = currentSessions().map((session) => ({
+    key: session.id,
+    type: "session",
+    session
+  }));
+  if (String(currentClient()?.note97151 || "").trim()) {
+    entries.unshift({
+      key: "note-97151",
+      type: "97151",
+      note: currentClient().note97151
+    });
+  }
+  return entries;
+}
+
+function selectedSoapEntry() {
+  const entries = soapHistoryEntries();
+  return entries.find((entry) => entry.key === state.selectedSoapEntryKey) || entries[0] || null;
 }
 
 function sessionCodeLabel(session) {
