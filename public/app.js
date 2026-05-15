@@ -2909,13 +2909,14 @@ async function handleAddProgram(event) {
 async function handleAddDomain() {
   const name = window.prompt("Domain name");
   if (!name?.trim()) return;
+  const { programs, behaviors } = currentPlanDraft();
   const domains = [...clientDomains()];
   if (domains.some((domain) => domain.toLowerCase() === name.trim().toLowerCase())) {
     planMessage.textContent = "That domain already exists.";
     return;
   }
   domains.push(name.trim());
-  await savePlan(clientPrograms(), clientBehaviors(), {
+  await savePlan(programs, behaviors, {
     type: "domain-added",
     domain: name.trim()
   }, currentClient()?.note97155 || "", domains);
@@ -2930,7 +2931,8 @@ async function handleDeleteDomain() {
     planMessage.textContent = "Select a domain before deleting it.";
     return;
   }
-  const programsInDomain = clientPrograms().filter((program) => (program.domain || clientDomains()[0]) === domain);
+  const { programs, behaviors } = currentPlanDraft();
+  const programsInDomain = programs.filter((program) => (program.domain || clientDomains()[0]) === domain);
   if (programsInDomain.length) {
     planMessage.textContent = `Move all ${programsInDomain.length} program${programsInDomain.length === 1 ? "" : "s"} out of ${domain} before deleting the domain.`;
     return;
@@ -2939,7 +2941,7 @@ async function handleDeleteDomain() {
   const remainingDomains = clientDomains().filter((item) => item !== domain);
   state.activePlanDomain = remainingDomains[0] || "";
   state.activeDomain = remainingDomains[0] || "";
-  await savePlan(clientPrograms(), clientBehaviors(), {
+  await savePlan(programs, behaviors, {
     type: "domain-removed",
     domain
   }, currentClient()?.note97155 || "", remainingDomains, clientRbtPerformanceAreas(), currentClient()?.note97151 || "");
@@ -2956,14 +2958,14 @@ async function handlePlanClick(event) {
   if (addBehavior) {
     const name = window.prompt("Behavior name");
     if (!name?.trim()) return;
-    const behaviors = structuredClone(clientBehaviors());
+    const { programs, behaviors } = currentPlanDraft();
     const newBehavior = {
       id: slugify(name, "behavior", behaviors.map((behavior) => behavior.id)),
       name: name.trim(),
       status: "active"
     };
     behaviors.push(newBehavior);
-    await savePlan(clientPrograms(), behaviors, {
+    await savePlan(programs, behaviors, {
       type: "behavior-added",
       targetName: newBehavior.name
     });
@@ -2971,11 +2973,11 @@ async function handlePlanClick(event) {
   }
   const removeBehavior = event.target.closest("[data-remove-plan-behavior]");
   if (removeBehavior) {
-    const behaviors = structuredClone(clientBehaviors());
+    const { programs, behaviors } = currentPlanDraft();
     const target = behaviors.find((behavior) => behavior.id === removeBehavior.dataset.removePlanBehavior);
     if (!target) return;
     if (!window.confirm(`Remove ${target.name}?`)) return;
-    await savePlan(clientPrograms(), behaviors.filter((behavior) => behavior.id !== target.id), {
+    await savePlan(programs, behaviors.filter((behavior) => behavior.id !== target.id), {
       type: "behavior-removed",
       targetName: target.name
     });
@@ -2985,7 +2987,7 @@ async function handlePlanClick(event) {
   if (!addTarget) return;
   const name = window.prompt("Target name");
   if (!name?.trim()) return;
-  const programs = structuredClone(clientPrograms());
+  const { programs, behaviors } = currentPlanDraft();
   const program = programs.find((item) => item.id === addTarget.dataset.addTarget);
   if (!program) return;
   program.targets = program.targets || [];
@@ -2998,7 +3000,7 @@ async function handlePlanClick(event) {
     note: ""
   };
   program.targets.push(newTarget);
-  await savePlan(programs, clientBehaviors(), {
+  await savePlan(programs, behaviors, {
     type: "target-added",
     domain: program.domain,
     programId: program.id,
@@ -3041,8 +3043,7 @@ function closeProgramGraphModal() {
 
 async function handlePlanTextEdit(event) {
   const input = event.target;
-  const programs = structuredClone(clientPrograms());
-  const behaviors = structuredClone(clientBehaviors());
+  const { programs, behaviors } = currentPlanDraft();
   if (input.dataset.programName) {
     const program = programs.find((item) => item.id === input.dataset.programName);
     if (program && input.value.trim()) program.name = input.value.trim();
@@ -3071,26 +3072,26 @@ async function handlePlanTextEdit(event) {
 }
 
 async function handleProgramDomainChange(event) {
-  const programs = structuredClone(clientPrograms());
+  const { programs, behaviors } = currentPlanDraft();
   const program = programs.find((item) => item.id === event.target.dataset.programDomain);
   if (!program) return;
   program.domain = event.target.value;
-  await savePlan(programs, clientBehaviors());
+  await savePlan(programs, behaviors);
 }
 
 async function handlePlanStatusChange(event) {
   const behaviorControl = event.target.closest("[data-behavior-status]");
   if (behaviorControl) {
-    const behaviors = structuredClone(clientBehaviors());
+    const { programs, behaviors } = currentPlanDraft();
     const behavior = behaviors.find((item) => item.id === behaviorControl.dataset.behaviorStatus);
     if (!behavior) return;
     behavior.status = behaviorControl.value;
-    await savePlan(clientPrograms(), behaviors);
+    await savePlan(programs, behaviors);
     return;
   }
   const programControl = event.target.closest("[data-plan-program-status]");
   if (programControl) {
-    const programs = structuredClone(clientPrograms());
+    const { programs, behaviors } = currentPlanDraft();
     const program = programs.find((item) => item.id === programControl.dataset.planProgramStatus);
     if (!program) return;
     const previousStatus = normalizePlanStatus(program.status || "active");
@@ -3116,7 +3117,7 @@ async function handlePlanStatusChange(event) {
       state.activePlanProgramTab = "active";
     }
     try {
-      await savePlan(programs, clientBehaviors(), previousStatus !== programControl.value ? {
+      await savePlan(programs, behaviors, previousStatus !== programControl.value ? {
         type: "program-status-changed",
         domain: program.domain,
         programId: program.id,
@@ -3132,8 +3133,7 @@ async function handlePlanStatusChange(event) {
   }
   const control = event.target.closest("[data-plan-program][data-plan-target]");
   if (!control) return;
-  const client = currentClient();
-  const programs = structuredClone(clientPrograms());
+  const { programs, behaviors } = currentPlanDraft();
   const program = programs.find((item) => item.id === control.dataset.planProgram);
   const target = program?.targets?.find((item) => item.id === control.dataset.planTarget);
   if (!target) return;
@@ -3145,16 +3145,12 @@ async function handlePlanStatusChange(event) {
   }
   if (control.value === "mastered") {
     state.activePlanProgramTab = "mastered";
-  } else if (control.value === "paused") {
-    state.activePlanProgramTab = "paused";
   } else if (previousStatus === "mastered") {
-    state.activePlanProgramTab = "active";
-  } else if (previousStatus === "paused") {
     state.activePlanProgramTab = "active";
   }
 
   try {
-    await savePlan(programs, clientBehaviors(), previousStatus !== control.value ? {
+    await savePlan(programs, behaviors, previousStatus !== control.value ? {
       type: "target-status-changed",
       domain: program.domain,
       programId: program.id,
@@ -3200,6 +3196,53 @@ async function savePlan(
   if (index >= 0) state.clients[index] = updated;
   resetRows();
   render();
+}
+
+function currentPlanDraft() {
+  const programs = structuredClone(clientPrograms());
+  const behaviors = structuredClone(clientBehaviors());
+
+  planReview.querySelectorAll("[data-program-name]").forEach((input) => {
+    const program = programs.find((item) => item.id === input.dataset.programName);
+    if (program && input.value.trim()) program.name = input.value.trim();
+  });
+  planReview.querySelectorAll("[data-program-objective]").forEach((input) => {
+    const program = programs.find((item) => item.id === input.dataset.programObjective);
+    if (program) program.objective = input.value.trim();
+  });
+  planReview.querySelectorAll("[data-target-name]").forEach((input) => {
+    const [programId, targetId] = input.dataset.targetName.split(":");
+    const target = programs.find((item) => item.id === programId)?.targets?.find((item) => item.id === targetId);
+    if (target && input.value.trim()) target.name = input.value.trim();
+  });
+  planReview.querySelectorAll("[data-target-note]").forEach((input) => {
+    const [programId, targetId] = input.dataset.targetNote.split(":");
+    const target = programs.find((item) => item.id === programId)?.targets?.find((item) => item.id === targetId);
+    if (target) target.note = input.value.trim();
+  });
+  planReview.querySelectorAll("[data-program-domain]").forEach((select) => {
+    const program = programs.find((item) => item.id === select.dataset.programDomain);
+    if (program) program.domain = select.value;
+  });
+  planReview.querySelectorAll("[data-plan-program-status]").forEach((select) => {
+    const program = programs.find((item) => item.id === select.dataset.planProgramStatus);
+    if (program) program.status = select.value;
+  });
+  planReview.querySelectorAll("[data-plan-program][data-plan-target]").forEach((select) => {
+    const program = programs.find((item) => item.id === select.dataset.planProgram);
+    const target = program?.targets?.find((item) => item.id === select.dataset.planTarget);
+    if (target) target.status = select.value;
+  });
+  planReview.querySelectorAll("[data-behavior-name]").forEach((input) => {
+    const behavior = behaviors.find((item) => item.id === input.dataset.behaviorName);
+    if (behavior && input.value.trim()) behavior.name = input.value.trim();
+  });
+  planReview.querySelectorAll("[data-behavior-status]").forEach((select) => {
+    const behavior = behaviors.find((item) => item.id === select.dataset.behaviorStatus);
+    if (behavior) behavior.status = select.value;
+  });
+
+  return { programs, behaviors };
 }
 
 async function handleGenerate97155Note() {
@@ -4401,7 +4444,8 @@ function clientRbtPerformanceAreas() {
 
 function clientDomains() {
   const programDomains = clientPrograms().map((program) => program.domain).filter(Boolean);
-  return [...new Set([...(currentClient()?.domains || []), ...domainOptions, ...programDomains])];
+  const configuredDomains = [...new Set([...(currentClient()?.domains || []), ...programDomains])];
+  return configuredDomains.length ? configuredDomains : [...domainOptions];
 }
 
 function groupedProgramsByDomain(programs) {
