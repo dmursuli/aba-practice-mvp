@@ -2799,7 +2799,7 @@ function renderPlanProgram(program, tab = state.activePlanProgramTab) {
         <label>
           Domain
           <select data-program-domain="${program.id}" aria-label="${program.name} domain">
-            ${domainOptions.map((domain) => `
+            ${clientDomains().map((domain) => `
               <option value="${escapeHtml(domain)}" ${program.domain === domain ? "selected" : ""}>${escapeHtml(domain)}</option>
             `).join("")}
           </select>
