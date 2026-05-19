@@ -1,4 +1,4 @@
-import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, getAuditLog, getCurrentUser, getData, getPracticeBackup, getUsers, login, logout, restorePracticeBackup, updateClientPlan, updateClientProfile, updateNote, updateUser, uploadClientDocument } from "./api.js";
+import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, getAuditLog, getCurrentUser, getData, getPracticeBackup, getUsers, login, logout, restorePracticeBackup, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument } from "./api.js";
 import { drawLineChart } from "./charts.js";
 import { generateSoapNote } from "./soap.js";
 
@@ -23,8 +23,8 @@ const state = {
 };
 
 const roleViews = {
-  admin: ["clients", "users", "session", "intake", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
-  bcba: ["clients", "session", "intake", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
+  admin: ["clients", "users", "session", "intake", "workflow", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
+  bcba: ["clients", "session", "intake", "workflow", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
   rbt: ["session", "graphs", "soap"],
   "read-only": ["graphs", "report", "soap"]
 };
@@ -45,6 +45,12 @@ const defaultRbtPerformanceAreas = [
   { id: "data", label: "Collected accurate session data" },
   { id: "engagement", label: "Maintained client engagement and instructional pace" },
   { id: "professional", label: "Responded to feedback and communicated professionally" }
+];
+
+const workflowColumns = [
+  { id: "todo", label: "To do" },
+  { id: "in-progress", label: "In progress" },
+  { id: "done", label: "Done" }
 ];
 
 const agencyOptions = ["Triumph ABA", "One Clinical Care"];
@@ -91,6 +97,9 @@ const graphsClientSummary = document.querySelector("#graphs-client-summary");
 const graphScopeTabs = document.querySelector("#graph-scope-tabs");
 const graphDomainTabs = document.querySelector("#graph-domain-tabs");
 const reportClientSummary = document.querySelector("#report-client-summary");
+const workflowBoard = document.querySelector("#workflow-board");
+const workflowClientSummary = document.querySelector("#workflow-client-summary");
+const workflowMessage = document.querySelector("#workflow-message");
 const reportForm = document.querySelector("#funder-report-form");
 const reportPreview = document.querySelector("#funder-report-preview");
 const fadePlanRows = document.querySelector("#fade-plan-rows");
@@ -117,6 +126,8 @@ const programGraphModalSubtitle = document.querySelector("#program-graph-modal-s
 const programGraphModalCanvas = document.querySelector("#program-graph-modal-canvas");
 const clientManagementSummary = document.querySelector("#client-management-summary");
 const clientProfileMessage = document.querySelector("#client-profile-message");
+const authorizationUsage = document.querySelector("#authorization-usage");
+const authorizationUsageNote = document.querySelector("#authorization-usage-note");
 const clientDocumentMessage = document.querySelector("#client-document-message");
 const clientDocumentList = document.querySelector("#client-document-list");
 const clientAdminToolbar = document.querySelector("#client-admin-toolbar");
@@ -364,6 +375,8 @@ function bindEvents() {
   intakeVbMappLevelSelect.addEventListener("input", updateVbMappVisibility);
   intakeForm.addEventListener("input", saveIntakeDraft);
   intakeForm.addEventListener("submit", handleIntakeSubmit);
+  workflowBoard?.addEventListener("change", handleWorkflowBoardChange);
+  workflowBoard?.addEventListener("focusout", handleWorkflowBoardBlur);
   parentTrainingForm.addEventListener("input", (event) => {
     const row = event.target.closest(".parent-goal-row");
     if (row) updateParentGoalScore(row);
@@ -1274,6 +1287,7 @@ function syncClientProfileForm() {
   clientProfileForm.elements.assessmentConductedBy.value = client.profile?.assessment?.conductedBy || "";
   clientProfileForm.elements.assessmentNotes.value = client.profile?.assessment?.notes || "";
   clientProfileForm.elements.assessmentFile.value = "";
+  renderAuthorizationUsage();
 }
 
 function syncIntakeInterviewForm() {
@@ -1559,6 +1573,7 @@ function render() {
   renderClientManagementSummary();
   renderClientDocuments();
   renderSummary();
+  renderWorkflowBoard();
   renderSoapSummary();
   renderDomainTabs();
   renderGraphsSummary();
@@ -1819,6 +1834,126 @@ function renderSummary() {
     : "<p>No client selected.</p>";
 }
 
+function renderWorkflowBoard() {
+  if (!workflowBoard || !workflowClientSummary) return;
+  const client = currentClient();
+  const board = clientWorkflowBoard();
+  const counts = workflowColumns.reduce((acc, column) => {
+    acc[column.id] = board.filter((card) => card.status === column.id).length;
+    return acc;
+  }, {});
+  const completedItems = board.reduce((sum, card) => sum + (card.checklist || []).filter((item) => item.done).length, 0);
+  const totalItems = board.reduce((sum, card) => sum + (card.checklist || []).length, 0);
+
+  workflowClientSummary.innerHTML = client
+    ? `
+      <div><strong>${client.name}</strong><span>Client</span></div>
+      <div><strong>${workflowCycleLabel(client)}</strong><span>Authorization cycle</span></div>
+      <div><strong>${counts.todo || 0}</strong><span>To do</span></div>
+      <div><strong>${counts["in-progress"] || 0}</strong><span>In progress</span></div>
+      <div><strong>${counts.done || 0}</strong><span>Done</span></div>
+      <div><strong>${completedItems}/${totalItems}</strong><span>Checklist items complete</span></div>
+      <div><strong>Auto</strong><span>Updated from chart evidence</span></div>
+    `
+    : "";
+
+  workflowBoard.innerHTML = workflowColumns.map((column) => `
+    <section class="workflow-column">
+      <div class="workflow-column-heading">
+        <h3>${column.label}</h3>
+        <span>${counts[column.id] || 0} card${counts[column.id] === 1 ? "" : "s"}</span>
+      </div>
+      <div class="workflow-card-list">
+        ${board.filter((card) => card.status === column.id).map((card) => renderWorkflowCard(card)).join("") || '<p class="muted">Nothing here yet.</p>'}
+      </div>
+    </section>
+  `).join("");
+
+  workflowMessage.textContent = "";
+}
+
+function renderWorkflowCard(card) {
+  const completed = (card.checklist || []).filter((item) => item.done).length;
+  const total = (card.checklist || []).length;
+  const statusLabel = workflowColumns.find((column) => column.id === card.status)?.label || "To do";
+  return `
+    <article class="workflow-card workflow-card--${escapeHtml(card.status)}" data-workflow-card="${card.id}">
+      <div class="workflow-card-header">
+        <div>
+          <p class="eyebrow">${escapeHtml(card.timeline)}</p>
+          <h4>${escapeHtml(card.title)}</h4>
+        </div>
+        <span class="workflow-status-chip workflow-status-chip--${escapeHtml(card.status)}">${escapeHtml(statusLabel)}</span>
+      </div>
+      <div class="workflow-meta-row">
+        <span class="metric-pill">${escapeHtml(card.deliverable)}</span>
+        ${(card.cptCodes || []).map((code) => `<span class="health-badge">${escapeHtml(code)}</span>`).join("")}
+        <span class="muted">${completed}/${total} checklist items complete</span>
+      </div>
+      ${card.evidence?.length ? `
+        <div class="workflow-evidence-list">
+          ${card.evidence.map((item) => `<span class="workflow-evidence-pill">${escapeHtml(item)}</span>`).join("")}
+        </div>
+      ` : '<p class="muted">Waiting on assessment fields, uploaded documents, notes, or session activity.</p>'}
+      <div class="workflow-checklist">
+        ${(card.checklist || []).map((item) => `
+          <label class="workflow-checklist-item ${item.done ? "is-complete" : ""}">
+            <input type="checkbox" ${item.done ? "checked" : ""} disabled>
+            <span>${escapeHtml(item.label)}</span>
+          </label>
+        `).join("")}
+      </div>
+      <label>
+        Notes
+        <textarea rows="3" data-workflow-notes="${card.id}" placeholder="Client-specific notes, blockers, or follow-up">${escapeHtml(card.notes || "")}</textarea>
+      </label>
+    </article>
+  `;
+}
+
+async function handleWorkflowBoardChange(event) {
+  const statusSelect = event.target.closest("[data-workflow-status]");
+  if (statusSelect) {
+    const board = clientWorkflowBoard();
+    const card = board.find((item) => item.id === statusSelect.dataset.workflowStatus);
+    if (!card) return;
+    card.status = statusSelect.value;
+    await saveWorkflowBoard(board, "Workflow status updated.");
+    return;
+  }
+  const checklistInput = event.target.closest("[data-workflow-check]");
+  if (checklistInput) {
+    const [cardId, itemId] = checklistInput.dataset.workflowCheck.split(":");
+    const board = clientWorkflowBoard();
+    const card = board.find((item) => item.id === cardId);
+    const item = card?.checklist?.find((entry) => entry.id === itemId);
+    if (!item) return;
+    item.done = checklistInput.checked;
+    await saveWorkflowBoard(board, "Workflow checklist updated.");
+  }
+}
+
+async function handleWorkflowBoardBlur(event) {
+  const notesField = event.target.closest("[data-workflow-notes]");
+  if (!notesField) return;
+  const board = clientWorkflowBoard();
+  const card = board.find((item) => item.id === notesField.dataset.workflowNotes);
+  if (!card || (card.notes || "") === notesField.value.trim()) return;
+  card.notes = notesField.value.trim();
+  await saveWorkflowBoard(board, "Workflow notes saved.");
+}
+
+async function saveWorkflowBoard(board, message = "") {
+  try {
+    const updated = await updateClientWorkflow(currentClient().id, board);
+    replaceClient(updated);
+    render();
+    workflowMessage.textContent = message;
+  } catch (error) {
+    workflowMessage.textContent = error.message;
+  }
+}
+
 function sessionAssignableTargets(status = "active") {
   return clientPrograms().flatMap((program) => {
     const programStatus = normalizePlanStatus(program.status || "active");
@@ -1936,6 +2071,70 @@ function renderClientManagementSummary() {
     <div><strong>${activeClients} / ${archivedClients}</strong><span>Active / archived</span></div>
     <div><strong>${client?.name || "None"}</strong><span>${client?.agency || "Selected client"}</span></div>
   `;
+}
+
+function renderAuthorizationUsage() {
+  if (!authorizationUsage || !authorizationUsageNote) return;
+  const client = currentClient();
+  if (!client) {
+    authorizationUsage.innerHTML = "";
+    authorizationUsageNote.textContent = "";
+    return;
+  }
+  const usage = authorizationUsageByCode(client);
+  authorizationUsage.innerHTML = usage.map((row) => {
+    const remainingClass = row.percentUsed >= 80 ? "medium" : "low";
+    return `
+      <div>
+        <strong>${row.code}</strong>
+        <span>${formatUsageNumber(row.usedHours)}h / ${row.usedUnits}u used</span>
+        <span>${formatUsageNumber(row.approvedHours)}h / ${row.approvedUnits}u approved</span>
+        <span class="health-badge ${remainingClass}">${formatUsageNumber(row.remainingHours)}h / ${row.remainingUnits}u left</span>
+      </div>
+    `;
+  }).join("");
+  authorizationUsageNote.textContent = "97153 and 97156 usage update automatically from saved sessions in the current authorization period. 97151 and 97155 will show 0 until timed billing entries are captured for those codes.";
+}
+
+function authorizationUsageByCode(client) {
+  const cycle = currentAuthorizationCycle(client);
+  const timedRows = state.sessions
+    .filter((session) => session.clientId === client.id && dateFallsInCycle(session.date, cycle))
+    .map((session) => billingRow(session));
+  const services = client.profile?.authorization?.services || {};
+  return ["97153", "97155", "97156", "97151"].map((code) => {
+    const approvedHours = Number(services?.[code]?.hours || 0);
+    const approvedUnits = Number(services?.[code]?.units || 0);
+    const matchingRows = timedRows.filter((row) => row.codeValue === code);
+    const usedMinutes = matchingRows.reduce((sum, row) => sum + row.minutes, 0);
+    const usedUnits = matchingRows.reduce((sum, row) => sum + row.units, 0);
+    const usedHours = roundUsage(usedMinutes / 60);
+    const remainingHours = roundUsage(Math.max(approvedHours - usedHours, 0));
+    const remainingUnits = Math.max(approvedUnits - usedUnits, 0);
+    const percentUsed = approvedUnits > 0
+      ? Math.round((usedUnits / approvedUnits) * 100)
+      : approvedHours > 0
+        ? Math.round((usedHours / approvedHours) * 100)
+        : 0;
+    return {
+      code,
+      approvedHours,
+      approvedUnits,
+      usedHours,
+      usedUnits,
+      remainingHours,
+      remainingUnits,
+      percentUsed
+    };
+  });
+}
+
+function roundUsage(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function formatUsageNumber(value) {
+  return roundUsage(value).toFixed(Number.isInteger(roundUsage(value)) ? 0 : 2);
 }
 
 function renderUsers() {
@@ -4469,6 +4668,271 @@ function currentClientProfilePayload(client = currentClient()) {
     intakeInterview: structuredClone(client?.profile?.intakeInterview || {}),
     parentTrainingGoals: structuredClone(client?.profile?.parentTrainingGoals || [])
   };
+}
+
+function defaultClinicalWorkflowBoard() {
+  return [
+    workflowCard("initial-assessment", "Conduct initial assessment", "1 week", "Completed assessment", ["97151"], [
+      "Conduct and document the initial assessment"
+    ]),
+    workflowCard("week-1-2", "Assessment setup and curriculum probing", "Week 1-2", "Integrity checklist, programs on Rethink", ["97155"], [
+      "Establish rapport",
+      "Select and administer developmental curriculum (VB-MAPP, ABLLS-R, AFLS)",
+      "Probe and write skill acquisition programs",
+      "Collect ABC data for behaviors identified during assessment"
+    ]),
+    workflowCard("week-3-4", "Early implementation and behavior plan drafting", "Week 3-4", "Integrity checklist, behavior plan draft", ["97155"], [
+      "Continue implementing skill acquisition programs",
+      "Complete grid of developmental curriculum",
+      "Probe behavior reduction strategies appropriate to client's skills"
+    ]),
+    workflowCard("week-5-6", "Caregiver presentation and plan drafting", "Week 5-6", "Integrity checklist, behavior plan draft", ["97155", "97156"], [
+      "Complete all items of session task list",
+      "Present developmental curriculum grid to caregivers",
+      "Draft and complete behavior reduction plan"
+    ]),
+    workflowCard("week-7", "Review behavior plan with caregivers", "Week 7", "Integrity checklist, behavior plan draft", ["97155", "97156"], [
+      "Complete all items of session task list",
+      "Meet with caregivers to review behavior plan and collect feedback"
+    ]),
+    workflowCard("week-8-9", "Finalize signed behavior plan", "Week 8-9", "Signed behavior plan", ["97155", "97156"], [
+      "Complete all items of session task list",
+      "Finalize behavior plan and present final draft to caregiver",
+      "Collect caregiver signature"
+    ]),
+    workflowCard("week-10-17", "Ongoing integrity checks", "Week 10-17", "Integrity checklists", ["97155"], [
+      "Complete all items of session task list"
+    ]),
+    workflowCard("week-18-20", "Prepare for 6-month reassessment", "Week 18-20", "Integrity checklists", ["97155", "97156"], [
+      "Complete all items of session task list",
+      "Send standardized curriculums to caregivers in preparation for 6 month reassessment"
+    ]),
+    workflowCard("week-20-22", "Complete reassessment", "Week 20-22", "Completed reassessment", ["97151"], [
+      "Complete and submit reassessment"
+    ])
+  ];
+}
+
+function workflowCard(id, title, timeline, deliverable, cptCodes, checklist) {
+  return {
+    id,
+    title,
+    timeline,
+    deliverable,
+    cptCodes,
+    status: "todo",
+    notes: "",
+    checklist: checklist.map((label, index) => ({
+      id: `${id}-item-${index + 1}`,
+      label,
+      done: false
+    }))
+  };
+}
+
+function clientWorkflowBoard() {
+  const client = currentClient();
+  const storedBoard = client?.workflowBoard;
+  const board = structuredClone(Array.isArray(storedBoard) && storedBoard.length ? storedBoard : defaultClinicalWorkflowBoard());
+  return deriveWorkflowBoardFromClient(client, board);
+}
+
+function deriveWorkflowBoardFromClient(client, board) {
+  if (!client) return board;
+  const noteByCard = new Map(board.map((card) => [card.id, card.notes || ""]));
+  const cycle = currentAuthorizationCycle(client);
+  const sessions = currentSessions().filter((session) => dateFallsInCycle(session.date, cycle));
+  const parentSessions = sessions.filter((session) => session.serviceType === "parent-training");
+  const directSessions = sessions.filter((session) => (session.serviceType || "97153") === "97153");
+  const documents = (client.profile?.documents || []).filter((document) => dateFallsInCycle(document.date || document.createdAt, cycle));
+  const behaviors = clientBehaviors();
+  const programs = clientPrograms();
+  const assessment = client.profile?.assessment || {};
+  const cyclePlanChanges = (client.planChangeLog || []).filter((change) => dateFallsInCycle(change.date || change.createdAt, cycle));
+  const hasAssessmentRecord = Boolean(
+    dateFallsInCycle(assessment.date, cycle) && String(assessment.date || "").trim()
+    || String(assessment.conductedBy || "").trim()
+    || (dateFallsInCycle(assessment.date, cycle) && String(assessment.fileName || "").trim())
+    || (dateFallsInCycle(assessment.date, cycle) && String(assessment.notes || "").trim())
+  );
+  const hasNote97151 = Boolean(String(client.note97151 || "").trim()) && dateFallsInCycle(assessment.date, cycle);
+  const hasNote97155 = Boolean(String(client.note97155 || "").trim()) && Boolean(cyclePlanChanges.length || parentSessions.length);
+  const hasAssessmentDocument = documents.some((document) => ["standardized-assessment", "fba-assessment"].includes(document.type));
+  const hasBehaviorPlanDocument = documents.some((document) => document.type === "behavior-support-plan");
+  const hasFunderReportDocument = documents.some((document) => document.type === "funder-report");
+  const hasSignedBehaviorPlan = documents.some((document) => document.type === "behavior-support-plan" && workflowText(document).match(/\bsign(ed|ature)?\b/i));
+  const hasAuthorizationDocument = documents.some((document) => document.type === "authorization");
+  const hasAssessmentEvidence = hasAssessmentRecord || hasAssessmentDocument || hasNote97151;
+  const hasBehaviorPlanDraft = hasBehaviorPlanDocument || hasFunderReportDocument || hasNote97155;
+  const hasCaregiverReview = parentSessions.length > 0 || workflowText(client.note97155 || "").match(/\bcaregiver\b/i);
+  const hasReassessment = hasNote97151 && (hasFunderReportDocument || hasAssessmentDocument);
+  const significantDirectWork = directSessions.length >= 4;
+  const ongoingIntegrityChecks = directSessions.length >= 8 || Boolean(cyclePlanChanges.length);
+  const evidenceMap = {
+    "initial-assessment": {
+      done: [hasAssessmentEvidence],
+      evidence: workflowEvidenceList([
+        hasAssessmentRecord && `Assessment entered (${formatDate(assessment.date) || "date pending"})`,
+        hasAssessmentDocument && "Assessment file uploaded",
+        hasNote97151 && "97151 note generated"
+      ])
+    },
+    "week-1-2": {
+      done: [
+        directSessions.length > 0,
+        hasAssessmentEvidence,
+        programs.length > 0,
+        behaviors.length > 0
+      ],
+      evidence: workflowEvidenceList([
+        directSessions.length > 0 && `${directSessions.length} direct session${directSessions.length === 1 ? "" : "s"} logged`,
+        hasAssessmentEvidence && "Assessment materials documented",
+        programs.length > 0 && `${programs.length} program${programs.length === 1 ? "" : "s"} on plan`,
+        behaviors.length > 0 && `${behaviors.length} behavior${behaviors.length === 1 ? "" : "s"} tracked`
+      ])
+    },
+    "week-3-4": {
+      done: [
+        directSessions.length >= 2,
+        hasAssessmentEvidence,
+        hasBehaviorPlanDraft
+      ],
+      evidence: workflowEvidenceList([
+        directSessions.length >= 2 && "Implementation sessions underway",
+        hasAssessmentEvidence && "Curriculum / assessment materials present",
+        hasBehaviorPlanDraft && "Behavior plan drafting evidence present"
+      ])
+    },
+    "week-5-6": {
+      done: [
+        significantDirectWork,
+        parentSessions.length > 0,
+        hasBehaviorPlanDraft
+      ],
+      evidence: workflowEvidenceList([
+        significantDirectWork && "Session task list activity established",
+        parentSessions.length > 0 && `${parentSessions.length} caregiver training session${parentSessions.length === 1 ? "" : "s"} logged`,
+        hasBehaviorPlanDraft && "Behavior plan draft present"
+      ])
+    },
+    "week-7": {
+      done: [
+        significantDirectWork,
+        hasCaregiverReview
+      ],
+      evidence: workflowEvidenceList([
+        significantDirectWork && "Ongoing clinical work documented",
+        hasCaregiverReview && "Caregiver review evidence found"
+      ])
+    },
+    "week-8-9": {
+      done: [
+        significantDirectWork,
+        hasBehaviorPlanDocument,
+        hasSignedBehaviorPlan
+      ],
+      evidence: workflowEvidenceList([
+        significantDirectWork && "Session task list activity established",
+        hasBehaviorPlanDocument && "Behavior support plan uploaded",
+        hasSignedBehaviorPlan && "Signed behavior plan detected"
+      ])
+    },
+    "week-10-17": {
+      done: [ongoingIntegrityChecks],
+      evidence: workflowEvidenceList([
+        ongoingIntegrityChecks && "Integrity / ongoing implementation evidence found",
+        hasNote97155 && "97155 treatment-plan note saved this cycle"
+      ])
+    },
+    "week-18-20": {
+      done: [
+        ongoingIntegrityChecks,
+        hasAuthorizationDocument || hasAssessmentDocument || hasFunderReportDocument
+      ],
+      evidence: workflowEvidenceList([
+        ongoingIntegrityChecks && "Ongoing work still active",
+        (hasAuthorizationDocument || hasAssessmentDocument || hasFunderReportDocument) && "Reassessment prep files are present"
+      ])
+    },
+    "week-20-22": {
+      done: [hasReassessment],
+      evidence: workflowEvidenceList([
+        hasNote97151 && "97151 reassessment note generated this cycle",
+        (hasFunderReportDocument || hasAssessmentDocument) && "Reassessment support document uploaded"
+      ])
+    }
+  };
+
+  return board.map((card) => {
+    const derived = evidenceMap[card.id] || { done: [], evidence: [] };
+    const checklist = (card.checklist || []).map((item, index) => ({
+      ...item,
+      done: Boolean(derived.done[index])
+    }));
+    const completed = checklist.filter((item) => item.done).length;
+    const total = checklist.length;
+    const status = total && completed === total
+      ? "done"
+      : completed > 0
+        ? "in-progress"
+        : "todo";
+    return {
+      ...card,
+      notes: noteByCard.get(card.id) || "",
+      status,
+      checklist,
+      evidence: derived.evidence
+    };
+  });
+}
+
+function workflowEvidenceList(items) {
+  return items.filter(Boolean);
+}
+
+function workflowText(value) {
+  return String(value || "").trim();
+}
+
+function currentAuthorizationCycle(client) {
+  const authStart = parseDateOnly(client?.profile?.authorization?.startDate);
+  const authEnd = parseDateOnly(client?.profile?.authorization?.endDate);
+  const fallbackStart = parseDateOnly(client?.createdAt) || new Date();
+  const start = authStart || fallbackStart;
+  const end = authEnd || addMonths(start, 6);
+  return { start, end };
+}
+
+function workflowCycleLabel(client) {
+  const cycle = currentAuthorizationCycle(client);
+  return `${formatDate(dateInputValue(cycle.start))} - ${formatDate(dateInputValue(cycle.end))}`;
+}
+
+function parseDateOnly(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const isoDate = text.includes("T") ? text.slice(0, 10) : text;
+  const parsed = new Date(`${isoDate}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function addMonths(date, months) {
+  const copy = new Date(date.getTime());
+  copy.setMonth(copy.getMonth() + months);
+  return copy;
+}
+
+function dateFallsInCycle(value, cycle) {
+  const date = parseDateOnly(value);
+  if (!date || !cycle?.start || !cycle?.end) return false;
+  return date >= cycle.start && date <= cycle.end;
+}
+
+function dateInputValue(date) {
+  return date instanceof Date && !Number.isNaN(date.getTime())
+    ? date.toISOString().slice(0, 10)
+    : "";
 }
 
 function replaceClient(updated) {

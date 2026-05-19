@@ -1352,9 +1352,158 @@ button:disabled {
     gap: 12px;
   }
 
-  .history-item {
-    gap: 8px;
-  }
+.history-item {
+  gap: 8px;
+}
+}
+
+.workflow-board-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.workflow-board-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.workflow-column {
+  display: grid;
+  gap: 12px;
+  background: #f7fbff;
+  border: 1px solid #d6e4f5;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.workflow-column-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.workflow-column-heading h3 {
+  margin: 0;
+}
+
+.workflow-column-heading span {
+  color: #5c6f86;
+  font-weight: 700;
+}
+
+.workflow-card-list {
+  display: grid;
+  gap: 12px;
+}
+
+.workflow-card {
+  display: grid;
+  gap: 12px;
+  background: #ffffff;
+  border: 1px solid #d6e4f5;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.workflow-card--todo {
+  border-color: #e7d9a2;
+  background: #fffbed;
+}
+
+.workflow-card--in-progress {
+  border-color: #bfd8ff;
+  background: #f4f8ff;
+}
+
+.workflow-card--done {
+  border-color: #c7e3cf;
+  background: #f3fbf5;
+}
+
+.workflow-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+}
+
+.workflow-card-header h4 {
+  margin: 4px 0 0;
+}
+
+.workflow-status-label {
+  min-width: 140px;
+}
+
+.workflow-status-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 112px;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-weight: 800;
+  font-size: 0.92rem;
+}
+
+.workflow-status-chip--todo {
+  background: #fff1bf;
+  color: #8e6400;
+}
+
+.workflow-status-chip--in-progress {
+  background: #dce9ff;
+  color: #2156a3;
+}
+
+.workflow-status-chip--done {
+  background: #dff2e4;
+  color: #2f7b44;
+}
+
+.workflow-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.workflow-evidence-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workflow-evidence-pill {
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(18, 90, 186, 0.08);
+  color: #264a7a;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.workflow-checklist {
+  display: grid;
+  gap: 8px;
+}
+
+.workflow-checklist-item {
+  display: flex;
+  align-items: start;
+  gap: 8px;
+  color: #24364b;
+}
+
+.workflow-checklist-item.is-complete {
+  color: #3d6b46;
+}
+
+.workflow-checklist-item input {
+  margin-top: 3px;
 }
 
 @media print {

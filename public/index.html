@@ -40,6 +40,7 @@
           <button type="button" class="view-tab" data-view-button="users">Users</button>
           <button type="button" class="view-tab active" data-view-button="session">Session</button>
           <button type="button" class="view-tab" data-view-button="intake">Intake Interview</button>
+          <button type="button" class="view-tab" data-view-button="workflow">Workflow</button>
           <button type="button" class="view-tab" data-view-button="plan">Treatment plan</button>
           <button type="button" class="view-tab" data-view-button="parent">Parent Training</button>
           <button type="button" class="view-tab" data-view-button="graphs">Graphs</button>
@@ -404,6 +405,8 @@
                 <input type="number" name="auth97151Units" min="0" step="1">
               </label>
             </div>
+            <div id="authorization-usage" class="summary-strip"></div>
+            <p id="authorization-usage-note" class="muted"></p>
             <label>
               Authorization notes
               <textarea name="authorizationNotes" rows="3" placeholder="Administrative notes, unit breakdown, restrictions, or reauthorization reminders"></textarea>
@@ -866,6 +869,18 @@
           <p class="form-message" id="intake-message" role="status"></p>
           <button type="submit" class="primary-button">Save intake interview</button>
         </form>
+      </section>
+    </main>
+
+    <main class="workflow-shell hidden" data-view-panel="workflow">
+      <section class="workflow-board-panel" aria-labelledby="workflow-title">
+        <div class="section-heading">
+          <p class="eyebrow">Client workflow</p>
+          <h2 id="workflow-title">BCBA task board</h2>
+        </div>
+        <div id="workflow-client-summary" class="summary-strip"></div>
+        <div id="workflow-board" class="workflow-board-columns"></div>
+        <p id="workflow-message" class="form-message" role="status"></p>
       </section>
     </main>
 

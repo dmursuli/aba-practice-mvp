@@ -655,6 +655,35 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    const workflowMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/workflow$/);
+    if (req.method === "PUT" && workflowMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const payload = await readBody(req);
+      const actor = currentUser(req, db);
+      const client = db.clients.find((item) => item.id === workflowMatch[1]);
+      if (!client) {
+        sendJson(res, 404, { errors: ["Client not found."] });
+        return;
+      }
+      if (!canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
+      client.workflowBoard = sanitizeWorkflowBoard(payload.workflowBoard || client.workflowBoard || defaultClinicalWorkflowBoard());
+      client.updatedAt = new Date().toISOString();
+      logAudit(db, req, actor, "workflow-board-updated", {
+        clientId: client.id,
+        details: {
+          cards: client.workflowBoard.length,
+          done: client.workflowBoard.filter((card) => card.status === "done").length
+        }
+      });
+      await writeDb(db);
+      sendJson(res, 200, client);
+      return;
+    }
+
     const documentCollectionMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/documents$/);
     if (req.method === "POST" && documentCollectionMatch) {
       const db = await readDbWithUsers();
@@ -1318,6 +1347,7 @@ function createClientRecord(payload, existingClients, actor = null) {
     ],
     programs: [],
     behaviors: [],
+    workflowBoard: defaultClinicalWorkflowBoard(),
     planChangeLog: [],
     note97151: "",
     note97155: "",
@@ -1383,6 +1413,85 @@ function sanitizeClientProfile(payload) {
     intakeInterview: sanitizeIntakeInterview(payload.intakeInterview || {}),
     documents: Array.isArray(payload.documents) ? payload.documents : []
   };
+}
+
+function defaultClinicalWorkflowBoard() {
+  return [
+    workflowCard("initial-assessment", "Conduct initial assessment", "1 week", "Completed assessment", ["97151"], [
+      "Conduct and document the initial assessment"
+    ]),
+    workflowCard("week-1-2", "Assessment setup and curriculum probing", "Week 1-2", "Integrity checklist, programs on Rethink", ["97155"], [
+      "Establish rapport",
+      "Select and administer developmental curriculum (VB-MAPP, ABLLS-R, AFLS)",
+      "Probe and write skill acquisition programs",
+      "Collect ABC data for behaviors identified during assessment"
+    ]),
+    workflowCard("week-3-4", "Early implementation and behavior plan drafting", "Week 3-4", "Integrity checklist, behavior plan draft", ["97155"], [
+      "Continue implementing skill acquisition programs",
+      "Complete grid of developmental curriculum",
+      "Probe behavior reduction strategies appropriate to client's skills"
+    ]),
+    workflowCard("week-5-6", "Caregiver presentation and plan drafting", "Week 5-6", "Integrity checklist, behavior plan draft", ["97155", "97156"], [
+      "Complete all items of session task list",
+      "Present developmental curriculum grid to caregivers",
+      "Draft and complete behavior reduction plan"
+    ]),
+    workflowCard("week-7", "Review behavior plan with caregivers", "Week 7", "Integrity checklist, behavior plan draft", ["97155", "97156"], [
+      "Complete all items of session task list",
+      "Meet with caregivers to review behavior plan and collect feedback"
+    ]),
+    workflowCard("week-8-9", "Finalize signed behavior plan", "Week 8-9", "Signed behavior plan", ["97155", "97156"], [
+      "Complete all items of session task list",
+      "Finalize behavior plan and present final draft to caregiver",
+      "Collect caregiver signature"
+    ]),
+    workflowCard("week-10-17", "Ongoing integrity checks", "Week 10-17", "Integrity checklists", ["97155"], [
+      "Complete all items of session task list"
+    ]),
+    workflowCard("week-18-20", "Prepare for 6-month reassessment", "Week 18-20", "Integrity checklists", ["97155", "97156"], [
+      "Complete all items of session task list",
+      "Send standardized curriculums to caregivers in preparation for 6 month reassessment"
+    ]),
+    workflowCard("week-20-22", "Complete reassessment", "Week 20-22", "Completed reassessment", ["97151"], [
+      "Complete and submit reassessment"
+    ])
+  ];
+}
+
+function workflowCard(id, title, timeline, deliverable, cptCodes, checklist) {
+  return {
+    id,
+    title,
+    timeline,
+    deliverable,
+    cptCodes,
+    status: "todo",
+    notes: "",
+    checklist: checklist.map((label, index) => ({
+      id: `${id}-item-${index + 1}`,
+      label,
+      done: false
+    }))
+  };
+}
+
+function sanitizeWorkflowBoard(board) {
+  return (Array.isArray(board) && board.length ? board : defaultClinicalWorkflowBoard()).map((card, cardIndex) => ({
+    id: text(card.id) || `workflow-card-${cardIndex + 1}`,
+    title: text(card.title) || "Workflow task",
+    timeline: text(card.timeline),
+    deliverable: text(card.deliverable),
+    cptCodes: (Array.isArray(card.cptCodes) ? card.cptCodes : [])
+      .map((code) => text(code))
+      .filter(Boolean),
+    status: ["todo", "in-progress", "done"].includes(card.status) ? card.status : "todo",
+    notes: text(card.notes),
+    checklist: (Array.isArray(card.checklist) ? card.checklist : []).map((item, itemIndex) => ({
+      id: text(item.id) || `${text(card.id) || `workflow-card-${cardIndex + 1}`}-item-${itemIndex + 1}`,
+      label: text(item.label) || `Checklist item ${itemIndex + 1}`,
+      done: Boolean(item.done)
+    }))
+  }));
 }
 
 function authorizationService(hours, units) {

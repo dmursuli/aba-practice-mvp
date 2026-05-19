@@ -93,6 +93,15 @@ export async function updateClientProfile(clientId, profile) {
   return parseResponse(response);
 }
 
+export async function updateClientWorkflow(clientId, workflowBoard) {
+  const response = await fetch(`/api/clients/${clientId}/workflow`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ workflowBoard })
+  });
+  return parseResponse(response);
+}
+
 export async function deleteClient(clientId) {
   const response = await fetch(`/api/clients/${clientId}`, {
     method: "DELETE"
