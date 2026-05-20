@@ -1149,6 +1149,22 @@ canvas {
   gap: 8px;
 }
 
+.plan-status-legend .health-badge {
+  border: 0;
+  cursor: pointer;
+}
+
+.plan-status-legend .health-badge:hover,
+.plan-status-legend .health-badge:focus-visible {
+  filter: brightness(0.97);
+  outline: 2px solid rgba(22, 84, 163, 0.18);
+  outline-offset: 2px;
+}
+
+.plan-target-focus {
+  box-shadow: 0 0 0 3px rgba(22, 84, 163, 0.16);
+}
+
 .health-table td {
   vertical-align: top;
 }

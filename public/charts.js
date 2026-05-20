@@ -1,4 +1,6 @@
 const palette = ["#167c80", "#d1495b", "#edae49", "#4b7bec", "#6a994e", "#9d4edd"];
+const MARKER_AFTER_DATE_OFFSET = 120;
+const POINT_BEFORE_MARKER_OFFSET = 42;
 
 export function drawLineChart(canvas, series, options = {}) {
   const ctx = canvas.getContext("2d");
@@ -30,6 +32,13 @@ export function drawLineChart(canvas, series, options = {}) {
   const yTop = options.maxY || Math.max(options.yStep || 1, Math.ceil(maxY * 1.15));
   const phaseBoundary = getPhaseBoundary(allPoints, dates);
   const xPositions = buildXPositions(dates.length, margin.left, plotWidth, phaseBoundary);
+  const phaseLineX = phaseBoundary ? phaseLinePosition(phaseBoundary, xPositions) : null;
+  const markerModesByDate = buildMarkerModeMap(options.phaseMarkers || []);
+  const phaseMarkerXs = markerPositions(options.phaseMarkers || [], dates, xPositions);
+  const breakLines = [
+    ...(Number.isFinite(phaseLineX) ? [phaseLineX] : []),
+    ...phaseMarkerXs
+  ];
 
   drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options);
   drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions);
@@ -58,8 +67,10 @@ export function drawLineChart(canvas, series, options = {}) {
       .sort((a, b) => a.x.localeCompare(b.x))
       .map((point) => {
         const dateIndex = dates.indexOf(point.x);
+        const markerMode = markerModesByDate.get(point.x) || "";
+        const baseX = xPositions[dateIndex];
         return {
-          x: xPositions[dateIndex],
+          x: adjustPointXForMarker(baseX, dateIndex, xPositions, markerMode),
           y: margin.top + plotHeight - (point.y / yTop) * plotHeight,
           value: point.y,
           dateIndex,
@@ -69,7 +80,7 @@ export function drawLineChart(canvas, series, options = {}) {
 
     ctx.strokeStyle = color;
     ctx.lineWidth = 3;
-    drawPhaseSegments(ctx, points, phaseBoundary);
+    drawPhaseSegments(ctx, points, phaseBoundary, breakLines);
 
     points.forEach((point) => {
       ctx.fillStyle = color;
@@ -86,6 +97,10 @@ export function drawLineChart(canvas, series, options = {}) {
       margin.top + plotHeight + 72 + Math.floor(seriesIndex / 2) * 20
     );
   });
+}
+
+function buildMarkerModeMap(markers) {
+  return new Map((markers || []).map((marker) => [marker.date, marker.position || ""]));
 }
 
 function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options) {
@@ -139,9 +154,7 @@ function getPhaseBoundary(allPoints, dates) {
 function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions) {
   if (!phaseBoundary) return null;
 
-  const baselineX = xPositions[phaseBoundary.leftIndex];
-  const interventionX = xPositions[phaseBoundary.rightIndex];
-  const lineX = baselineX + (interventionX - baselineX) / 2;
+  const lineX = phaseLinePosition(phaseBoundary, xPositions);
 
   ctx.save();
   ctx.strokeStyle = "#1f2933";
@@ -164,12 +177,12 @@ function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPosit
   ctx.restore();
   ctx.restore();
 
-  return phaseBoundary;
+  return lineX;
 }
 
 function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions) {
   markers.forEach((marker) => {
-    const lineX = xPositionForMarkerDate(marker.date, dates, xPositions);
+    const lineX = xPositionForMarkerDateWithMode(marker, dates, xPositions);
     if (!Number.isFinite(lineX)) return;
 
     ctx.save();
@@ -191,8 +204,23 @@ function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions) {
 }
 
 function xPositionForMarkerDate(date, dates, xPositions) {
+  return xPositionForMarkerDateWithMode({ date }, dates, xPositions);
+}
+
+function xPositionForMarkerDateWithMode(marker, dates, xPositions) {
+  const date = marker?.date;
   const exactIndex = dates.indexOf(date);
-  if (exactIndex >= 0) return xPositions[exactIndex];
+  if (exactIndex >= 0) {
+    if (marker?.position === "after-date") {
+      const nextX = xPositions[exactIndex + 1];
+      const currentX = xPositions[exactIndex];
+      if (Number.isFinite(nextX)) {
+        return currentX + Math.min(MARKER_AFTER_DATE_OFFSET, (nextX - currentX) * 0.72);
+      }
+      return currentX + MARKER_AFTER_DATE_OFFSET;
+    }
+    return xPositions[exactIndex];
+  }
 
   const markerValue = `${date}T00:00`;
   let previousIndex = -1;
@@ -212,14 +240,39 @@ function xPositionForMarkerDate(date, dates, xPositions) {
   return NaN;
 }
 
-function drawPhaseSegments(ctx, points, phaseBoundary) {
+function markerPositions(markers, dates, xPositions) {
+  return markers
+    .map((marker) => xPositionForMarkerDateWithMode(marker, dates, xPositions))
+    .filter((value) => Number.isFinite(value));
+}
+
+function phaseLinePosition(phaseBoundary, xPositions) {
+  const baselineX = xPositions[phaseBoundary.leftIndex];
+  const interventionX = xPositions[phaseBoundary.rightIndex];
+  return baselineX + (interventionX - baselineX) / 2;
+}
+
+function adjustPointXForMarker(baseX, dateIndex, xPositions, markerMode) {
+  if (markerMode !== "after-date") return baseX;
+  const nextX = xPositions[dateIndex + 1];
+  if (Number.isFinite(nextX)) {
+    return baseX - Math.min(POINT_BEFORE_MARKER_OFFSET, (nextX - baseX) * 0.28);
+  }
+  return baseX - POINT_BEFORE_MARKER_OFFSET;
+}
+
+function drawPhaseSegments(ctx, points, phaseBoundary, breakLines = []) {
   let previousPoint = null;
   points.forEach((point) => {
     const crossesPhaseBoundary = phaseBoundary
       && previousPoint
       && previousPoint.dateIndex <= phaseBoundary.leftIndex
       && point.dateIndex >= phaseBoundary.rightIndex;
-    if (!previousPoint || previousPoint.phase !== point.phase || crossesPhaseBoundary) {
+    const crossesBreakLine = previousPoint && breakLines.some((lineX) => (
+      Number.isFinite(lineX)
+      && ((previousPoint.x < lineX && point.x > lineX) || (previousPoint.x > lineX && point.x < lineX))
+    ));
+    if (!previousPoint || previousPoint.phase !== point.phase || crossesPhaseBoundary || crossesBreakLine) {
       ctx.beginPath();
       ctx.moveTo(point.x, point.y);
     } else {

@@ -2839,10 +2839,10 @@ function renderPlanReview() {
 
   planReview.innerHTML = `
     <section class="plan-status-legend">
-      <span class="health-badge mastery-close-badge">Close (${masteryCounts.close})</span>
-      <span class="health-badge mastery-ready-badge">Ready (${masteryCounts.ready})</span>
-      <span class="health-badge mastered-badge">Mastered (${masteryCounts.mastered})</span>
-      <span class="health-badge stagnant-badge">Stagnant (${masteryCounts.stagnant})</span>
+      <button type="button" class="health-badge mastery-close-badge" data-review-jump="close">Close (${masteryCounts.close})</button>
+      <button type="button" class="health-badge mastery-ready-badge" data-review-jump="ready">Ready (${masteryCounts.ready})</button>
+      <button type="button" class="health-badge mastered-badge" data-review-jump="mastered">Mastered (${masteryCounts.mastered})</button>
+      <button type="button" class="health-badge stagnant-badge" data-review-jump="stagnant">Stagnant (${masteryCounts.stagnant})</button>
     </section>
     ${groupedPrograms.map(([domain, domainPrograms]) => `
     <section class="plan-domain ${domain === state.activePlanDomain ? "" : "hidden"}" data-plan-domain="${escapeHtml(domain)}">
@@ -3022,7 +3022,7 @@ function renderPlanProgram(program, tab = state.activePlanProgramTab) {
       </label>
       <div class="plan-target-list">
         ${visibleTargets.length ? visibleTargets.map((target) => `
-          <div class="plan-target ${masteryReviewClass(program, target)}">
+          <div class="plan-target ${masteryReviewClass(program, target)}" data-review-state="${escapeHtml(masteryReviewForTarget(program.id, target.id).state)}" data-target-anchor="${escapeHtml(program.id)}:${escapeHtml(target.id)}">
             <label>
               Target
               <input type="text" value="${escapeHtml(target.name)}" data-target-name="${program.id}:${target.id}" aria-label="Target name">
@@ -3158,6 +3158,11 @@ async function handleDeleteDomain() {
 }
 
 async function handlePlanClick(event) {
+  const reviewJump = event.target.closest("[data-review-jump]");
+  if (reviewJump) {
+    jumpToReviewState(reviewJump.dataset.reviewJump);
+    return;
+  }
   const openProgramGraph = event.target.closest("[data-open-plan-graph]");
   if (openProgramGraph) {
     openProgramGraphModal(openProgramGraph.dataset.openPlanGraph);
@@ -3218,6 +3223,35 @@ async function handlePlanClick(event) {
     targetName: newTarget.name,
     toStatus: "active"
   });
+}
+
+function jumpToReviewState(stateValue) {
+  const targetTab = stateValue === "mastered" ? "mastered" : "active";
+  const matches = clientPrograms().flatMap((program) => (
+    (program.targets || []).map((target) => ({
+      domain: program.domain || clientDomains()[0],
+      programId: program.id,
+      targetId: target.id,
+      state: masteryReviewForTarget(program.id, target.id).state
+    }))
+  )).filter((item) => item.state === stateValue);
+
+  if (!matches.length) {
+    planMessage.textContent = `No ${stateValue} targets right now.`;
+    return;
+  }
+
+  const match = matches.find((item) => item.domain === state.activePlanDomain) || matches[0];
+  state.activePlanProgramTab = targetTab;
+  state.activePlanDomain = match.domain;
+  renderPlanReview();
+
+  const target = planReview.querySelector(`[data-target-anchor="${match.programId}:${match.targetId}"]`);
+  if (target) {
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.classList.add("plan-target-focus");
+    window.setTimeout(() => target.classList.remove("plan-target-focus"), 1400);
+  }
 }
 
 function handleProgramGraphModalClick(event) {
@@ -3312,18 +3346,12 @@ async function handlePlanStatusChange(event) {
           if (!target.maintenanceDate) target.maintenanceDate = new Date().toISOString().slice(0, 10);
         }
       });
-      state.activePlanProgramTab = "mastered";
     } else if (programControl.value === "paused") {
       (program.targets || []).forEach((target) => {
         if (normalizePlanStatus(target.status || "active") !== "mastered") {
           target.status = "paused";
         }
       });
-      state.activePlanProgramTab = "paused";
-    } else if (previousStatus === "mastered") {
-      state.activePlanProgramTab = "active";
-    } else if (previousStatus === "paused") {
-      state.activePlanProgramTab = "active";
     }
     try {
       await savePlan(programs, behaviors, previousStatus !== programControl.value ? {
@@ -3351,11 +3379,6 @@ async function handlePlanStatusChange(event) {
   target.status = control.value;
   if (control.value === "mastered" && !target.maintenanceDate) {
     target.maintenanceDate = new Date().toISOString().slice(0, 10);
-  }
-  if (control.value === "mastered") {
-    state.activePlanProgramTab = "mastered";
-  } else if (previousStatus === "mastered") {
-    state.activePlanProgramTab = "active";
   }
 
   try {
@@ -4307,7 +4330,8 @@ function masteryMarkersForProgram(programId) {
       date,
       label: "Target mastered",
       detail: targetNames.join(", "),
-      dashed: true
+      dashed: true,
+      position: "after-date"
     }));
 }
 
