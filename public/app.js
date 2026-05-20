@@ -3226,13 +3226,13 @@ async function handlePlanClick(event) {
 }
 
 function jumpToReviewState(stateValue) {
-  const targetTab = stateValue === "mastered" ? "mastered" : "active";
   const matches = clientPrograms().flatMap((program) => (
     (program.targets || []).map((target) => ({
       domain: program.domain || clientDomains()[0],
       programId: program.id,
       targetId: target.id,
-      state: masteryReviewForTarget(program.id, target.id).state
+      state: masteryReviewForTarget(program.id, target.id).state,
+      statusTab: normalizePlanStatus(target.status || "active")
     }))
   )).filter((item) => item.state === stateValue);
 
@@ -3242,7 +3242,7 @@ function jumpToReviewState(stateValue) {
   }
 
   const match = matches.find((item) => item.domain === state.activePlanDomain) || matches[0];
-  state.activePlanProgramTab = targetTab;
+  state.activePlanProgramTab = stateValue === "mastered" ? "mastered" : match.statusTab;
   state.activePlanDomain = match.domain;
   renderPlanReview();
 
