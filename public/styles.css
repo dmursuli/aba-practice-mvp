@@ -393,7 +393,34 @@ button:focus-visible {
 }
 
 .parent-goal-row {
-  grid-template-columns: minmax(150px, 1.1fr) minmax(150px, 1.1fr) repeat(4, minmax(92px, 1fr)) 72px 34px;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.parent-goal-main,
+.parent-goal-review {
+  grid-column: 1 / -1;
+}
+
+.parent-goal-controls {
+  display: grid;
+  grid-template-columns: minmax(240px, 1.5fr) repeat(4, minmax(96px, 0.8fr)) 92px 34px;
+  gap: 10px;
+  align-items: end;
+}
+
+.parent-goal-review {
+  min-height: 22px;
+}
+
+.parent-goal-row.mastered-target,
+.parent-goal-row.mastery-ready-target,
+.parent-goal-row.mastery-close-target,
+.parent-goal-row.stagnant-target {
+  border-width: 1px;
 }
 
 .metric-pill {
@@ -1053,6 +1080,19 @@ canvas {
   margin-top: 10px;
 }
 
+.history-group {
+  display: grid;
+  gap: 8px;
+}
+
+.history-group-title {
+  margin: 8px 0 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .history-item {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -1075,6 +1115,17 @@ canvas {
   background: transparent;
   border: 0;
   cursor: pointer;
+}
+
+.history-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.history-item-meta .health-badge {
+  font-size: 0.78rem;
+  padding: 3px 8px;
 }
 
 .history-item span {
@@ -1149,9 +1200,18 @@ canvas {
   gap: 8px;
 }
 
+.plan-review-filter-note {
+  margin: 0 0 6px;
+  color: var(--muted);
+}
+
 .plan-status-legend .health-badge {
   border: 0;
   cursor: pointer;
+}
+
+.plan-status-legend .health-badge.is-active {
+  box-shadow: inset 0 0 0 2px rgba(17, 53, 94, 0.18);
 }
 
 .plan-status-legend .health-badge:hover,
@@ -1344,6 +1404,15 @@ button:disabled {
   .fade-plan-row,
   .service-hours-row {
     gap: 10px;
+  }
+
+  .parent-goal-controls {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .parent-goal-controls .metric-pill,
+  .parent-goal-controls .icon-button {
+    min-height: 48px;
   }
 
   input,

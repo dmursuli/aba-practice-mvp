@@ -976,6 +976,7 @@
         </div>
 
         <div id="client-summary" class="summary-strip"></div>
+        <div id="soap-history-tabs" class="domain-tabs" aria-label="SOAP history filters"></div>
 
         <div id="session-history" class="history-list"></div>
       </section>
@@ -1542,38 +1543,41 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
 
     <template id="parent-goal-template">
       <div class="data-row parent-goal-row">
-        <label>
+        <label class="parent-goal-main">
           Parent goal
-          <input type="text" data-field="goalName" placeholder="Goal name" required>
+          <input type="text" data-field="goalName" placeholder="Entire caregiver-training goal" required>
         </label>
-        <label>
-          Target
-          <input type="text" data-field="targetName" placeholder="Caregiver target" required>
-        </label>
-        <label>
-          Opportunities
-          <input type="number" data-field="opportunities" min="0" value="5" required>
-        </label>
-        <label>
-          Independent
-          <input type="number" data-field="independent" min="0" value="0" required>
-        </label>
-        <label>
-          Prompted
-          <input type="number" data-field="prompted" min="0" value="0" required>
-        </label>
-        <label>
-          Prompt level
-          <select data-field="promptLevel">
-            <option value="independent">Independent</option>
-            <option value="gestural">Gestural</option>
-            <option value="verbal">Verbal</option>
-            <option value="modeling">Modeling</option>
-            <option value="physical">Physical</option>
-          </select>
-        </label>
-        <div class="metric-pill" data-parent-goal-score>0%</div>
-        <button type="button" class="icon-button" data-remove aria-label="Remove parent goal">x</button>
+        <div class="parent-goal-controls">
+          <label>
+            Target
+            <input type="text" data-field="targetName" placeholder="Caregiver target" required>
+          </label>
+          <label>
+            Opportunities
+            <input type="number" data-field="opportunities" min="0" value="5" required>
+          </label>
+          <label>
+            Independent
+            <input type="number" data-field="independent" min="0" value="0" required>
+          </label>
+          <label>
+            Prompted
+            <input type="number" data-field="prompted" min="0" value="0" required>
+          </label>
+          <label>
+            Prompt level
+            <select data-field="promptLevel">
+              <option value="independent">Independent</option>
+              <option value="gestural">Gestural</option>
+              <option value="verbal">Verbal</option>
+              <option value="modeling">Modeling</option>
+              <option value="physical">Physical</option>
+            </select>
+          </label>
+          <div class="metric-pill" data-parent-goal-score>0%</div>
+          <button type="button" class="icon-button" data-remove aria-label="Remove parent goal">x</button>
+        </div>
+        <div class="parent-goal-review" data-parent-goal-review></div>
       </div>
     </template>
 

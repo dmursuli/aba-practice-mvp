@@ -17,8 +17,10 @@ const state = {
   activeSessionTargetTab: "active",
   activePlanDomain: "",
   activePlanProgramTab: "active",
+  activePlanReviewFilter: "",
   activeGraphTab: "skills",
   activeGraphDomain: "",
+  activeSoapHistoryTab: "planning",
   currentUser: null
 };
 
@@ -118,6 +120,7 @@ const planNote97151Status = document.querySelector("#plan-note-97151-status");
 const generatePlan97151Button = document.querySelector("#generate-plan-97151-note");
 const soapClientSummary = document.querySelector("#soap-client-summary");
 const soapCodeLabel = document.querySelector("#soap-code-label");
+const soapHistoryTabs = document.querySelector("#soap-history-tabs");
 const planReview = document.querySelector("#plan-review");
 const planDomainTabs = document.querySelector("#plan-domain-tabs");
 const programGraphModal = document.querySelector("#program-graph-modal");
@@ -695,6 +698,7 @@ function addParentGoalRow(goal = {}) {
   row.querySelector("[data-remove]").addEventListener("click", () => row.remove());
   row.querySelectorAll("input, select").forEach((input) => {
     input.addEventListener("input", () => updateParentGoalScore(row));
+    input.addEventListener("change", () => updateParentGoalScore(row));
   });
   parentGoalList.append(row);
   updateParentGoalScore(row);
@@ -759,6 +763,12 @@ function updateParentGoalScore(row) {
   const denominator = opportunities || independent + prompted;
   const score = denominator > 0 ? Math.round((independent / denominator) * 100) : 0;
   row.querySelector("[data-parent-goal-score]").textContent = `${score}%`;
+  const goal = normalizeParentGoal(readDataRow(row));
+  const review = parentGoalReview(goal);
+  row.classList.remove("mastered-target", "mastery-ready-target", "mastery-close-target", "stagnant-target");
+  if (review.className) row.classList.add(review.className);
+  const reviewBox = row.querySelector("[data-parent-goal-review]");
+  if (reviewBox) reviewBox.innerHTML = review.message;
 }
 
 function updateProgramIndependence(row) {
@@ -1621,6 +1631,106 @@ function currentMasteryCriteria() {
   };
 }
 
+function parentGoalSessionHistory(goal) {
+  const normalizedGoal = normalizeParentGoal(goal);
+  return currentSessions()
+    .filter((session) => session.serviceType === "parent-training")
+    .map((session) => {
+      const match = (session.parentGoals || []).find((item) => (
+        normalizeParentGoal(item).goalName === normalizedGoal.goalName
+        && normalizeParentGoal(item).targetName === normalizedGoal.targetName
+      ));
+      return match ? { session, goal: normalizeParentGoal(match) } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const aValue = `${a.session.date}T${a.session.startTime || "00:00"}`;
+      const bValue = `${b.session.date}T${b.session.startTime || "00:00"}`;
+      return bValue.localeCompare(aValue);
+    });
+}
+
+function parentGoalReview(goal) {
+  const criteria = currentMasteryCriteria();
+  const sessions = parentGoalSessionHistory(goal);
+  const currentScore = Number(goal.fidelity || 0);
+  if (!sessions.length) {
+    return {
+      state: "none",
+      className: "",
+      message: ""
+    };
+  }
+
+  const fidelitySessions = sessions.map((item) => ({
+    session: item.session,
+    entry: { independence: Number(item.goal.fidelity || 0) }
+  }));
+  const base = stagnantReviewForTarget(criteria, fidelitySessions, {
+    state: "none",
+    threshold: criteria.thresholdPercent,
+    consecutiveSessions: criteria.consecutiveSessions,
+    matchedDates: [],
+    previewScores: fidelitySessions.slice(0, criteria.consecutiveSessions).map(({ entry }) => Number(entry.independence || 0)).reverse()
+  });
+  const masteryWindow = findMasteryWindow(fidelitySessions, criteria.consecutiveSessions, criteria.thresholdPercent);
+  const recentScores = fidelitySessions.slice(0, criteria.consecutiveSessions).map(({ entry }) => Number(entry.independence || 0));
+  const nearThreshold = recentScores.length >= criteria.consecutiveSessions
+    && recentScores.every((score) => score >= Math.max(criteria.thresholdPercent - 10, 0));
+  const averageScore = recentScores.length
+    ? Math.round(recentScores.reduce((sum, score) => sum + score, 0) / recentScores.length)
+    : currentScore;
+  const stateValue = masteryWindow
+    ? "mastered"
+    : base.state === "stagnant"
+      ? "stagnant"
+      : nearThreshold && averageScore >= criteria.thresholdPercent - 5
+        ? "close"
+        : "none";
+
+  if (stateValue === "mastered") {
+    return {
+      state: stateValue,
+      className: "mastered-target",
+      message: `
+        <div class="mastery-review-hint mastery-review-hint-mastered">
+          <strong>Meeting mastery criteria</strong>
+          <span>${escapeHtml(goal.targetName)} reached ${criteria.thresholdPercent}% across ${criteria.consecutiveSessions} consecutive parent-training sessions.</span>
+        </div>
+      `
+    };
+  }
+  if (stateValue === "close") {
+    return {
+      state: stateValue,
+      className: "mastery-close-target",
+      message: `
+        <div class="mastery-review-hint mastery-review-hint-close">
+          <strong>Close to mastery</strong>
+          <span>${escapeHtml(goal.targetName)} is trending near criterion (${recentScores.reverse().join("%, ")}%).</span>
+        </div>
+      `
+    };
+  }
+  if (stateValue === "stagnant") {
+    return {
+      state: stateValue,
+      className: "stagnant-target",
+      message: `
+        <div class="mastery-review-hint mastery-review-hint-stagnant">
+          <strong>Stagnant</strong>
+          <span>${escapeHtml(goal.targetName)} has not meaningfully improved across recent caregiver-training sessions.</span>
+        </div>
+      `
+    };
+  }
+  return {
+    state: "none",
+    className: "",
+    message: ""
+  };
+}
+
 function requestedWorkspaceState() {
   const url = new URL(window.location.href);
   return {
@@ -2053,11 +2163,15 @@ function renderParentSummary() {
   const client = currentClient();
   const activeTargets = clientPrograms().flatMap((program) => program.targets || []).filter((target) => target.status === "active").length;
   const activeBehaviors = clientBehaviors().filter((behavior) => behavior.status !== "inactive").length;
+  const parentReviews = currentParentTrainingGoals().map((goal) => parentGoalReview(goal).state);
+  const masteredGoals = parentReviews.filter((stateValue) => stateValue === "mastered").length;
+  const closeGoals = parentReviews.filter((stateValue) => stateValue === "close").length;
   parentClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
       <div><strong>${activeTargets}</strong><span>Active targets</span></div>
       <div><strong>${activeBehaviors}</strong><span>Behaviors tracked</span></div>
+      <div><strong>${masteredGoals} / ${closeGoals}</strong><span>Meeting mastery / close</span></div>
     `
     : "";
 }
@@ -2776,11 +2890,13 @@ function renderSoapSummary() {
     : entry?.type === "97155"
       ? (String(currentClient()?.note97155 || "").trim() ? "Saved" : "Not generated")
     : (session?.finalized ? "Finalized" : "Draft");
+  const activityLabel = entry ? soapEntryActivityLabel(entry) : "No note selected";
   soapCodeLabel.textContent = serviceCode;
   soapClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
       <div><strong>${selectedLabel}</strong><span>${entry?.type === "session" ? "Selected session" : "Selected note"}</span></div>
+      <div><strong>${escapeHtml(activityLabel)}</strong><span>Activity</span></div>
       <div><strong>${serviceCode}</strong><span>Service code</span></div>
       <div><strong>${statusLabel}</strong><span>Note status</span></div>
     `
@@ -2823,7 +2939,9 @@ function renderPlanReview() {
   const visiblePrograms = programs.filter((program) => programHasPlanContentForTab(program, state.activePlanProgramTab));
   if (!visiblePrograms.length) {
     planDomainTabs.innerHTML = "";
-    planReview.innerHTML = state.activePlanProgramTab === "mastered"
+    planReview.innerHTML = state.activePlanReviewFilter
+      ? `<p class="muted">No ${escapeHtml(state.activePlanReviewFilter)} targets found in this treatment plan.</p>`
+      : state.activePlanProgramTab === "mastered"
       ? '<p class="muted">No mastered goals yet.</p>'
       : state.activePlanProgramTab === "paused"
         ? '<p class="muted">No on-hold goals yet.</p>'
@@ -2839,13 +2957,14 @@ function renderPlanReview() {
 
   planReview.innerHTML = `
     <section class="plan-status-legend">
-      <button type="button" class="health-badge mastery-close-badge" data-review-jump="close">Close (${masteryCounts.close})</button>
-      <button type="button" class="health-badge mastery-ready-badge" data-review-jump="ready">Ready (${masteryCounts.ready})</button>
-      <button type="button" class="health-badge mastered-badge" data-review-jump="mastered">Mastered (${masteryCounts.mastered})</button>
-      <button type="button" class="health-badge stagnant-badge" data-review-jump="stagnant">Stagnant (${masteryCounts.stagnant})</button>
+      <button type="button" class="health-badge mastery-close-badge ${state.activePlanReviewFilter === "close" ? "is-active" : ""}" data-review-jump="close" aria-pressed="${state.activePlanReviewFilter === "close"}">Close (${masteryCounts.close})</button>
+      <button type="button" class="health-badge mastery-ready-badge ${state.activePlanReviewFilter === "ready" ? "is-active" : ""}" data-review-jump="ready" aria-pressed="${state.activePlanReviewFilter === "ready"}">Ready (${masteryCounts.ready})</button>
+      <button type="button" class="health-badge mastered-badge ${state.activePlanReviewFilter === "mastered" ? "is-active" : ""}" data-review-jump="mastered" aria-pressed="${state.activePlanReviewFilter === "mastered"}">Mastered (${masteryCounts.mastered})</button>
+      <button type="button" class="health-badge stagnant-badge ${state.activePlanReviewFilter === "stagnant" ? "is-active" : ""}" data-review-jump="stagnant" aria-pressed="${state.activePlanReviewFilter === "stagnant"}">Stagnant (${masteryCounts.stagnant})</button>
     </section>
+    ${state.activePlanReviewFilter ? `<p class="plan-review-filter-note">Showing all ${escapeHtml(state.activePlanReviewFilter)} targets across domains. Click the same badge again to clear.</p>` : ""}
     ${groupedPrograms.map(([domain, domainPrograms]) => `
-    <section class="plan-domain ${domain === state.activePlanDomain ? "" : "hidden"}" data-plan-domain="${escapeHtml(domain)}">
+    <section class="plan-domain ${state.activePlanReviewFilter || domain === state.activePlanDomain ? "" : "hidden"}" data-plan-domain="${escapeHtml(domain)}">
       <div class="plan-domain-heading">
         <h3>${escapeHtml(domain)}</h3>
         <span>${domainPrograms.length} program${domainPrograms.length === 1 ? "" : "s"}</span>
@@ -2853,7 +2972,7 @@ function renderPlanReview() {
       ${domainPrograms.map((program) => renderPlanProgram(program, state.activePlanProgramTab)).join("")}
     </section>
   `).join("")}
-    ${state.activePlanProgramTab === "active" ? renderPlanBehaviorSection(behaviors) : ""}
+    ${state.activePlanProgramTab === "active" && !state.activePlanReviewFilter ? renderPlanBehaviorSection(behaviors) : ""}
   `;
 
   bindPlanReviewInputs();
@@ -2949,13 +3068,23 @@ function targetMatchesPlanTab(target, tab) {
   return status === tab;
 }
 
+function targetMatchesPlanReviewFilter(program, target) {
+  if (!state.activePlanReviewFilter) return true;
+  return masteryReviewForTarget(program.id, target.id).state === state.activePlanReviewFilter;
+}
+
 function filteredTargetsForPlanProgram(program, tab) {
-  return (program.targets || []).filter((target) => targetMatchesPlanTab(target, tab));
+  return (program.targets || []).filter((target) => {
+    if (!targetMatchesPlanReviewFilter(program, target)) return false;
+    if (state.activePlanReviewFilter) return true;
+    return targetMatchesPlanTab(target, tab);
+  });
 }
 
 function programHasPlanContentForTab(program, tab) {
   const visibleTargets = filteredTargetsForPlanProgram(program, tab);
   if (visibleTargets.length) return true;
+  if (state.activePlanReviewFilter) return false;
   if (!(program.targets || []).length) {
     const status = normalizePlanStatus(program.status || "active");
     return status === tab;
@@ -2965,6 +3094,10 @@ function programHasPlanContentForTab(program, tab) {
 }
 
 function renderPlanDomainTabs(domains) {
+  if (state.activePlanReviewFilter) {
+    planDomainTabs.innerHTML = "";
+    return;
+  }
   if (!domains.length) {
     planDomainTabs.innerHTML = "";
     return;
@@ -3241,16 +3374,22 @@ function jumpToReviewState(stateValue) {
     return;
   }
 
-  const match = matches.find((item) => item.domain === state.activePlanDomain) || matches[0];
-  state.activePlanProgramTab = stateValue === "mastered" ? "mastered" : match.statusTab;
-  state.activePlanDomain = match.domain;
+  state.activePlanReviewFilter = state.activePlanReviewFilter === stateValue ? "" : stateValue;
+  const filteredMatches = state.activePlanReviewFilter
+    ? matches.filter((item) => item.state === state.activePlanReviewFilter)
+    : matches;
+  const match = filteredMatches.find((item) => item.domain === state.activePlanDomain) || filteredMatches[0];
+  if (state.activePlanReviewFilter && match) {
+    state.activePlanDomain = match.domain;
+  }
   renderPlanReview();
-
-  const target = planReview.querySelector(`[data-target-anchor="${match.programId}:${match.targetId}"]`);
-  if (target) {
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
-    target.classList.add("plan-target-focus");
-    window.setTimeout(() => target.classList.remove("plan-target-focus"), 1400);
+  if (state.activePlanReviewFilter && match) {
+    const target = planReview.querySelector(`[data-target-anchor="${match.programId}:${match.targetId}"]`);
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      target.classList.add("plan-target-focus");
+      window.setTimeout(() => target.classList.remove("plan-target-focus"), 1400);
+    }
   }
 }
 
@@ -3656,6 +3795,61 @@ function readBcbaSessionDetails() {
   };
 }
 
+function sessionActivityLabel(session) {
+  if (!session) return "Clinical activity";
+  if (session.serviceType === "parent-training") {
+    return session.parentTraining?.trainingFocus || "Parent training";
+  }
+  const programNames = (session.programs || [])
+    .map((program) => lookups().programName(program.programId))
+    .filter(Boolean);
+  if (programNames.length) {
+    return programNames.length === 1
+      ? programNames[0]
+      : `${programNames[0]} + ${programNames.length - 1} more`;
+  }
+  return "Direct therapy";
+}
+
+function soapEntryActivityLabel(entry) {
+  if (!entry) return "Clinical activity";
+  if (entry.type === "97151") return "Behavior assessment / report update";
+  if (entry.type === "97155") return "Treatment planning / protocol modification";
+  return sessionActivityLabel(entry.session);
+}
+
+function soapEntryGroup(entry) {
+  if (entry.type === "97151" || entry.type === "97155") {
+    return { key: "planning", label: "Assessment and planning" };
+  }
+  const code = sessionCodeLabel(entry.session);
+  if (code === "97156") return { key: "97156", label: "97156 Parent training" };
+  return { key: "97153", label: "97153 Direct therapy" };
+}
+
+function renderSoapHistoryTabs(groups) {
+  if (!soapHistoryTabs) return;
+  const availableKeys = groups.map((group) => group.key);
+  if (!availableKeys.includes(state.activeSoapHistoryTab)) {
+    state.activeSoapHistoryTab = availableKeys[0] || "planning";
+  }
+  soapHistoryTabs.innerHTML = groups.map((group) => `
+    <button
+      type="button"
+      class="domain-tab ${group.key === state.activeSoapHistoryTab ? "active" : ""}"
+      data-soap-history-tab="${escapeHtml(group.key)}"
+    >
+      ${escapeHtml(group.label)} (${group.entries.length})
+    </button>
+  `).join("");
+  soapHistoryTabs.querySelectorAll("[data-soap-history-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activeSoapHistoryTab = button.dataset.soapHistoryTab;
+      renderHistory();
+    });
+  });
+}
+
 function toggleRbtFeedbackSection() {
   const rbtPresent = bcbaSessionForm.elements.rbtPresent.value === "true";
   rbtFeedbackSection.classList.toggle("inactive", !rbtPresent);
@@ -3743,50 +3937,78 @@ function renderHistory() {
   const entries = soapHistoryEntries();
   const container = document.querySelector("#session-history");
   if (!entries.length) {
+    if (soapHistoryTabs) soapHistoryTabs.innerHTML = "";
     container.innerHTML = '<p class="muted">No sessions saved yet.</p>';
     return;
   }
-  container.innerHTML = entries.map((entry) => {
-    const active = selectedSoapEntry()?.key === entry.key ? "active" : "";
-    if (entry.type === "97151") {
-      const preview = String(entry.note || "").trim().split(/\n+/)[0] || "Assessment note generated from intake, report, and treatment planning data.";
-      return `
-        <div class="history-item ${active}">
-          <button type="button" class="history-select" data-soap-entry="${entry.key}">
-            <span><strong>97151</strong> • <strong>Assessment note</strong></span>
-            <span>${escapeHtml(preview)}</span>
-            <span>Saved note</span>
-          </button>
-        </div>
-      `;
+  const groups = entries.reduce((collection, entry) => {
+    const group = soapEntryGroup(entry);
+    let bucket = collection.find((item) => item.key === group.key);
+    if (!bucket) {
+      bucket = { ...group, entries: [] };
+      collection.push(bucket);
     }
-    if (entry.type === "97155") {
-      const preview = String(entry.note || "").trim().split(/\n+/)[0] || "Treatment plan note generated from protocol modification work.";
-      return `
-        <div class="history-item ${active}">
-          <button type="button" class="history-select" data-soap-entry="${entry.key}">
-            <span><strong>97155</strong> • <strong>Treatment plan note</strong></span>
-            <span>${escapeHtml(preview)}</span>
-            <span>Saved note</span>
-          </button>
-        </div>
-      `;
-    }
-    const session = entry.session;
-    const programSummary = targetEntries(session)
-      .map((target) => `${lookups().targetName(target.programId, target.targetId)} ${target.independence}%`)
-      .join(", ") || "No target data recorded";
-    return `
-      <div class="history-item ${active}">
-        <button type="button" class="history-select" data-soap-entry="${entry.key}" data-session-id="${session.id}">
-          <span><strong>${sessionCodeLabel(session)}</strong> • <strong>${formatDate(session.date)}</strong> ${session.startTime}-${session.endTime}</span>
-          <span>${programSummary}</span>
-          <span>${session.finalized ? "Finalized" : "Draft note"}</span>
-        </button>
-        <button type="button" class="delete-button" data-delete-session="${session.id}" aria-label="Delete session from ${formatDate(session.date)}">Delete</button>
-      </div>
-    `;
-  }).join("");
+    bucket.entries.push(entry);
+    return collection;
+  }, []);
+  renderSoapHistoryTabs(groups);
+  const visibleGroups = groups.filter((group) => group.key === state.activeSoapHistoryTab);
+  container.innerHTML = visibleGroups.map((group) => `
+    <section class="history-group">
+      <h3 class="history-group-title">${escapeHtml(group.label)}</h3>
+      ${group.entries.map((entry) => {
+        const active = selectedSoapEntry()?.key === entry.key ? "active" : "";
+        if (entry.type === "97151") {
+          const preview = String(entry.note || "").trim().split(/\n+/)[0] || "Assessment note generated from intake, report, and treatment planning data.";
+          return `
+            <div class="history-item ${active}">
+              <button type="button" class="history-select" data-soap-entry="${entry.key}">
+                <span><strong>97151</strong> • <strong>Assessment note</strong></span>
+                <div class="history-item-meta">
+                  <span class="health-badge low">${escapeHtml(soapEntryActivityLabel(entry))}</span>
+                </div>
+                <span>${escapeHtml(preview)}</span>
+                <span>Saved note</span>
+              </button>
+            </div>
+          `;
+        }
+        if (entry.type === "97155") {
+          const preview = String(entry.note || "").trim().split(/\n+/)[0] || "Treatment plan note generated from protocol modification work.";
+          return `
+            <div class="history-item ${active}">
+              <button type="button" class="history-select" data-soap-entry="${entry.key}">
+                <span><strong>97155</strong> • <strong>Treatment plan note</strong></span>
+                <div class="history-item-meta">
+                  <span class="health-badge medium">${escapeHtml(soapEntryActivityLabel(entry))}</span>
+                </div>
+                <span>${escapeHtml(preview)}</span>
+                <span>Saved note</span>
+              </button>
+            </div>
+          `;
+        }
+        const session = entry.session;
+        const programSummary = targetEntries(session)
+          .map((target) => `${lookups().targetName(target.programId, target.targetId)} ${target.independence}%`)
+          .join(", ") || "No target data recorded";
+        return `
+          <div class="history-item ${active}">
+            <button type="button" class="history-select" data-soap-entry="${entry.key}" data-session-id="${session.id}">
+              <span><strong>${sessionCodeLabel(session)}</strong> • <strong>${formatDate(session.date)}</strong> ${session.startTime}-${session.endTime}</span>
+              <div class="history-item-meta">
+                <span class="health-badge low">${escapeHtml(soapEntryActivityLabel(entry))}</span>
+                <span class="health-badge ${session.finalized ? "low" : "medium"}">${session.finalized ? "Finalized" : "Draft"}</span>
+              </div>
+              <span>${programSummary}</span>
+              <span>${session.finalized ? "Finalized" : "Draft note"}</span>
+            </button>
+            <button type="button" class="delete-button" data-delete-session="${session.id}" aria-label="Delete session from ${formatDate(session.date)}">Delete</button>
+          </div>
+        `;
+      }).join("")}
+    </section>
+  `).join("");
 
   container.querySelectorAll("[data-soap-entry]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -4545,7 +4767,7 @@ function renderNote() {
     noteStatus.textContent = "This 97155 treatment plan note is managed from Treatment Plan.";
     return;
   }
-  selectedSoapNoteTitle.textContent = `${sessionCodeLabel(session)} session note`;
+  selectedSoapNoteTitle.textContent = `${sessionCodeLabel(session)} ${soapEntryActivityLabel(entry)}`;
   soapEditor.value = session.soapNote || generateSoapNote(session, lookups());
   soapEditor.readOnly = session.finalized;
   finalizeButton.disabled = session.finalized;
