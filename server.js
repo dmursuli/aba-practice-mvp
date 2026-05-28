@@ -44,6 +44,7 @@ async function readDbWithUsers() {
   const db = await readDb();
   let changed = ensureDefaultUsers(db);
   if (ensureAgencyScoping(db)) changed = true;
+  if (ensureClientNoteHistories(db)) changed = true;
   if (changed) await writeDb(db);
   return db;
 }
@@ -767,8 +768,24 @@ const server = createServer(async (req, res) => {
       client.behaviors = sanitizeBehaviors(payload.behaviors || client.behaviors || []);
       client.rbtPerformanceAreas = sanitizeRbtPerformanceAreas(payload.rbtPerformanceAreas || client.rbtPerformanceAreas || []);
       client.planChangeLog = sanitizePlanChangeLog(payload.planChangeLog || client.planChangeLog || []);
-      client.note97151 = String(payload.note97151 ?? client.note97151 ?? "");
-      client.note97155 = String(payload.note97155 ?? client.note97155 ?? "");
+      const note97151History = sanitizeNoteHistoryEntries(payload.note97151History ?? client.note97151History ?? [], "97151");
+      const note97155History = sanitizeNoteHistoryEntries(payload.note97155History ?? client.note97155History ?? [], "97155");
+      const rawNote97151 = String(payload.note97151 ?? client.note97151 ?? "").trim();
+      const rawNote97155 = String(payload.note97155 ?? client.note97155 ?? "").trim();
+      if (rawNote97151 && !note97151History.length) {
+        note97151History.unshift(createNoteHistoryEntry("97151", rawNote97151, {
+          date: client.profile?.assessment?.date || client.planUpdatedAt || client.updatedAt || client.createdAt
+        }));
+      }
+      if (rawNote97155 && !note97155History.length) {
+        note97155History.unshift(createNoteHistoryEntry("97155", rawNote97155, {
+          date: client.planUpdatedAt || client.updatedAt || client.createdAt
+        }));
+      }
+      client.note97151History = note97151History;
+      client.note97155History = note97155History;
+      client.note97151 = note97151History[0]?.note || rawNote97151;
+      client.note97155 = note97155History[0]?.note || rawNote97155;
       client.planUpdatedAt = new Date().toISOString();
       const after = treatmentPlanAuditSnapshot(client);
       logAudit(db, req, actor, "treatment-plan-updated", {
@@ -1351,6 +1368,8 @@ function createClientRecord(payload, existingClients, actor = null) {
     planChangeLog: [],
     note97151: "",
     note97155: "",
+    note97151History: [],
+    note97155History: [],
     rbtPerformanceAreas: [],
     createdAt: new Date().toISOString(),
     planUpdatedAt: ""
@@ -1729,4 +1748,92 @@ function sanitizePlanChangeLog(changes) {
     fromStatus: String(change.fromStatus || ""),
     toStatus: String(change.toStatus || "")
   }));
+}
+
+function sanitizeNoteHistoryEntries(entries, serviceCode) {
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => ({
+      id: String(entry.id || crypto.randomUUID()),
+      serviceCode,
+      note: String(entry.note || "").trim(),
+      date: String(entry.date || new Date().toISOString().slice(0, 10)).slice(0, 10),
+      createdAt: String(entry.createdAt || new Date().toISOString()),
+      updatedAt: String(entry.updatedAt || entry.createdAt || new Date().toISOString()),
+      providerSignature: String(entry.providerSignature || ""),
+      providerCredential: String(entry.providerCredential || ""),
+      startTime: String(entry.startTime || ""),
+      endTime: String(entry.endTime || ""),
+      setting: String(entry.setting || ""),
+      activityLabel: String(entry.activityLabel || "")
+    }))
+    .filter((entry) => entry.note)
+    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+}
+
+function createNoteHistoryEntry(serviceCode, note, metadata = {}) {
+  const now = new Date().toISOString();
+  return {
+    id: crypto.randomUUID(),
+    serviceCode,
+    note: String(note || "").trim(),
+    date: String(metadata.date || now.slice(0, 10)).slice(0, 10),
+    createdAt: String(metadata.createdAt || now),
+    updatedAt: String(metadata.updatedAt || now),
+    providerSignature: String(metadata.providerSignature || ""),
+    providerCredential: String(metadata.providerCredential || ""),
+    startTime: String(metadata.startTime || ""),
+    endTime: String(metadata.endTime || ""),
+    setting: String(metadata.setting || ""),
+    activityLabel: String(metadata.activityLabel || "")
+  };
+}
+
+function ensureClientNoteHistories(db) {
+  let changed = false;
+  db.clients = Array.isArray(db.clients) ? db.clients : [];
+  db.clients.forEach((client) => {
+    const legacy97151 = String(client.note97151 || "").trim();
+    const legacy97155 = String(client.note97155 || "").trim();
+    let note97151History = sanitizeNoteHistoryEntries(client.note97151History || [], "97151");
+    let note97155History = sanitizeNoteHistoryEntries(client.note97155History || [], "97155");
+    if (legacy97151 && !note97151History.some((entry) => entry.note === legacy97151)) {
+      note97151History = [
+        createNoteHistoryEntry("97151", legacy97151, {
+          date: client.profile?.assessment?.date || client.planUpdatedAt || client.updatedAt || client.createdAt
+        }),
+        ...note97151History
+      ];
+      changed = true;
+    }
+    if (legacy97155 && !note97155History.some((entry) => entry.note === legacy97155)) {
+      note97155History = [
+        createNoteHistoryEntry("97155", legacy97155, {
+          date: client.planUpdatedAt || client.updatedAt || client.createdAt
+        }),
+        ...note97155History
+      ];
+      changed = true;
+    }
+    const latest97151 = note97151History[0]?.note || "";
+    const latest97155 = note97155History[0]?.note || "";
+    if (!Array.isArray(client.note97151History) || JSON.stringify(client.note97151History) !== JSON.stringify(note97151History)) {
+      client.note97151History = note97151History;
+      changed = true;
+    }
+    if (!Array.isArray(client.note97155History) || JSON.stringify(client.note97155History) !== JSON.stringify(note97155History)) {
+      client.note97155History = note97155History;
+      changed = true;
+    }
+    if (String(client.note97151 || "") !== latest97151) {
+      client.note97151 = latest97151;
+      changed = true;
+    }
+    if (String(client.note97155 || "") !== latest97155) {
+      client.note97155 = latest97155;
+      changed = true;
+    }
+  });
+  return changed;
 }

@@ -623,16 +623,19 @@ function preloadTargetRows() {
   programList.innerHTML = "";
   clientPrograms().forEach((program) => {
     const programStatus = normalizePlanStatus(program.status || "active");
-    (program.targets || []).forEach((target) => {
+    const activeTargets = (program.targets || []).filter((target) => {
       const targetStatus = normalizePlanStatus(target.status || "active");
-      if (programStatus !== "mastered" && targetStatus === "active") {
-        addProgramRow(program.id, target.id, { entryMode: "active" });
-        return;
-      }
-      if (sessionTargetMatchesTab(programStatus, target, "maintenance")) {
-        addProgramRow(program.id, target.id, { entryMode: "maintenance" });
-      }
+      return programStatus !== "mastered" && targetStatus === "active";
     });
+    const maintenanceTargets = (program.targets || []).filter((target) => (
+      sessionTargetMatchesTab(programStatus, target, "maintenance")
+    ));
+    if (activeTargets[0]) {
+      addProgramRow(program.id, activeTargets[0].id, { entryMode: "active" });
+    }
+    if (maintenanceTargets[0]) {
+      addProgramRow(program.id, maintenanceTargets[0].id, { entryMode: "maintenance" });
+    }
   });
   state.activeSessionTargetTab = "active";
 }
@@ -956,6 +959,8 @@ function handleExportClientPackage() {
     notes: {
       note97151: client.note97151 || "",
       note97155: client.note97155 || "",
+      note97151History: client.note97151History || [],
+      note97155History: client.note97155History || [],
       soapNotes: currentSessions().map((session) => ({
         sessionId: session.id,
         serviceType: session.serviceType || "97153",
@@ -2881,15 +2886,15 @@ function renderSoapSummary() {
       ? "97155"
       : (session ? sessionCodeLabel(session) : "Session notes");
   const selectedLabel = entry?.type === "97151"
-    ? "Assessment note"
+    ? formatDate(entry.record?.date || "")
     : entry?.type === "97155"
-      ? "Treatment plan note"
+      ? formatDate(entry.record?.date || "")
       : (session ? formatDate(session.date) : "None");
   const statusLabel = entry?.type === "97151"
-    ? (String(currentClient()?.note97151 || "").trim() ? "Saved" : "Not generated")
+    ? (String(entry?.note || "").trim() ? "Saved" : "Not generated")
     : entry?.type === "97155"
-      ? (String(currentClient()?.note97155 || "").trim() ? "Saved" : "Not generated")
-    : (session?.finalized ? "Finalized" : "Draft");
+      ? (String(entry?.note || "").trim() ? "Saved" : "Not generated")
+      : (session?.finalized ? "Finalized" : "Draft");
   const activityLabel = entry ? soapEntryActivityLabel(entry) : "No note selected";
   soapCodeLabel.textContent = serviceCode;
   soapClientSummary.innerHTML = client
@@ -2948,6 +2953,7 @@ function renderPlanReview() {
         : `
           <p class="muted">No active goals yet.</p>
           ${renderPlanBehaviorSection(behaviors)}
+          ${renderPlanParentTrainingSection()}
         `;
     bindPlanReviewInputs();
     return;
@@ -2963,6 +2969,7 @@ function renderPlanReview() {
       <button type="button" class="health-badge stagnant-badge ${state.activePlanReviewFilter === "stagnant" ? "is-active" : ""}" data-review-jump="stagnant" aria-pressed="${state.activePlanReviewFilter === "stagnant"}">Stagnant (${masteryCounts.stagnant})</button>
     </section>
     ${state.activePlanReviewFilter ? `<p class="plan-review-filter-note">Showing all ${escapeHtml(state.activePlanReviewFilter)} targets across domains. Click the same badge again to clear.</p>` : ""}
+    ${state.activePlanProgramTab === "active" ? renderPlanParentTrainingSection() : ""}
     ${groupedPrograms.map(([domain, domainPrograms]) => `
     <section class="plan-domain ${state.activePlanReviewFilter || domain === state.activePlanDomain ? "" : "hidden"}" data-plan-domain="${escapeHtml(domain)}">
       <div class="plan-domain-heading">
@@ -3014,7 +3021,7 @@ function normalizePlanStatus(status = "active") {
 }
 
 function bindPlanReviewInputs() {
-  planReview.querySelectorAll("[data-program-name], [data-program-objective], [data-target-name], [data-target-note], [data-behavior-name]").forEach((input) => {
+  planReview.querySelectorAll("[data-program-name], [data-program-objective], [data-target-name], [data-target-note], [data-behavior-name], [data-plan-parent-goal], [data-plan-parent-target], [data-plan-parent-opportunities], [data-plan-parent-independent], [data-plan-parent-prompted]").forEach((input) => {
     input.addEventListener("blur", handlePlanTextEdit);
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -3025,6 +3032,9 @@ function bindPlanReviewInputs() {
   });
   planReview.querySelectorAll("[data-program-domain]").forEach((select) => {
     select.addEventListener("change", handleProgramDomainChange);
+  });
+  planReview.querySelectorAll("[data-plan-parent-prompt-level]").forEach((select) => {
+    select.addEventListener("change", handlePlanTextEdit);
   });
 }
 
@@ -3054,10 +3064,71 @@ function renderPlanBehaviorSection(behaviors) {
               </select>
             </label>
             <div class="button-row">
+              <button type="button" class="secondary-button" data-open-plan-behavior-graph="${behavior.id}">View graph</button>
               <button type="button" class="delete-button" data-remove-plan-behavior="${behavior.id}">Remove</button>
             </div>
           </div>
         `).join("") : '<p class="muted">No behaviors added yet.</p>'}
+      </div>
+    </section>
+  `;
+}
+
+function renderPlanParentTrainingSection() {
+  const goals = currentParentTrainingGoals();
+  return `
+    <section class="plan-program">
+      <div class="plan-domain-heading">
+        <h3>Parent training</h3>
+        <span>${goals.length} goal${goals.length === 1 ? "" : "s"}</span>
+      </div>
+      <p class="muted">Manage the caregiver-training goal bank here so 97156 sessions preload the current goals.</p>
+      <div class="button-row">
+        <button type="button" class="secondary-button" data-add-plan-parent-goal>Add parent goal</button>
+      </div>
+      <div class="plan-target-list">
+        ${goals.length ? goals.map((goal, index) => {
+          const review = parentGoalReview(goal);
+          const denominator = Math.max(Number(goal.opportunities || 0), Number(goal.independent || 0) + Number(goal.prompted || 0), 1);
+          const score = Math.round((Number(goal.independent || 0) / denominator) * 100);
+          return `
+            <div class="data-row parent-goal-row ${review.className || ""}">
+              <label class="parent-goal-main">
+                Parent goal
+                <input type="text" value="${escapeHtml(goal.goalName || "")}" data-plan-parent-goal="${index}" placeholder="Entire caregiver-training goal">
+              </label>
+              <div class="parent-goal-controls">
+                <label>
+                  Target
+                  <input type="text" value="${escapeHtml(goal.targetName || "")}" data-plan-parent-target="${index}" placeholder="Caregiver target">
+                </label>
+                <label>
+                  Opportunities
+                  <input type="number" value="${Number(goal.opportunities ?? 5)}" min="0" data-plan-parent-opportunities="${index}">
+                </label>
+                <label>
+                  Independent
+                  <input type="number" value="${Number(goal.independent ?? 0)}" min="0" data-plan-parent-independent="${index}">
+                </label>
+                <label>
+                  Prompted
+                  <input type="number" value="${Number(goal.prompted ?? 0)}" min="0" data-plan-parent-prompted="${index}">
+                </label>
+                <label>
+                  Prompt level
+                  <select data-plan-parent-prompt-level="${index}">
+                    ${["independent", "gestural", "verbal", "modeling", "physical"].map((level) => `
+                      <option value="${level}" ${String(goal.promptLevel || "verbal") === level ? "selected" : ""}>${capitalize(level)}</option>
+                    `).join("")}
+                  </select>
+                </label>
+                <div class="metric-pill" data-plan-parent-score="${index}">${score}%</div>
+                <button type="button" class="icon-button" data-remove-plan-parent-goal="${index}" aria-label="Remove parent goal">x</button>
+              </div>
+              <div class="parent-goal-review">${review.message || ""}</div>
+            </div>
+          `;
+        }).join("") : '<p class="muted">No parent training goals added yet.</p>'}
       </div>
     </section>
   `;
@@ -3301,6 +3372,11 @@ async function handlePlanClick(event) {
     openProgramGraphModal(openProgramGraph.dataset.openPlanGraph);
     return;
   }
+  const openBehaviorGraph = event.target.closest("[data-open-plan-behavior-graph]");
+  if (openBehaviorGraph) {
+    openBehaviorGraphModal(openBehaviorGraph.dataset.openPlanBehaviorGraph);
+    return;
+  }
   const addBehavior = event.target.closest("[data-add-plan-behavior]");
   if (addBehavior) {
     const name = window.prompt("Behavior name");
@@ -3328,6 +3404,31 @@ async function handlePlanClick(event) {
       type: "behavior-removed",
       targetName: target.name
     });
+    return;
+  }
+  const addParentGoal = event.target.closest("[data-add-plan-parent-goal]");
+  if (addParentGoal) {
+    const goals = currentPlanParentGoalsDraft();
+    goals.push(normalizeParentGoal({
+      goalName: "",
+      targetName: "",
+      opportunities: 5,
+      independent: 0,
+      prompted: 0,
+      promptLevel: "verbal"
+    }));
+    await savePlanParentTrainingGoals(goals, "Parent training goal added.");
+    return;
+  }
+  const removeParentGoal = event.target.closest("[data-remove-plan-parent-goal]");
+  if (removeParentGoal) {
+    const goals = currentPlanParentGoalsDraft();
+    const index = Number(removeParentGoal.dataset.removePlanParentGoal);
+    const target = goals[index];
+    if (!target) return;
+    if (!window.confirm(`Remove ${target.goalName || target.targetName || "this parent goal"}?`)) return;
+    goals.splice(index, 1);
+    await savePlanParentTrainingGoals(goals, "Parent training goal removed.");
     return;
   }
   const addTarget = event.target.closest("[data-add-target]");
@@ -3418,6 +3519,35 @@ function openProgramGraphModal(programId) {
   });
 }
 
+function buildBehaviorChart(behaviorId, sessions) {
+  const behavior = clientBehaviors().find((item) => item.id === behaviorId);
+  if (!behavior) return null;
+  const points = sessions.flatMap((session) => {
+    const entry = (session.behaviors || []).find((item) => item.behaviorId === behaviorId);
+    return entry ? [{ x: session.date, y: Number(entry.frequency || 0), phase: entry.phase || "intervention" }] : [];
+  });
+  return {
+    behavior,
+    series: [{ name: behavior.name, points }]
+  };
+}
+
+function openBehaviorGraphModal(behaviorId) {
+  const chart = buildBehaviorChart(behaviorId, currentSessions().slice().reverse());
+  if (!chart) return;
+  programGraphModalTitle.textContent = chart.behavior.name;
+  programGraphModalSubtitle.textContent = "Behavior reduction - frequency";
+  programGraphModal.classList.remove("hidden");
+  programGraphModal.setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => {
+    drawLineChart(programGraphModalCanvas, chart.series, {
+      yStep: 1,
+      yLabel: "frequency",
+      emptyMessage: "No behavior data for this behavior"
+    });
+  });
+}
+
 function closeProgramGraphModal() {
   programGraphModal.classList.add("hidden");
   programGraphModal.setAttribute("aria-hidden", "true");
@@ -3426,6 +3556,17 @@ function closeProgramGraphModal() {
 async function handlePlanTextEdit(event) {
   const input = event.target;
   const { programs, behaviors } = currentPlanDraft();
+  if (
+    input.dataset.planParentGoal !== undefined
+    || input.dataset.planParentTarget !== undefined
+    || input.dataset.planParentOpportunities !== undefined
+    || input.dataset.planParentIndependent !== undefined
+    || input.dataset.planParentPrompted !== undefined
+    || input.dataset.planParentPromptLevel !== undefined
+  ) {
+    await savePlanParentTrainingGoals(currentPlanParentGoalsDraft());
+    return;
+  }
   if (input.dataset.programName) {
     const program = programs.find((item) => item.id === input.dataset.programName);
     if (program && input.value.trim()) program.name = input.value.trim();
@@ -3544,7 +3685,9 @@ async function savePlan(
   note97155 = currentClient()?.note97155 || "",
   domains = clientDomains(),
   rbtPerformanceAreas = clientRbtPerformanceAreas(),
-  note97151 = currentClient()?.note97151 || ""
+  note97151 = currentClient()?.note97151 || "",
+  note97155History = currentClient()?.note97155History || [],
+  note97151History = currentClient()?.note97151History || []
 ) {
   const planChangeLog = change
     ? [...(currentClient()?.planChangeLog || []), {
@@ -3561,12 +3704,59 @@ async function savePlan(
     planChangeLog,
     note97155,
     note97151,
+    note97155History,
+    note97151History,
     rbtPerformanceAreas
   });
   const index = state.clients.findIndex((item) => item.id === updated.id);
   if (index >= 0) state.clients[index] = updated;
   resetRows();
   render();
+}
+
+function soapNoteEntryKey(serviceCode, entryId) {
+  return `note-${serviceCode}-${entryId}`;
+}
+
+function parseSoapNoteEntryKey(key) {
+  const match = String(key || "").match(/^note-(97151|97155)-(.+)$/);
+  if (!match) return null;
+  return { serviceCode: match[1], id: match[2] };
+}
+
+function noteHistoryEntriesFor(serviceCode) {
+  return structuredClone(currentClient()?.[`note${serviceCode}History`] || []);
+}
+
+function latestNoteHistoryEntry(serviceCode) {
+  return noteHistoryEntriesFor(serviceCode)[0] || null;
+}
+
+function selectedNoteHistoryEntry(serviceCode) {
+  const parsed = parseSoapNoteEntryKey(state.selectedSoapEntryKey);
+  if (!parsed || parsed.serviceCode !== serviceCode) return latestNoteHistoryEntry(serviceCode);
+  return noteHistoryEntriesFor(serviceCode).find((entry) => entry.id === parsed.id) || latestNoteHistoryEntry(serviceCode);
+}
+
+function upsertNoteHistoryEntry(serviceCode, record) {
+  const entries = noteHistoryEntriesFor(serviceCode);
+  const latest = entries[0];
+  const matchesCurrentSession = latest
+    && latest.date === record.date
+    && latest.startTime === record.startTime
+    && latest.endTime === record.endTime
+    && latest.providerSignature === record.providerSignature
+    && latest.providerCredential === record.providerCredential
+    && latest.setting === record.setting;
+  const normalized = {
+    ...record,
+    serviceCode,
+    id: record.id || (matchesCurrentSession ? latest.id : cryptoId()),
+    createdAt: matchesCurrentSession ? latest.createdAt : (record.createdAt || new Date().toISOString()),
+    updatedAt: new Date().toISOString()
+  };
+  const remaining = entries.filter((entry) => entry.id !== normalized.id);
+  return [normalized, ...remaining].sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
 }
 
 function currentPlanDraft() {
@@ -3616,11 +3806,73 @@ function currentPlanDraft() {
   return { programs, behaviors };
 }
 
+function currentPlanParentGoalsDraft() {
+  const goals = structuredClone(currentParentTrainingGoals());
+  planReview.querySelectorAll("[data-plan-parent-goal]").forEach((input) => {
+    const goal = goals[Number(input.dataset.planParentGoal)];
+    if (goal) goal.goalName = input.value.trim();
+  });
+  planReview.querySelectorAll("[data-plan-parent-target]").forEach((input) => {
+    const goal = goals[Number(input.dataset.planParentTarget)];
+    if (goal) goal.targetName = input.value.trim();
+  });
+  planReview.querySelectorAll("[data-plan-parent-opportunities]").forEach((input) => {
+    const goal = goals[Number(input.dataset.planParentOpportunities)];
+    if (goal) goal.opportunities = Number(input.value || 0);
+  });
+  planReview.querySelectorAll("[data-plan-parent-independent]").forEach((input) => {
+    const goal = goals[Number(input.dataset.planParentIndependent)];
+    if (goal) goal.independent = Number(input.value || 0);
+  });
+  planReview.querySelectorAll("[data-plan-parent-prompted]").forEach((input) => {
+    const goal = goals[Number(input.dataset.planParentPrompted)];
+    if (goal) goal.prompted = Number(input.value || 0);
+  });
+  planReview.querySelectorAll("[data-plan-parent-prompt-level]").forEach((select) => {
+    const goal = goals[Number(select.dataset.planParentPromptLevel)];
+    if (goal) goal.promptLevel = select.value;
+  });
+  return goals.map((goal) => normalizeParentGoal(goal)).filter((goal) => goal.goalName || goal.targetName);
+}
+
+async function savePlanParentTrainingGoals(goals, message = "Parent training goals saved.") {
+  const client = currentClient();
+  if (!client) return;
+  const updated = await updateClientProfile(client.id, {
+    ...currentClientProfilePayload(client),
+    parentTrainingGoals: goals
+  });
+  replaceClient(updated);
+  planMessage.textContent = message;
+  render();
+}
+
 async function handleGenerate97155Note() {
   const note = generate97155Note();
+  const sessionDetails = readBcbaSessionDetails();
+  const note97155History = upsertNoteHistoryEntry("97155", {
+    note,
+    date: sessionDetails.date,
+    providerSignature: sessionDetails.providerSignature,
+    providerCredential: sessionDetails.providerCredential,
+    startTime: sessionDetails.startTime,
+    endTime: sessionDetails.endTime,
+    setting: sessionDetails.setting,
+    activityLabel: "Treatment planning / protocol modification"
+  });
   note97155Editor.value = note;
-  await savePlan(clientPrograms(), clientBehaviors(), null, note);
-  state.selectedSoapEntryKey = "note-97155";
+  await savePlan(
+    clientPrograms(),
+    clientBehaviors(),
+    null,
+    note,
+    clientDomains(),
+    clientRbtPerformanceAreas(),
+    currentClient()?.note97151 || "",
+    note97155History,
+    currentClient()?.note97151History || []
+  );
+  state.selectedSoapEntryKey = soapNoteEntryKey("97155", note97155History[0].id);
   note97155Status.textContent = "97155 note generated.";
   planMessage.textContent = "97155 note generated. Review or edit it below.";
   renderHistory();
@@ -3658,6 +3910,14 @@ function generate97151Note() {
 
 async function handleGenerate97151Note() {
   const note = generate97151Note();
+  const values = new FormData(reportForm);
+  const note97151History = upsertNoteHistoryEntry("97151", {
+    note,
+    date: values.get("assessmentDate") || new Date().toISOString().slice(0, 10),
+    providerSignature: values.get("preparedBy") || values.get("assessmentConductedBy") || state.currentUser?.name || "BCBA",
+    providerCredential: values.get("credential") || "BCBA",
+    activityLabel: "Behavior assessment / report update"
+  });
   note97151Editor.value = note;
   planNote97151Editor.value = note;
   await savePlan(
@@ -3667,9 +3927,11 @@ async function handleGenerate97151Note() {
     currentClient()?.note97155 || "",
     clientDomains(),
     clientRbtPerformanceAreas(),
-    note
+    note,
+    currentClient()?.note97155History || [],
+    note97151History
   );
-  state.selectedSoapEntryKey = "note-97151";
+  state.selectedSoapEntryKey = soapNoteEntryKey("97151", note97151History[0].id);
   note97151Status.textContent = "97151 note generated.";
   planNote97151Status.textContent = "97151 note generated.";
   funderExportStatus.textContent = "97151 assessment note generated. Review or edit it below.";
@@ -3681,6 +3943,16 @@ async function handleGenerate97151Note() {
 
 async function handleSave97151Note() {
   const note = document.activeElement === planNote97151Editor ? planNote97151Editor.value : note97151Editor.value;
+  const values = new FormData(reportForm);
+  const selected = selectedNoteHistoryEntry("97151");
+  const note97151History = upsertNoteHistoryEntry("97151", {
+    ...selected,
+    note,
+    date: selected?.date || values.get("assessmentDate") || new Date().toISOString().slice(0, 10),
+    providerSignature: selected?.providerSignature || values.get("preparedBy") || values.get("assessmentConductedBy") || state.currentUser?.name || "BCBA",
+    providerCredential: selected?.providerCredential || values.get("credential") || "BCBA",
+    activityLabel: selected?.activityLabel || "Behavior assessment / report update"
+  });
   note97151Editor.value = note;
   planNote97151Editor.value = note;
   await savePlan(
@@ -3690,11 +3962,13 @@ async function handleSave97151Note() {
     currentClient()?.note97155 || "",
     clientDomains(),
     clientRbtPerformanceAreas(),
-    note
+    note,
+    currentClient()?.note97155History || [],
+    note97151History
   );
   if (note.trim()) {
-    state.selectedSoapEntryKey = "note-97151";
-  } else if (state.selectedSoapEntryKey === "note-97151") {
+    state.selectedSoapEntryKey = soapNoteEntryKey("97151", note97151History[0].id);
+  } else if (parseSoapNoteEntryKey(state.selectedSoapEntryKey)?.serviceCode === "97151") {
     state.selectedSoapEntryKey = "";
   }
   note97151Status.textContent = "97151 note saved.";
@@ -3713,10 +3987,33 @@ function render97151Note() {
 }
 
 async function handleSave97155Note() {
-  await savePlan(clientPrograms(), clientBehaviors(), null, note97155Editor.value);
+  const sessionDetails = readBcbaSessionDetails();
+  const selected = selectedNoteHistoryEntry("97155");
+  const note97155History = upsertNoteHistoryEntry("97155", {
+    ...selected,
+    note: note97155Editor.value,
+    date: selected?.date || sessionDetails.date,
+    providerSignature: selected?.providerSignature || sessionDetails.providerSignature,
+    providerCredential: selected?.providerCredential || sessionDetails.providerCredential,
+    startTime: selected?.startTime || sessionDetails.startTime,
+    endTime: selected?.endTime || sessionDetails.endTime,
+    setting: selected?.setting || sessionDetails.setting,
+    activityLabel: selected?.activityLabel || "Treatment planning / protocol modification"
+  });
+  await savePlan(
+    clientPrograms(),
+    clientBehaviors(),
+    null,
+    note97155Editor.value,
+    clientDomains(),
+    clientRbtPerformanceAreas(),
+    currentClient()?.note97151 || "",
+    note97155History,
+    currentClient()?.note97151History || []
+  );
   if (note97155Editor.value.trim()) {
-    state.selectedSoapEntryKey = "note-97155";
-  } else if (state.selectedSoapEntryKey === "note-97155") {
+    state.selectedSoapEntryKey = soapNoteEntryKey("97155", note97155History[0].id);
+  } else if (parseSoapNoteEntryKey(state.selectedSoapEntryKey)?.serviceCode === "97155") {
     state.selectedSoapEntryKey = "";
   }
   note97155Status.textContent = "97155 note saved.";
@@ -3845,7 +4142,16 @@ function renderSoapHistoryTabs(groups) {
   soapHistoryTabs.querySelectorAll("[data-soap-history-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeSoapHistoryTab = button.dataset.soapHistoryTab;
+      const selectedGroup = groups.find((group) => group.key === state.activeSoapHistoryTab);
+      if (selectedGroup?.entries?.length) {
+        state.selectedSoapEntryKey = selectedGroup.entries[0].key;
+        if (selectedGroup.entries[0].session?.id) {
+          state.selectedSessionId = selectedGroup.entries[0].session.id;
+        }
+      }
       renderHistory();
+      renderNote();
+      renderSoapSummary();
     });
   });
 }
@@ -3963,12 +4269,12 @@ function renderHistory() {
           return `
             <div class="history-item ${active}">
               <button type="button" class="history-select" data-soap-entry="${entry.key}">
-                <span><strong>97151</strong> • <strong>Assessment note</strong></span>
+                <span><strong>97151</strong> • <strong>${formatDate(entry.record?.date)}</strong></span>
                 <div class="history-item-meta">
                   <span class="health-badge low">${escapeHtml(soapEntryActivityLabel(entry))}</span>
                 </div>
                 <span>${escapeHtml(preview)}</span>
-                <span>Saved note</span>
+                <span>${escapeHtml(entry.record?.providerSignature || "Saved note")}</span>
               </button>
             </div>
           `;
@@ -3978,20 +4284,23 @@ function renderHistory() {
           return `
             <div class="history-item ${active}">
               <button type="button" class="history-select" data-soap-entry="${entry.key}">
-                <span><strong>97155</strong> • <strong>Treatment plan note</strong></span>
+                <span><strong>97155</strong> • <strong>${formatDate(entry.record?.date)}</strong>${entry.record?.startTime && entry.record?.endTime ? ` ${entry.record.startTime}-${entry.record.endTime}` : ""}</span>
                 <div class="history-item-meta">
                   <span class="health-badge medium">${escapeHtml(soapEntryActivityLabel(entry))}</span>
                 </div>
                 <span>${escapeHtml(preview)}</span>
-                <span>Saved note</span>
+                <span>${escapeHtml(entry.record?.providerSignature || "Saved note")}</span>
               </button>
             </div>
           `;
         }
         const session = entry.session;
-        const programSummary = targetEntries(session)
-          .map((target) => `${lookups().targetName(target.programId, target.targetId)} ${target.independence}%`)
-          .join(", ") || "No target data recorded";
+        const programSummary = session.serviceType === "parent-training"
+          ? ((session.parentGoals || []).map((goal) => `${goal.targetName} ${goal.fidelity}%`).join(", ")
+            || "No parent-training goal data recorded")
+          : (targetEntries(session)
+            .map((target) => `${lookups().targetName(target.programId, target.targetId)} ${target.independence}%`)
+            .join(", ") || "No target data recorded");
         return `
           <div class="history-item ${active}">
             <button type="button" class="history-select" data-soap-entry="${entry.key}" data-session-id="${session.id}">
@@ -4747,7 +5056,7 @@ function renderNote() {
   }
   if (entry.type === "97151") {
     selectedSoapNoteTitle.textContent = "97151 assessment note";
-    soapEditor.value = currentClient()?.note97151 || "";
+    soapEditor.value = entry.note || "";
     soapEditor.readOnly = true;
     finalizeButton.disabled = true;
     printSoapNoteButton.disabled = false;
@@ -4758,7 +5067,7 @@ function renderNote() {
   }
   if (entry.type === "97155") {
     selectedSoapNoteTitle.textContent = "97155 treatment plan note";
-    soapEditor.value = currentClient()?.note97155 || "";
+    soapEditor.value = entry.note || "";
     soapEditor.readOnly = true;
     finalizeButton.disabled = true;
     printSoapNoteButton.disabled = false;
@@ -4824,10 +5133,10 @@ function handleDownloadSoapNote(format) {
 
 function soapNoteFileBase(entry) {
   if (entry?.type === "97151") {
-    return `${safeFilename(currentClient()?.name || "Client")}-97151-assessment-note`;
+    return `${safeFilename(currentClient()?.name || "Client")}-97151-assessment-note-${entry.record?.date || "note"}`;
   }
   if (entry?.type === "97155") {
-    return `${safeFilename(currentClient()?.name || "Client")}-97155-treatment-plan-note`;
+    return `${safeFilename(currentClient()?.name || "Client")}-97155-treatment-plan-note-${entry.record?.date || "note"}`;
   }
   const session = entry?.session || entry;
   return `${safeFilename(lookups().clientName(session.clientId))}-${session.serviceType || "97153"}-${session.date}`;
@@ -5235,20 +5544,22 @@ function soapHistoryEntries() {
     type: "session",
     session
   }));
-  if (String(currentClient()?.note97155 || "").trim()) {
+  noteHistoryEntriesFor("97155").reverse().forEach((record) => {
     entries.unshift({
-      key: "note-97155",
+      key: soapNoteEntryKey("97155", record.id),
       type: "97155",
-      note: currentClient().note97155
+      note: record.note,
+      record
     });
-  }
-  if (String(currentClient()?.note97151 || "").trim()) {
+  });
+  noteHistoryEntriesFor("97151").reverse().forEach((record) => {
     entries.unshift({
-      key: "note-97151",
+      key: soapNoteEntryKey("97151", record.id),
       type: "97151",
-      note: currentClient().note97151
+      note: record.note,
+      record
     });
-  }
+  });
   return entries;
 }
 
