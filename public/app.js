@@ -2959,7 +2959,6 @@ function renderPlanReview() {
         : `
           <p class="muted">No active goals yet.</p>
           ${renderPlanBehaviorSection(behaviors)}
-          ${renderPlanParentTrainingSection()}
         `;
     bindPlanReviewInputs();
     return;
@@ -2975,7 +2974,6 @@ function renderPlanReview() {
       <button type="button" class="health-badge stagnant-badge ${state.activePlanReviewFilter === "stagnant" ? "is-active" : ""}" data-review-jump="stagnant" aria-pressed="${state.activePlanReviewFilter === "stagnant"}">Stagnant (${masteryCounts.stagnant})</button>
     </section>
     ${state.activePlanReviewFilter ? `<p class="plan-review-filter-note">Showing all ${escapeHtml(state.activePlanReviewFilter)} targets across domains. Click the same badge again to clear.</p>` : ""}
-    ${state.activePlanProgramTab === "active" ? renderPlanParentTrainingSection() : ""}
     ${groupedPrograms.map(([domain, domainPrograms]) => `
     <section class="plan-domain ${state.activePlanReviewFilter || domain === state.activePlanDomain ? "" : "hidden"}" data-plan-domain="${escapeHtml(domain)}">
       <div class="plan-domain-heading">
@@ -4122,9 +4120,8 @@ function soapEntryActivityLabel(entry) {
 }
 
 function soapEntryGroup(entry) {
-  if (entry.type === "97151" || entry.type === "97155") {
-    return { key: "planning", label: "Assessment and planning" };
-  }
+  if (entry.type === "97151") return { key: "97151", label: "97151 Assessment" };
+  if (entry.type === "97155") return { key: "97155", label: "97155 Treatment planning" };
   const code = sessionCodeLabel(entry.session);
   if (code === "97156") return { key: "97156", label: "97156 Parent training" };
   return { key: "97153", label: "97153 Direct therapy" };
@@ -4276,7 +4273,7 @@ function renderHistory() {
   if (selectedGroup && availableKeys.includes(selectedGroup)) {
     state.activeSoapHistoryTab = selectedGroup;
   } else if (!availableKeys.includes(state.activeSoapHistoryTab)) {
-    const fallbackOrder = ["97153", "97156", "planning"];
+    const fallbackOrder = ["97153", "97156", "97155", "97151"];
     state.activeSoapHistoryTab = fallbackOrder.find((key) => availableKeys.includes(key)) || availableKeys[0] || "planning";
   }
   renderSoapHistoryTabs(groups);
@@ -5568,7 +5565,7 @@ function soapHistoryEntries() {
   }));
   const note97155History = noteHistoryEntriesFor("97155");
   const note97151History = noteHistoryEntriesFor("97151");
-  if (!note97155History.length && String(currentClient()?.note97155 || "").trim()) {
+  if (String(currentClient()?.note97155 || "").trim() && !note97155History.some((entry) => String(entry.note || "").trim() === String(currentClient()?.note97155 || "").trim())) {
     note97155History.push({
       id: "legacy-97155",
       serviceCode: "97155",
@@ -5581,7 +5578,7 @@ function soapHistoryEntries() {
       updatedAt: currentClient()?.planUpdatedAt || currentClient()?.updatedAt || currentClient()?.createdAt || ""
     });
   }
-  if (!note97151History.length && String(currentClient()?.note97151 || "").trim()) {
+  if (String(currentClient()?.note97151 || "").trim() && !note97151History.some((entry) => String(entry.note || "").trim() === String(currentClient()?.note97151 || "").trim())) {
     note97151History.push({
       id: "legacy-97151",
       serviceCode: "97151",
@@ -5594,7 +5591,10 @@ function soapHistoryEntries() {
       updatedAt: currentClient()?.updatedAt || currentClient()?.createdAt || ""
     });
   }
-  note97155History.reverse().forEach((record) => {
+  note97155History
+    .slice()
+    .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))
+    .forEach((record) => {
     entries.unshift({
       key: soapNoteEntryKey("97155", record.id),
       type: "97155",
@@ -5602,7 +5602,10 @@ function soapHistoryEntries() {
       record
     });
   });
-  note97151History.reverse().forEach((record) => {
+  note97151History
+    .slice()
+    .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))
+    .forEach((record) => {
     entries.unshift({
       key: soapNoteEntryKey("97151", record.id),
       type: "97151",
