@@ -5566,7 +5566,35 @@ function soapHistoryEntries() {
     type: "session",
     session
   }));
-  noteHistoryEntriesFor("97155").reverse().forEach((record) => {
+  const note97155History = noteHistoryEntriesFor("97155");
+  const note97151History = noteHistoryEntriesFor("97151");
+  if (!note97155History.length && String(currentClient()?.note97155 || "").trim()) {
+    note97155History.push({
+      id: "legacy-97155",
+      serviceCode: "97155",
+      note: currentClient().note97155,
+      date: currentClient()?.planUpdatedAt?.slice(0, 10) || currentClient()?.updatedAt?.slice(0, 10) || currentClient()?.createdAt?.slice(0, 10) || "",
+      providerSignature: "",
+      providerCredential: "",
+      activityLabel: "Treatment planning / protocol modification",
+      createdAt: currentClient()?.planUpdatedAt || currentClient()?.updatedAt || currentClient()?.createdAt || "",
+      updatedAt: currentClient()?.planUpdatedAt || currentClient()?.updatedAt || currentClient()?.createdAt || ""
+    });
+  }
+  if (!note97151History.length && String(currentClient()?.note97151 || "").trim()) {
+    note97151History.push({
+      id: "legacy-97151",
+      serviceCode: "97151",
+      note: currentClient().note97151,
+      date: currentClient()?.profile?.assessment?.date || currentClient()?.updatedAt?.slice(0, 10) || currentClient()?.createdAt?.slice(0, 10) || "",
+      providerSignature: "",
+      providerCredential: "",
+      activityLabel: "Behavior assessment / report update",
+      createdAt: currentClient()?.updatedAt || currentClient()?.createdAt || "",
+      updatedAt: currentClient()?.updatedAt || currentClient()?.createdAt || ""
+    });
+  }
+  note97155History.reverse().forEach((record) => {
     entries.unshift({
       key: soapNoteEntryKey("97155", record.id),
       type: "97155",
@@ -5574,7 +5602,7 @@ function soapHistoryEntries() {
       record
     });
   });
-  noteHistoryEntriesFor("97151").reverse().forEach((record) => {
+  note97151History.reverse().forEach((record) => {
     entries.unshift({
       key: soapNoteEntryKey("97151", record.id),
       type: "97151",
