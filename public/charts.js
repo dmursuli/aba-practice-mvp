@@ -1,7 +1,4 @@
 const palette = ["#167c80", "#d1495b", "#edae49", "#4b7bec", "#6a994e", "#9d4edd"];
-const MARKER_AFTER_DATE_OFFSET = 120;
-const POINT_BEFORE_MARKER_OFFSET = 42;
-
 export function drawLineChart(canvas, series, options = {}) {
   const ctx = canvas.getContext("2d");
   const rect = canvas.getBoundingClientRect();
@@ -13,7 +10,7 @@ export function drawLineChart(canvas, series, options = {}) {
   const width = canvas.width / dpr;
   const height = canvas.height / dpr;
   const legendRows = Math.ceil(series.length / 2);
-  const margin = { top: 28, right: 28, bottom: 96 + legendRows * 20, left: 48 };
+  const margin = { top: 52, right: 28, bottom: 102 + legendRows * 20, left: 56 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const allPoints = series.flatMap((item) => item.points);
@@ -31,10 +28,10 @@ export function drawLineChart(canvas, series, options = {}) {
   const maxY = Math.max(options.maxY || 0, ...allPoints.map((point) => point.y), 1);
   const yTop = options.maxY || Math.max(options.yStep || 1, Math.ceil(maxY * 1.15));
   const phaseBoundary = getPhaseBoundary(allPoints, dates);
-  const xPositions = buildXPositions(dates.length, margin.left, plotWidth, phaseBoundary);
+  const layout = buildChartLayout(dates, margin.left, plotWidth, phaseBoundary, options.phaseMarkers || []);
+  const xPositions = layout.dateXPositions;
   const phaseLineX = phaseBoundary ? phaseLinePosition(phaseBoundary, xPositions) : null;
-  const markerModesByDate = buildMarkerModeMap(options.phaseMarkers || []);
-  const phaseMarkerXs = markerPositions(options.phaseMarkers || [], dates, xPositions);
+  const phaseMarkerXs = markerPositions(options.phaseMarkers || [], dates, xPositions, layout.markerXByDate);
   const breakLines = [
     ...(Number.isFinite(phaseLineX) ? [phaseLineX] : []),
     ...phaseMarkerXs
@@ -42,17 +39,17 @@ export function drawLineChart(canvas, series, options = {}) {
 
   drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options);
   drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions);
-  drawPhaseMarkers(ctx, margin, plotHeight, options.phaseMarkers || [], dates, xPositions);
+  drawPhaseMarkers(ctx, margin, plotHeight, options.phaseMarkers || [], dates, xPositions, layout.markerXByDate);
 
   dates.forEach((date, index) => {
     const x = xPositions[index];
     ctx.fillStyle = "#59656f";
-    ctx.font = "12px system-ui, sans-serif";
-    ctx.textAlign = dates.length > 3 ? "right" : "center";
-    ctx.save();
-    if (dates.length > 3) {
-      ctx.translate(x - 4, margin.top + plotHeight + 34);
-      ctx.rotate(-Math.PI / 6);
+      ctx.font = "11px system-ui, sans-serif";
+      ctx.textAlign = dates.length > 3 ? "right" : "center";
+      ctx.save();
+      if (dates.length > 3) {
+      ctx.translate(x - 4, margin.top + plotHeight + 38);
+      ctx.rotate(-Math.PI / 7);
       ctx.fillText(formatDate(date), 0, 0);
     } else {
       ctx.fillText(formatDate(date), x, margin.top + plotHeight + 30);
@@ -67,10 +64,9 @@ export function drawLineChart(canvas, series, options = {}) {
       .sort((a, b) => a.x.localeCompare(b.x))
       .map((point) => {
         const dateIndex = dates.indexOf(point.x);
-        const markerMode = markerModesByDate.get(point.x) || "";
         const baseX = xPositions[dateIndex];
         return {
-          x: adjustPointXForMarker(baseX, dateIndex, xPositions, markerMode),
+          x: baseX,
           y: margin.top + plotHeight - (point.y / yTop) * plotHeight,
           value: point.y,
           dateIndex,
@@ -99,10 +95,6 @@ export function drawLineChart(canvas, series, options = {}) {
   });
 }
 
-function buildMarkerModeMap(markers) {
-  return new Map((markers || []).map((marker) => [marker.date, marker.position || ""]));
-}
-
 function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options) {
   const tickValues = axisTicks(yTop, options.yStep);
   ctx.strokeStyle = "#d6dde3";
@@ -118,6 +110,16 @@ function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, optio
   ctx.textAlign = "right";
   tickValues.forEach((value) => {
     const y = margin.top + plotHeight - (value / yTop) * plotHeight;
+    if (value > 0) {
+      ctx.save();
+      ctx.strokeStyle = "#edf2f6";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(margin.left, y);
+      ctx.lineTo(width - margin.right, y);
+      ctx.stroke();
+      ctx.restore();
+    }
     ctx.fillText(String(value), margin.left - 10, y + 4);
   });
 
@@ -160,15 +162,15 @@ function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPosit
   ctx.strokeStyle = "#1f2933";
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(lineX, margin.top);
+  ctx.moveTo(lineX, margin.top - 2);
   ctx.lineTo(lineX, margin.top + plotHeight);
   ctx.stroke();
 
   ctx.fillStyle = "#1f2933";
-  ctx.font = "13px system-ui, sans-serif";
+  ctx.font = "12px system-ui, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText("Baseline", Math.max(margin.left + 38, lineX - 72), margin.top + 14);
-  ctx.fillText("Treatment", Math.min(margin.left + plotWidth - 54, lineX + 86), margin.top + 14);
+  ctx.fillText("Baseline", Math.max(margin.left + 48, lineX - 92), margin.top - 14);
+  ctx.fillText("Treatment", Math.min(margin.left + plotWidth - 72, lineX + 92), margin.top - 14);
 
   ctx.save();
   ctx.translate(lineX - 12, margin.top + plotHeight / 2);
@@ -180,9 +182,9 @@ function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPosit
   return lineX;
 }
 
-function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions) {
+function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions, markerXByDate = new Map()) {
   markers.forEach((marker) => {
-    const lineX = xPositionForMarkerDateWithMode(marker, dates, xPositions);
+    const lineX = xPositionForMarkerDateWithMode(marker, dates, xPositions, markerXByDate);
     if (!Number.isFinite(lineX)) return;
 
     ctx.save();
@@ -190,7 +192,7 @@ function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions) {
     ctx.lineWidth = 2;
     if (marker.dashed) ctx.setLineDash([6, 6]);
     ctx.beginPath();
-    ctx.moveTo(lineX, margin.top);
+    ctx.moveTo(lineX, margin.top - 2);
     ctx.lineTo(lineX, margin.top + plotHeight);
     ctx.stroke();
     ctx.setLineDash([]);
@@ -198,27 +200,22 @@ function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions) {
     ctx.fillStyle = "#7a4f00";
     ctx.font = "12px system-ui, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(marker.label || "Marker", lineX, margin.top + 14);
+    ctx.fillText(marker.label || "Marker", lineX, margin.top - 30);
     ctx.restore();
   });
 }
 
-function xPositionForMarkerDate(date, dates, xPositions) {
-  return xPositionForMarkerDateWithMode({ date }, dates, xPositions);
+function xPositionForMarkerDate(date, dates, xPositions, markerXByDate = new Map()) {
+  return xPositionForMarkerDateWithMode({ date }, dates, xPositions, markerXByDate);
 }
 
-function xPositionForMarkerDateWithMode(marker, dates, xPositions) {
+function xPositionForMarkerDateWithMode(marker, dates, xPositions, markerXByDate = new Map()) {
   const date = marker?.date;
+  if (marker?.position === "after-date" && markerXByDate.has(date)) {
+    return markerXByDate.get(date);
+  }
   const exactIndex = dates.indexOf(date);
   if (exactIndex >= 0) {
-    if (marker?.position === "after-date") {
-      const nextX = xPositions[exactIndex + 1];
-      const currentX = xPositions[exactIndex];
-      if (Number.isFinite(nextX)) {
-        return currentX + Math.min(MARKER_AFTER_DATE_OFFSET, (nextX - currentX) * 0.72);
-      }
-      return currentX + MARKER_AFTER_DATE_OFFSET;
-    }
     return xPositions[exactIndex];
   }
 
@@ -240,9 +237,9 @@ function xPositionForMarkerDateWithMode(marker, dates, xPositions) {
   return NaN;
 }
 
-function markerPositions(markers, dates, xPositions) {
+function markerPositions(markers, dates, xPositions, markerXByDate = new Map()) {
   return markers
-    .map((marker) => xPositionForMarkerDateWithMode(marker, dates, xPositions))
+    .map((marker) => xPositionForMarkerDateWithMode(marker, dates, xPositions, markerXByDate))
     .filter((value) => Number.isFinite(value));
 }
 
@@ -250,15 +247,6 @@ function phaseLinePosition(phaseBoundary, xPositions) {
   const baselineX = xPositions[phaseBoundary.leftIndex];
   const interventionX = xPositions[phaseBoundary.rightIndex];
   return baselineX + (interventionX - baselineX) / 2;
-}
-
-function adjustPointXForMarker(baseX, dateIndex, xPositions, markerMode) {
-  if (markerMode !== "after-date") return baseX;
-  const nextX = xPositions[dateIndex + 1];
-  if (Number.isFinite(nextX)) {
-    return baseX - Math.min(POINT_BEFORE_MARKER_OFFSET, (nextX - baseX) * 0.28);
-  }
-  return baseX - POINT_BEFORE_MARKER_OFFSET;
 }
 
 function drawPhaseSegments(ctx, points, phaseBoundary, breakLines = []) {
@@ -283,6 +271,66 @@ function drawPhaseSegments(ctx, points, phaseBoundary, breakLines = []) {
     }
     previousPoint = point;
   });
+}
+
+function buildChartLayout(dates, left, width, phaseBoundary, markers = []) {
+  const dateXPositions = Array(dates.length).fill(NaN);
+  const markerXByDate = new Map();
+  const timelineItems = dates.map((date) => ({
+    kind: "date",
+    date,
+    sortValue: dateSortValue(date)
+  }));
+
+  (markers || [])
+    .filter((marker) => marker?.position === "after-date" && marker?.date)
+    .forEach((marker) => {
+      timelineItems.push({
+        kind: "marker",
+        date: marker.date,
+        sortValue: dateSortValue(marker.date) + 0.5
+      });
+    });
+
+  timelineItems.sort((a, b) => a.sortValue - b.sortValue);
+
+  const slotCount = Math.max(timelineItems.length, 1);
+  const padding = Math.min(28, width * 0.08);
+  const start = left + padding;
+  const end = left + width - padding;
+
+  let slotPositions;
+  if (!phaseBoundary) {
+    slotPositions = buildCenteredSegmentPositions(slotCount, start, end, 88);
+  } else {
+    const baselineDate = dates[phaseBoundary.leftIndex];
+    const treatmentDate = dates[phaseBoundary.rightIndex];
+    const phaseBoundaryValue = (dateSortValue(baselineDate) + dateSortValue(treatmentDate)) / 2;
+    const leftItems = timelineItems.filter((item) => item.sortValue <= phaseBoundaryValue);
+    const rightItems = timelineItems.filter((item) => item.sortValue > phaseBoundaryValue);
+    const phaseGap = Math.min(72, width * 0.12);
+    const usableWidth = end - start - phaseGap;
+    const leftWidth = usableWidth / 2;
+    const rightWidth = usableWidth / 2;
+    const leftPositions = buildCenteredSegmentPositions(leftItems.length, start, start + leftWidth, 88);
+    const rightPositions = buildCenteredSegmentPositions(rightItems.length, start + leftWidth + phaseGap, end, 88);
+    slotPositions = [...leftPositions, ...rightPositions];
+  }
+
+  timelineItems.forEach((item, index) => {
+    const x = slotPositions[index];
+    if (item.kind === "date") {
+      dateXPositions[dates.indexOf(item.date)] = x;
+    } else {
+      markerXByDate.set(item.date, x);
+    }
+  });
+
+  return { dateXPositions, markerXByDate };
+}
+
+function dateSortValue(value) {
+  return Date.parse(`${value}T00:00:00`);
 }
 
 function axisTicks(yTop, yStep) {

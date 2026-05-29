@@ -1831,6 +1831,12 @@ function roleLabel(role) {
   }[role] || "User";
 }
 
+function capitalize(value = "") {
+  return String(value)
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
 function syncSettingFromClient() {
   const client = currentClient();
   if (client && !form.elements.setting.value) form.elements.setting.value = client.defaultSetting;
@@ -4257,6 +4263,22 @@ function renderHistory() {
     bucket.entries.push(entry);
     return collection;
   }, []);
+  if (!state.selectedSoapEntryKey) {
+    const defaultSessionEntry = entries.find((entry) => entry.type === "session") || entries[0] || null;
+    if (defaultSessionEntry) {
+      state.selectedSoapEntryKey = defaultSessionEntry.key;
+      if (defaultSessionEntry.session?.id) state.selectedSessionId = defaultSessionEntry.session.id;
+    }
+  }
+  const selectedEntry = selectedSoapEntry();
+  const selectedGroup = selectedEntry ? soapEntryGroup(selectedEntry).key : "";
+  const availableKeys = groups.map((group) => group.key);
+  if (selectedGroup && availableKeys.includes(selectedGroup)) {
+    state.activeSoapHistoryTab = selectedGroup;
+  } else if (!availableKeys.includes(state.activeSoapHistoryTab)) {
+    const fallbackOrder = ["97153", "97156", "planning"];
+    state.activeSoapHistoryTab = fallbackOrder.find((key) => availableKeys.includes(key)) || availableKeys[0] || "planning";
+  }
   renderSoapHistoryTabs(groups);
   const visibleGroups = groups.filter((group) => group.key === state.activeSoapHistoryTab);
   container.innerHTML = visibleGroups.map((group) => `
