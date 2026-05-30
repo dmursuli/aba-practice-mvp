@@ -3932,6 +3932,7 @@ async function handleGenerate97155Note() {
   const note = generate97155Note();
   const sessionDetails = readBcbaSessionDetails();
   const note97155History = upsertNoteHistoryEntry("97155", {
+    id: cryptoId(),
     note,
     date: sessionDetails.date,
     providerSignature: sessionDetails.providerSignature,
@@ -3993,6 +3994,7 @@ async function handleGenerate97151Note() {
   const note = generate97151Note();
   const values = new FormData(reportForm);
   const note97151History = upsertNoteHistoryEntry("97151", {
+    id: cryptoId(),
     note,
     date: values.get("assessmentDate") || new Date().toISOString().slice(0, 10),
     providerSignature: values.get("preparedBy") || values.get("assessmentConductedBy") || state.currentUser?.name || "BCBA",
