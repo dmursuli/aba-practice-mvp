@@ -20,8 +20,9 @@ const state = {
   activePlanReviewFilter: "",
   activeGraphTab: "skills",
   activeGraphDomain: "",
-  activeSoapHistoryTab: "planning",
-  currentUser: null
+  activeSoapHistoryTab: "97153",
+  currentUser: null,
+  skipNextSessionDraftRestore: false
 };
 
 const roleViews = {
@@ -104,6 +105,7 @@ const workflowClientSummary = document.querySelector("#workflow-client-summary")
 const workflowMessage = document.querySelector("#workflow-message");
 const reportForm = document.querySelector("#funder-report-form");
 const reportPreview = document.querySelector("#funder-report-preview");
+const reportSectionNav = document.querySelector("#report-section-nav");
 const fadePlanRows = document.querySelector("#fade-plan-rows");
 const addFadeRowButton = document.querySelector("#add-fade-row");
 const serviceHourRows = document.querySelector("#service-hour-rows");
@@ -264,6 +266,12 @@ const sessionDraftFields = [
   "providerCredential"
 ];
 
+const sessionPreloadLimits = {
+  activePrograms: 4,
+  maintenancePrograms: 2,
+  behaviors: 2
+};
+
 init();
 
 async function init() {
@@ -395,6 +403,7 @@ function bindEvents() {
   deleteDomainButton.addEventListener("click", handleDeleteDomain);
   reportForm.addEventListener("submit", handleGenerateFunderReport);
   reportForm.addEventListener("change", renderReportSummary);
+  reportSectionNav?.addEventListener("click", handleReportSectionNavClick);
   addFadeRowButton.addEventListener("click", () => addFadePlanRow());
   addServiceHourRowButton.addEventListener("click", () => addServiceHourRow());
   printFunderReportButton.addEventListener("click", () => window.print());
@@ -621,22 +630,26 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
 
 function preloadTargetRows() {
   programList.innerHTML = "";
+  const activeRows = [];
+  const maintenanceRows = [];
   clientPrograms().forEach((program) => {
     const programStatus = normalizePlanStatus(program.status || "active");
-    const activeTargets = (program.targets || []).filter((target) => {
+    const activeTarget = (program.targets || []).find((target) => {
       const targetStatus = normalizePlanStatus(target.status || "active");
       return programStatus !== "mastered" && targetStatus === "active";
     });
-    const maintenanceTargets = (program.targets || []).filter((target) => (
+    const maintenanceTarget = (program.targets || []).find((target) => (
       sessionTargetMatchesTab(programStatus, target, "maintenance")
     ));
-    if (activeTargets[0]) {
-      addProgramRow(program.id, activeTargets[0].id, { entryMode: "active" });
+    if (activeTarget) {
+      activeRows.push({ programId: program.id, targetId: activeTarget.id, values: { entryMode: "active" } });
     }
-    if (maintenanceTargets[0]) {
-      addProgramRow(program.id, maintenanceTargets[0].id, { entryMode: "maintenance" });
+    if (maintenanceTarget) {
+      maintenanceRows.push({ programId: program.id, targetId: maintenanceTarget.id, values: { entryMode: "maintenance" } });
     }
   });
+  activeRows.slice(0, sessionPreloadLimits.activePrograms).forEach((row) => addProgramRow(row.programId, row.targetId, row.values));
+  maintenanceRows.slice(0, sessionPreloadLimits.maintenancePrograms).forEach((row) => addProgramRow(row.programId, row.targetId, row.values));
   state.activeSessionTargetTab = "active";
 }
 
@@ -676,7 +689,10 @@ function addBehaviorRow(behaviorId = "", values = {}) {
 
 function preloadBehaviorRows() {
   behaviorList.innerHTML = "";
-  clientBehaviors().filter((behavior) => behavior.status !== "inactive").forEach((behavior) => addBehaviorRow(behavior.id));
+  clientBehaviors()
+    .filter((behavior) => behavior.status !== "inactive")
+    .slice(0, sessionPreloadLimits.behaviors)
+    .forEach((behavior) => addBehaviorRow(behavior.id));
 }
 
 function addFirstAvailableBehaviorRow() {
@@ -819,11 +835,12 @@ async function handleSubmit(event) {
     const saved = await createSession(payload);
     state.selectedSessionId = saved.id;
     state.selectedSoapEntryKey = saved.id;
+    state.skipNextSessionDraftRestore = true;
     clearSessionDraft(payload.clientId);
-    formMessage.textContent = "Session saved. Graphs and SOAP note updated.";
     await refreshData();
     resetRows();
     render();
+    formMessage.textContent = "Session saved. Graphs and SOAP note updated.";
   } catch (error) {
     formMessage.textContent = error.message;
   }
@@ -1219,7 +1236,12 @@ function sessionDraftPayload() {
 function saveSessionDraft() {
   const clientId = clientSelect.value || currentClient()?.id;
   if (!clientId || !form) return;
-  window.localStorage.setItem(sessionDraftStorageKey(clientId), JSON.stringify(sessionDraftPayload()));
+  const draft = sessionDraftPayload();
+  if (!hasMeaningfulSessionDraft(draft)) {
+    clearSessionDraft(clientId);
+    return;
+  }
+  window.localStorage.setItem(sessionDraftStorageKey(clientId), JSON.stringify(draft));
 }
 
 function loadSessionDraft(clientId) {
@@ -1240,8 +1262,12 @@ function clearSessionDraft(clientId) {
 function restoreSessionDraft() {
   const client = currentClient();
   if (!client || !form) return;
+  if (state.skipNextSessionDraftRestore) {
+    state.skipNextSessionDraftRestore = false;
+    return;
+  }
   const draft = loadSessionDraft(client.id);
-  if (!draft) return;
+  if (!draft || !hasMeaningfulSessionDraft(draft)) return;
   Object.entries(draft.fields || {}).forEach(([field, value]) => {
     if (form.elements[field]) form.elements[field].value = value || "";
   });
@@ -1254,6 +1280,46 @@ function restoreSessionDraft() {
     draft.behaviors.forEach((row) => addBehaviorRow(row.behaviorId, row));
   }
   formMessage.textContent = "Unsaved session draft restored.";
+}
+
+function hasMeaningfulSessionDraft(draft) {
+  if (!draft) return false;
+  const fields = draft.fields || {};
+  const meaningfulFieldValues = [
+    fields.therapist,
+    fields.startTime,
+    fields.endTime,
+    fields.notes,
+    fields.barrierText,
+    fields.providerSignature,
+    fields.providerCredential
+  ].some((value) => String(value || "").trim());
+  if (meaningfulFieldValues) return true;
+
+  const meaningfulProgramRows = (draft.programs || []).some((row) => {
+    const trials = Number(row.trials ?? 10);
+    const correct = Number(row.correct ?? 0);
+    const incorrect = Number(row.incorrect ?? 10);
+    return (
+      trials !== 10
+      || correct !== 0
+      || incorrect !== 10
+      || String(row.promptLevel || "independent") !== "independent"
+      || String(row.phase || "intervention") !== "intervention"
+    );
+  });
+  if (meaningfulProgramRows) return true;
+
+  const meaningfulBehaviorRows = (draft.behaviors || []).some((row) => (
+    Number(row.frequency || 0) > 0
+    || String(row.duration || "").trim()
+    || String(row.intensity || "").trim()
+    || String(row.phase || "intervention") !== "intervention"
+  ));
+  if (meaningfulBehaviorRows) return true;
+
+  return (draft.programs || []).length > sessionPreloadLimits.activePrograms + sessionPreloadLimits.maintenancePrograms
+    || (draft.behaviors || []).length > sessionPreloadLimits.behaviors;
 }
 
 function syncClientProfileForm() {
@@ -1792,6 +1858,17 @@ function switchView(view) {
   if (view === "health") runDataHealthCheck();
   if (view === "users") refreshUsers(false);
   syncWorkspaceUrl(view);
+}
+
+function handleReportSectionNavClick(event) {
+  const button = event.target.closest("[data-report-section-target]");
+  if (!button) return;
+  const section = document.getElementById(button.dataset.reportSectionTarget);
+  if (!section) return;
+  if (section.tagName === "DETAILS") {
+    section.open = true;
+  }
+  section.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function applyRoleAccess() {
@@ -4131,7 +4208,7 @@ function renderSoapHistoryTabs(groups) {
   if (!soapHistoryTabs) return;
   const availableKeys = groups.map((group) => group.key);
   if (!availableKeys.includes(state.activeSoapHistoryTab)) {
-    state.activeSoapHistoryTab = availableKeys[0] || "planning";
+    state.activeSoapHistoryTab = availableKeys[0] || "97153";
   }
   soapHistoryTabs.innerHTML = groups.map((group) => `
     <button
@@ -4274,7 +4351,7 @@ function renderHistory() {
     state.activeSoapHistoryTab = selectedGroup;
   } else if (!availableKeys.includes(state.activeSoapHistoryTab)) {
     const fallbackOrder = ["97153", "97156", "97155", "97151"];
-    state.activeSoapHistoryTab = fallbackOrder.find((key) => availableKeys.includes(key)) || availableKeys[0] || "planning";
+    state.activeSoapHistoryTab = fallbackOrder.find((key) => availableKeys.includes(key)) || availableKeys[0] || "97153";
   }
   renderSoapHistoryTabs(groups);
   const visibleGroups = groups.filter((group) => group.key === state.activeSoapHistoryTab);

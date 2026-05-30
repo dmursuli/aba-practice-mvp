@@ -517,6 +517,36 @@ button:focus-visible {
   background: var(--soft);
 }
 
+.report-section-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.report-accordion {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 0 12px 12px;
+}
+
+.report-accordion summary {
+  cursor: pointer;
+  list-style: none;
+  font-weight: 800;
+  color: var(--brand-deep);
+  padding: 12px 0;
+}
+
+.report-accordion summary::-webkit-details-marker {
+  display: none;
+}
+
+.report-accordion[open] summary {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 12px;
+}
+
 .fade-plan-editor {
   display: grid;
   gap: 10px;

@@ -1160,6 +1160,16 @@
               <input type="text" name="credential" placeholder="BCBA">
             </label>
           </div>
+          <div id="report-section-nav" class="report-section-nav" aria-label="Funder report sections">
+            <button type="button" class="secondary-button" data-report-section-target="report-section-narrative">Narrative</button>
+            <button type="button" class="secondary-button" data-report-section-target="report-section-assessment">Assessment</button>
+            <button type="button" class="secondary-button" data-report-section-target="report-section-treatment">Treatment</button>
+            <button type="button" class="secondary-button" data-report-section-target="report-section-discharge">Discharge</button>
+            <button type="button" class="secondary-button" data-report-section-target="report-section-hours">Hours</button>
+            <button type="button" class="secondary-button" data-report-section-target="report-section-97151">97151 note</button>
+          </div>
+          <details class="report-accordion" id="report-section-narrative" open>
+            <summary>Narrative summary</summary>
           <label>
             Background information
             <textarea name="background" rows="8">The client is a [age]-year-old [male/female] diagnosed with Autism Spectrum Disorder. The client resides with [caregivers/family members] and currently attends [school/setting, if applicable].
@@ -1206,6 +1216,9 @@ Communication was observed to consist of [single words/phrases/AAC use], with [l
 Behaviorally, the client engaged in [task refusal, avoidance, elopement, etc.], particularly when demands were placed. These behaviors were managed with [redirection, reinforcement, visual supports].
 The client demonstrated improved engagement when provided with structure and reinforcement. Overall, observations are consistent with deficits in communication, social interaction, and behavioral regulation, supporting the need for ABA services.</textarea>
           </label>
+          </details>
+          <details class="report-accordion" id="report-section-assessment">
+            <summary>Assessment inputs</summary>
           <section class="report-form-section" aria-labelledby="functional-assessment-title">
             <div class="block-heading">
               <h3 id="functional-assessment-title">Functional assessment</h3>
@@ -1260,6 +1273,9 @@ The client demonstrated improved engagement when provided with structure and rei
             Progress summary
             <textarea name="progressSummary" rows="4" placeholder="Summarize progress across skill acquisition, behavior reduction, maintenance, and barriers"></textarea>
           </label>
+          </details>
+          <details class="report-accordion" id="report-section-treatment">
+            <summary>Treatment recommendations</summary>
           <label>
             Instructional goals information
             <textarea name="instructionalGoalsInfo" rows="7">The following skills will be taught utilizing the listed instructional methods in order to replace the client's problem behavior, increase social skills and independence, and achieve the quality of life outcomes that are the focus of this plan. These goals are derived from the ultimate outcomes desired through intervention and functional behavioral and curricular assessments, and include instruction in skills relevant to functional communication, tolerance and coping, social interaction, and daily living. The short term objectives will be addressed first during intervention, with additional targets being added as the client masters those listed. In order to develop the skills identified, the behavioral intervention professionals and caregiver will task analyze complex skills, develop routine-specific instructional plans, and use appropriate chaining, shaping, and prompting methods. Teaching plans will include the specific skills or skill sequences to be taught, environmental arrangements to promote skill use (e.g., token boards, timers, visual schedules), and other specific instructional procedures.</textarea>
@@ -1272,6 +1288,9 @@ The client demonstrated improved engagement when provided with structure and rei
             Barriers to treatment
             <textarea name="barriersToTreatmentSummary" rows="7">Implementation of this intervention plan could be affected by the following: lack of outings with family due to resources or time, and lack of socialization opportunities with peers. To overcome these barriers, we will provide times when we can assist parents in community outings, plan for outings that include opportunities to play with similar-aged peers, provide written materials with supportive strategies for behavior management in and out of the home, and provide parents with additional data sheets with planned targets that can be implemented when we are not present. Examples include changes to medications, changes to the home environment and dynamic, changes to family structure and routine, access to community resources, access to reinforcement, competing demands for caregivers and household, multiple caregivers, large family dynamic, language barriers, medical issues, and inconsistent schedules. Barriers do not include unavailable staff, caregiver resistance to training, cancellations, or similar administrative issues.</textarea>
           </label>
+          </details>
+          <details class="report-accordion" id="report-section-discharge">
+            <summary>Discharge planning</summary>
           <section class="report-form-section" aria-labelledby="discharge-criteria-title">
             <div class="block-heading">
               <h3 id="discharge-criteria-title">Discharge criteria</h3>
@@ -1299,6 +1318,9 @@ The client demonstrated improved engagement when provided with structure and rei
               </label>
             </div>
           </section>
+          </details>
+          <details class="report-accordion" id="report-section-hours">
+            <summary>Fade plan and hours requested</summary>
           <section class="report-form-section" aria-labelledby="fade-plan-title">
             <div class="block-heading">
               <h3 id="fade-plan-title">Fade out plan</h3>
@@ -1322,6 +1344,9 @@ The client demonstrated improved engagement when provided with structure and rei
             <textarea name="medicalNecessity" rows="7">Clinical Summary Justifying Hours Requested:
 Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of direct treatment plus direct and indirect supervision and caregiver training. However, certain programs for severe destructive behavior may require more than 30 hours per week of direct therapy, for example day treatment or inpatient programming for severe self-injurious behavior. This BCBA is requesting 30 RBT hours a week (2,880 total units), BCBA direct protocol modification 6 hours per week (576 total units), and 1 BCBA family/caregiver training hour per week (96 total units) to help the client increase their quality of life and decrease maladaptive behaviors.</textarea>
           </label>
+          </details>
+          <details class="report-accordion" id="report-section-97151">
+            <summary>97151 assessment note</summary>
           <section class="report-form-section" aria-labelledby="note-97151-title">
             <div class="block-heading">
               <div>
@@ -1336,6 +1361,7 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
             </label>
             <p id="note-97151-status" class="form-message" role="status"></p>
           </section>
+          </details>
           <div class="button-row">
             <button type="submit" class="primary-button">Generate funder report</button>
             <button type="button" class="secondary-button" id="print-funder-report">Print report</button>
