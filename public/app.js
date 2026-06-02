@@ -22,7 +22,8 @@ const state = {
   activeGraphDomain: "",
   activeSoapHistoryTab: "97153",
   currentUser: null,
-  skipNextSessionDraftRestore: false
+  skipNextSessionDraftRestore: false,
+  loadedSessionDomainKeys: []
 };
 
 const roleViews = {
@@ -596,6 +597,7 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
 }
 
 function addProgramRow(programId = "", targetId = "", values = {}) {
+  const suppressRefresh = Boolean(values.__suppressRefresh);
   const node = document.querySelector("#program-template").content.cloneNode(true);
   const row = node.querySelector(".program-row");
   const entryMode = values.entryMode || "active";
@@ -623,34 +625,15 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
   programList.append(row);
   syncTrialBalance(row);
   updateProgramIndependence(row);
-  renderDomainTabs();
+  if (!suppressRefresh) renderDomainTabs();
   refreshTargetAvailability();
   saveSessionDraft();
 }
 
 function preloadTargetRows() {
   programList.innerHTML = "";
-  const activeRows = [];
-  const maintenanceRows = [];
-  clientPrograms().forEach((program) => {
-    const programStatus = normalizePlanStatus(program.status || "active");
-    const activeTarget = (program.targets || []).find((target) => {
-      const targetStatus = normalizePlanStatus(target.status || "active");
-      return programStatus !== "mastered" && targetStatus === "active";
-    });
-    const maintenanceTarget = (program.targets || []).find((target) => (
-      sessionTargetMatchesTab(programStatus, target, "maintenance")
-    ));
-    if (activeTarget) {
-      activeRows.push({ programId: program.id, targetId: activeTarget.id, values: { entryMode: "active" } });
-    }
-    if (maintenanceTarget) {
-      maintenanceRows.push({ programId: program.id, targetId: maintenanceTarget.id, values: { entryMode: "maintenance" } });
-    }
-  });
-  activeRows.slice(0, sessionPreloadLimits.activePrograms).forEach((row) => addProgramRow(row.programId, row.targetId, row.values));
-  maintenanceRows.slice(0, sessionPreloadLimits.maintenancePrograms).forEach((row) => addProgramRow(row.programId, row.targetId, row.values));
   state.activeSessionTargetTab = "active";
+  state.loadedSessionDomainKeys = [];
 }
 
 function addFirstAvailableTargetRow(status = "active", preferredDomain = state.activeDomain) {
@@ -1275,7 +1258,12 @@ function restoreSessionDraft() {
   });
   if (Array.isArray(draft.programs)) {
     programList.innerHTML = "";
-    draft.programs.forEach((row) => addProgramRow(row.programId, row.targetId, row));
+    state.loadedSessionDomainKeys = [];
+    draft.programs.forEach((row) => {
+      addProgramRow(row.programId, row.targetId, { ...row, __suppressRefresh: true });
+      const program = clientPrograms().find((item) => item.id === row.programId);
+      markSessionDomainLoaded(row.entryMode || "active", program?.domain || "General");
+    });
   }
   if (Array.isArray(draft.behaviors)) {
     behaviorList.innerHTML = "";
@@ -2171,20 +2159,31 @@ function sessionAvailableDomains(status = state.activeSessionTargetTab) {
   return domains;
 }
 
-function ensureVisibleSessionRow() {
-  if (!programList) return;
-  const visibleRows = [...programList.querySelectorAll(".program-row")].filter((row) => !row.classList.contains("hidden"));
-  if (visibleRows.length) return;
+function sessionDomainLoadKey(status, domain) {
+  return `${status}:${domain || "General"}`;
+}
 
-  const desiredDomain = state.activeDomain;
-  const used = selectedTargetKeys();
-  const available = sessionAssignableTargets(state.activeSessionTargetTab)
-    .filter(({ program, target }) => !used.has(targetKey(program.id, target.id)))
-    .find(({ program }) => !desiredDomain || (program.domain || "General") === desiredDomain);
-
-  if (available) {
-    addProgramRow(available.program.id, available.target.id, { entryMode: state.activeSessionTargetTab });
+function markSessionDomainLoaded(status, domain) {
+  const key = sessionDomainLoadKey(status, domain);
+  if (!state.loadedSessionDomainKeys.includes(key)) {
+    state.loadedSessionDomainKeys.push(key);
   }
+}
+
+function ensureDomainSessionRowsLoaded(status = state.activeSessionTargetTab, domain = state.activeDomain) {
+  if (!programList || !domain) return;
+  const key = sessionDomainLoadKey(status, domain);
+  if (state.loadedSessionDomainKeys.includes(key)) return;
+
+  const used = selectedTargetKeys();
+  const rowsToAdd = sessionAssignableTargets(status)
+    .filter(({ program, target }) => (program.domain || "General") === domain && !used.has(targetKey(program.id, target.id)));
+
+  rowsToAdd.forEach(({ program, target }) => {
+    addProgramRow(program.id, target.id, { entryMode: status, __suppressRefresh: true });
+  });
+
+  markSessionDomainLoaded(status, domain);
 }
 
 function sessionTargetMatchesTab(programStatus, target, tab) {
@@ -5786,21 +5785,19 @@ function renderDomainTabs() {
   domainTabs.querySelectorAll("[data-domain-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeDomain = button.dataset.domainTab;
-      applySessionTargetFilter();
-      ensureVisibleSessionRow();
       renderDomainTabs();
     });
   });
 
+  ensureDomainSessionRowsLoaded();
   applySessionTargetFilter();
-  ensureVisibleSessionRow();
 }
 
 function renderTargetStatusTabs() {
   if (!targetStatusTabs) return;
   const counts = {
-    active: [...programList.querySelectorAll('.program-row [data-field="entryMode"]')].filter((field) => field.value === "active").length,
-    maintenance: [...programList.querySelectorAll('.program-row [data-field="entryMode"]')].filter((field) => field.value === "maintenance").length
+    active: sessionAssignableTargets("active").length,
+    maintenance: sessionAssignableTargets("maintenance").length
   };
   targetStatusTabs.innerHTML = ["active", "maintenance"].map((tab) => `
     <button type="button" class="domain-tab ${tab === state.activeSessionTargetTab ? "active" : ""}" data-target-status-tab="${tab}">
