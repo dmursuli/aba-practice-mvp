@@ -653,9 +653,11 @@ function preloadTargetRows() {
   state.activeSessionTargetTab = "active";
 }
 
-function addFirstAvailableTargetRow(status = "active") {
+function addFirstAvailableTargetRow(status = "active", preferredDomain = state.activeDomain) {
   const used = selectedTargetKeys();
-  const available = sessionAssignableTargets(status).find(({ program, target }) => !used.has(targetKey(program.id, target.id)));
+  const assignable = sessionAssignableTargets(status).filter(({ program, target }) => !used.has(targetKey(program.id, target.id)));
+  const available = assignable.find(({ program }) => !preferredDomain || (program.domain || "General") === preferredDomain)
+    || assignable[0];
 
   if (!available) {
     formMessage.textContent = status === "maintenance"
@@ -2160,6 +2162,29 @@ function sessionAssignableTargets(status = "active") {
       .filter((target) => sessionTargetMatchesTab(programStatus, target, status))
       .map((target) => ({ program, target }));
   });
+}
+
+function sessionAvailableDomains(status = state.activeSessionTargetTab) {
+  const domains = [...new Set(
+    sessionAssignableTargets(status).map(({ program }) => program.domain || "General")
+  )];
+  return domains;
+}
+
+function ensureVisibleSessionRow() {
+  if (!programList) return;
+  const visibleRows = [...programList.querySelectorAll(".program-row")].filter((row) => !row.classList.contains("hidden"));
+  if (visibleRows.length) return;
+
+  const desiredDomain = state.activeDomain;
+  const used = selectedTargetKeys();
+  const available = sessionAssignableTargets(state.activeSessionTargetTab)
+    .filter(({ program, target }) => !used.has(targetKey(program.id, target.id)))
+    .find(({ program }) => !desiredDomain || (program.domain || "General") === desiredDomain);
+
+  if (available) {
+    addProgramRow(available.program.id, available.target.id, { entryMode: state.activeSessionTargetTab });
+  }
 }
 
 function sessionTargetMatchesTab(programStatus, target, tab) {
@@ -5740,9 +5765,7 @@ function updateProgramDisplay(row) {
 
 function renderDomainTabs() {
   renderTargetStatusTabs();
-  const domains = [...new Set([...programList.querySelectorAll(".program-row")]
-    .filter((row) => (row.querySelector('[data-field="entryMode"]')?.value || "active") === state.activeSessionTargetTab)
-    .map((row) => row.dataset.domain || "General"))];
+  const domains = sessionAvailableDomains(state.activeSessionTargetTab);
 
   if (!domains.length) {
     domainTabs.innerHTML = "";
@@ -5763,11 +5786,14 @@ function renderDomainTabs() {
   domainTabs.querySelectorAll("[data-domain-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeDomain = button.dataset.domainTab;
+      applySessionTargetFilter();
+      ensureVisibleSessionRow();
       renderDomainTabs();
     });
   });
 
   applySessionTargetFilter();
+  ensureVisibleSessionRow();
 }
 
 function renderTargetStatusTabs() {
