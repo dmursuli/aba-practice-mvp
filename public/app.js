@@ -15,6 +15,7 @@ const state = {
   activeClientId: "",
   activeDomain: "",
   activeSessionTargetTab: "active",
+  activeParentGoalTab: "active",
   activePlanDomain: "",
   activePlanProgramTab: "active",
   activePlanReviewFilter: "",
@@ -93,6 +94,7 @@ const intakeClientSelect = document.querySelector("#intake-client-select");
 const programList = document.querySelector("#program-list");
 const targetStatusTabs = document.querySelector("#target-status-tabs");
 const parentGoalList = document.querySelector("#parent-goal-list");
+const parentGoalTabs = document.querySelector("#parent-goal-tabs");
 const domainTabs = document.querySelector("#domain-tabs");
 const behaviorList = document.querySelector("#behavior-list");
 const skillCharts = document.querySelector("#skill-charts");
@@ -699,20 +701,26 @@ function addParentGoalRow(goal = {}) {
   row.querySelector('[data-field="independent"]').value = goal.independent ?? 0;
   row.querySelector('[data-field="prompted"]').value = goal.prompted ?? 0;
   row.querySelector('[data-field="promptLevel"]').value = goal.promptLevel || "verbal";
-  row.querySelector("[data-remove]").addEventListener("click", () => row.remove());
+  row.querySelector("[data-remove]").addEventListener("click", () => {
+    row.remove();
+    renderParentGoalTabs();
+  });
   row.querySelectorAll("input, select").forEach((input) => {
     input.addEventListener("input", () => updateParentGoalScore(row));
     input.addEventListener("change", () => updateParentGoalScore(row));
   });
   parentGoalList.append(row);
   updateParentGoalScore(row);
+  renderParentGoalTabs();
 }
 
 function preloadParentRows() {
   parentGoalList.innerHTML = "";
+  state.activeParentGoalTab = "active";
   const goals = currentParentTrainingGoals();
   if (goals.length) {
     goals.forEach((goal) => addParentGoalRow(goal));
+    renderParentGoalTabs();
     return;
   }
   addParentGoalRow();
@@ -773,6 +781,51 @@ function updateParentGoalScore(row) {
   if (review.className) row.classList.add(review.className);
   const reviewBox = row.querySelector("[data-parent-goal-review]");
   if (reviewBox) reviewBox.innerHTML = review.message;
+  row.dataset.parentGoalState = review.state || "none";
+  applyParentGoalFilter();
+}
+
+function parentGoalTabState(goal) {
+  return parentGoalReview(goal).state === "mastered" ? "mastered" : "active";
+}
+
+function renderParentGoalTabs() {
+  if (!parentGoalTabs || !parentGoalList) return;
+  const counts = { active: 0, mastered: 0 };
+  [...parentGoalList.querySelectorAll(".parent-goal-row")].forEach((row) => {
+    const goal = normalizeParentGoal(readDataRow(row));
+    counts[parentGoalTabState(goal)] += 1;
+  });
+
+  if (!counts[state.activeParentGoalTab]) {
+    state.activeParentGoalTab = counts.active ? "active" : "mastered";
+  }
+  if (!counts.active && !counts.mastered) {
+    state.activeParentGoalTab = "active";
+  }
+
+  parentGoalTabs.innerHTML = ["active", "mastered"].map((tab) => `
+    <button type="button" class="domain-tab ${tab === state.activeParentGoalTab ? "active" : ""}" data-parent-goal-tab="${tab}">
+      ${tab === "active" ? "Active" : "Mastered"}${counts[tab] ? ` (${counts[tab]})` : ""}
+    </button>
+  `).join("");
+
+  parentGoalTabs.querySelectorAll("[data-parent-goal-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activeParentGoalTab = button.dataset.parentGoalTab;
+      renderParentGoalTabs();
+    });
+  });
+
+  applyParentGoalFilter();
+}
+
+function applyParentGoalFilter() {
+  if (!parentGoalList) return;
+  [...parentGoalList.querySelectorAll(".parent-goal-row")].forEach((row) => {
+    const rowState = row.dataset.parentGoalState === "mastered" ? "mastered" : "active";
+    row.classList.toggle("hidden", rowState !== state.activeParentGoalTab);
+  });
 }
 
 function updateProgramIndependence(row) {
