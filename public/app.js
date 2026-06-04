@@ -2205,11 +2205,22 @@ function sessionAssignableTargets(status = "active") {
   });
 }
 
+function programHasSessionContentForTab(program, status = "active") {
+  const programStatus = normalizePlanStatus(program.status || "active");
+  const targets = program.targets || [];
+  if (!targets.length) {
+    return status === "active" ? programStatus === "active" : programStatus === "mastered";
+  }
+  return targets.some((target) => sessionTargetMatchesTab(programStatus, target, status));
+}
+
 function sessionAvailableDomains(status = state.activeSessionTargetTab) {
-  const domains = [...new Set(
-    sessionAssignableTargets(status).map(({ program }) => program.domain || "General")
-  )];
-  return domains;
+  return clientDomains().filter((domain) => (
+    clientPrograms().some((program) => (
+      (program.domain || "General") === domain
+      && programHasSessionContentForTab(program, status)
+    ))
+  ));
 }
 
 function sessionDomainLoadKey(status, domain) {
