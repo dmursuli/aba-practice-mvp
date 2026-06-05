@@ -3178,6 +3178,7 @@ function renderPlanStatusTabs(programs) {
   planStatusTabs.querySelectorAll("[data-plan-status-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       state.activePlanProgramTab = button.dataset.planStatusTab;
+      state.activePlanReviewFilter = "";
       renderPlanReview();
     });
   });
@@ -3353,6 +3354,7 @@ function renderPlanDomainTabs(domains) {
   planDomainTabs.querySelectorAll("[data-plan-domain-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       state.activePlanDomain = button.dataset.planDomainTab;
+      state.activePlanReviewFilter = "";
       renderPlanReview();
     });
   });
