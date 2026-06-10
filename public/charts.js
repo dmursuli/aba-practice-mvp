@@ -1,4 +1,5 @@
 const palette = ["#167c80", "#d1495b", "#edae49", "#4b7bec", "#6a994e", "#9d4edd"];
+
 export function drawLineChart(canvas, series, options = {}) {
   const ctx = canvas.getContext("2d");
   const rect = canvas.getBoundingClientRect();
@@ -24,14 +25,14 @@ export function drawLineChart(canvas, series, options = {}) {
     return;
   }
 
-  const dates = [...new Set(allPoints.map((point) => point.x))].sort();
+  const model = buildClinicalGraphModel(series, options);
+  const { dates, phaseBoundary, phaseMarkers } = model;
   const maxY = Math.max(options.maxY || 0, ...allPoints.map((point) => point.y), 1);
   const yTop = options.maxY || Math.max(options.yStep || 1, Math.ceil(maxY * 1.15));
-  const phaseBoundary = getPhaseBoundary(allPoints, dates);
-  const layout = buildChartLayout(dates, margin.left, plotWidth, phaseBoundary, options.phaseMarkers || []);
+  const layout = buildChartLayout(dates, margin.left, plotWidth, phaseBoundary, phaseMarkers);
   const xPositions = layout.dateXPositions;
   const phaseLineX = phaseBoundary ? phaseLinePosition(phaseBoundary, xPositions) : null;
-  const phaseMarkerXs = markerPositions(options.phaseMarkers || [], dates, xPositions, layout.markerXByDate);
+  const phaseMarkerXs = markerPositions(phaseMarkers, dates, xPositions, layout.markerXByDate);
   const breakLines = [
     ...(Number.isFinite(phaseLineX) ? [phaseLineX] : []),
     ...phaseMarkerXs
@@ -39,15 +40,15 @@ export function drawLineChart(canvas, series, options = {}) {
 
   drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options);
   drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions);
-  drawPhaseMarkers(ctx, margin, plotHeight, options.phaseMarkers || [], dates, xPositions, layout.markerXByDate);
+  drawPhaseMarkers(ctx, margin, plotHeight, phaseMarkers, dates, xPositions, layout.markerXByDate);
 
   dates.forEach((date, index) => {
     const x = xPositions[index];
     ctx.fillStyle = "#59656f";
-      ctx.font = "11px system-ui, sans-serif";
-      ctx.textAlign = dates.length > 3 ? "right" : "center";
-      ctx.save();
-      if (dates.length > 3) {
+    ctx.font = "11px system-ui, sans-serif";
+    ctx.textAlign = dates.length > 3 ? "right" : "center";
+    ctx.save();
+    if (dates.length > 3) {
       ctx.translate(x - 4, margin.top + plotHeight + 38);
       ctx.rotate(-Math.PI / 7);
       ctx.fillText(formatDate(date), 0, 0);
@@ -70,7 +71,7 @@ export function drawLineChart(canvas, series, options = {}) {
           y: margin.top + plotHeight - (point.y / yTop) * plotHeight,
           value: point.y,
           dateIndex,
-          phase: point.phase || "intervention"
+          phase: derivedPointPhase(dateIndex, phaseBoundary)
         };
       });
 
@@ -95,6 +96,82 @@ export function drawLineChart(canvas, series, options = {}) {
   });
 }
 
+export function buildClinicalGraphModel(series, options = {}) {
+  const allPoints = series.flatMap((item) => item.points || []);
+  const dates = [...new Set(allPoints.map((point) => point.x))].sort();
+  const phaseBoundary = buildBaselineToTreatmentBoundary(dates);
+  const phaseMarkers = normalizePhaseMarkers(options.phaseMarkers || [], dates, phaseBoundary);
+  return {
+    dates,
+    showGridLines: false,
+    phaseBoundary,
+    phaseMarkers
+  };
+}
+
+export function buildBaselineToTreatmentBoundary(dates) {
+  if (!Array.isArray(dates) || dates.length < 2) return null;
+  return {
+    label: "Treatment",
+    leftIndex: 0,
+    rightIndex: 1,
+    lineStyle: "solid",
+    phaseType: "baselineToTreatment"
+  };
+}
+
+export function normalizePhaseMarkers(markers = [], dates = [], phaseBoundary = null) {
+  if (!Array.isArray(markers) || !markers.length) return [];
+  const treatmentStartDate = phaseBoundary ? dates[phaseBoundary.rightIndex] : null;
+  return markers
+    .map((marker) => normalizePhaseMarker(marker))
+    .filter(Boolean)
+    .filter((marker) => {
+      if (!marker.date) return false;
+      if (!phaseBoundary) {
+        return marker.phaseType === "baselineConditionChange";
+      }
+      if (marker.phaseType === "baselineConditionChange") return true;
+      if (!treatmentStartDate) return false;
+      return marker.date >= treatmentStartDate;
+    })
+    .sort((a, b) => a.date.localeCompare(b.date) || phaseMarkerOrder(a) - phaseMarkerOrder(b));
+}
+
+function normalizePhaseMarker(marker = {}) {
+  if (!marker || !marker.date) return null;
+  const phaseType = marker.phaseType || inferPhaseType(marker);
+  const lineStyle = marker.lineStyle || (phaseType === "baselineToTreatment" ? "solid" : "dashed");
+  return {
+    ...marker,
+    label: marker.label || "Marker",
+    phaseType,
+    lineStyle,
+    dashed: lineStyle !== "solid",
+    position: marker.position || "after-date"
+  };
+}
+
+function inferPhaseType(marker = {}) {
+  if (marker.label === "Treatment") return "baselineToTreatment";
+  if (marker.label === "Target mastered") return "objectiveChange";
+  return "objectiveChange";
+}
+
+function phaseMarkerOrder(marker) {
+  const order = {
+    baselineConditionChange: 0,
+    objectiveChange: 1,
+    targetMastered: 2
+  };
+  return order[marker.phaseType] ?? 1;
+}
+
+export function derivedPointPhase(dateIndex, phaseBoundary = null) {
+  if (!phaseBoundary) return "baseline";
+  return dateIndex <= phaseBoundary.leftIndex ? "baseline" : "intervention";
+}
+
 function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options) {
   const tickValues = axisTicks(yTop, options.yStep);
   ctx.strokeStyle = "#d6dde3";
@@ -110,16 +187,6 @@ function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, optio
   ctx.textAlign = "right";
   tickValues.forEach((value) => {
     const y = margin.top + plotHeight - (value / yTop) * plotHeight;
-    if (value > 0) {
-      ctx.save();
-      ctx.strokeStyle = "#edf2f6";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(margin.left, y);
-      ctx.lineTo(width - margin.right, y);
-      ctx.stroke();
-      ctx.restore();
-    }
     ctx.fillText(String(value), margin.left - 10, y + 4);
   });
 
@@ -133,26 +200,6 @@ function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, optio
   }
 }
 
-function getPhaseBoundary(allPoints, dates) {
-  const baselineIndexes = allPoints
-    .filter((point) => point.phase === "baseline")
-    .map((point) => dates.indexOf(point.x))
-    .filter((index) => index >= 0);
-  const interventionIndexes = allPoints
-    .filter((point) => (point.phase || "intervention") === "intervention")
-    .map((point) => dates.indexOf(point.x))
-    .filter((index) => index >= 0);
-
-  if (!baselineIndexes.length || !interventionIndexes.length) return null;
-
-  const firstIntervention = Math.min(...interventionIndexes.filter((index) => baselineIndexes.some((baselineIndex) => baselineIndex < index)));
-  if (!Number.isFinite(firstIntervention)) return null;
-  const lastBaseline = Math.max(...baselineIndexes.filter((index) => index < firstIntervention));
-  if (!Number.isFinite(lastBaseline)) return null;
-
-  return { leftIndex: lastBaseline, rightIndex: firstIntervention };
-}
-
 function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions) {
   if (!phaseBoundary) return null;
 
@@ -161,21 +208,23 @@ function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPosit
   ctx.save();
   ctx.strokeStyle = "#1f2933";
   ctx.lineWidth = 2;
+  if (phaseBoundary.lineStyle === "dashed") ctx.setLineDash([6, 6]);
   ctx.beginPath();
   ctx.moveTo(lineX, margin.top - 2);
   ctx.lineTo(lineX, margin.top + plotHeight);
   ctx.stroke();
+  ctx.setLineDash([]);
 
   ctx.fillStyle = "#1f2933";
   ctx.font = "12px system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText("Baseline", Math.max(margin.left + 48, lineX - 92), margin.top - 14);
-  ctx.fillText("Treatment", Math.min(margin.left + plotWidth - 72, lineX + 92), margin.top - 14);
+  ctx.fillText(phaseBoundary.label || "Treatment", Math.min(margin.left + plotWidth - 72, lineX + 92), margin.top - 14);
 
   ctx.save();
   ctx.translate(lineX - 12, margin.top + plotHeight / 2);
   ctx.rotate(-Math.PI / 2);
-  ctx.fillText("Treatment", 0, 0);
+  ctx.fillText(phaseBoundary.label || "Treatment", 0, 0);
   ctx.restore();
   ctx.restore();
 
@@ -190,7 +239,7 @@ function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions, m
     ctx.save();
     ctx.strokeStyle = "#7a4f00";
     ctx.lineWidth = 2;
-    if (marker.dashed) ctx.setLineDash([6, 6]);
+    if (marker.lineStyle === "dashed") ctx.setLineDash([6, 6]);
     ctx.beginPath();
     ctx.moveTo(lineX, margin.top - 2);
     ctx.lineTo(lineX, margin.top + plotHeight);
@@ -359,32 +408,6 @@ function drawEmpty(ctx, width, height, message) {
   ctx.font = "15px system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText(message, width / 2, height / 2);
-}
-
-function buildXPositions(count, left, width, phaseBoundary) {
-  if (count <= 1) return [left + width / 2];
-  const padding = Math.min(28, width * 0.08);
-  const start = left + padding;
-  const end = left + width - padding;
-
-  if (!phaseBoundary) {
-    return buildCenteredSegmentPositions(count, start, end, 88);
-  }
-
-  const leftCount = phaseBoundary.leftIndex + 1;
-  const rightCount = count - phaseBoundary.rightIndex;
-  const phaseGap = Math.min(72, width * 0.12);
-  const usableWidth = end - start - phaseGap;
-  const leftWidth = usableWidth / 2;
-  const rightWidth = usableWidth / 2;
-
-  const leftPositions = buildCenteredSegmentPositions(leftCount, start, start + leftWidth, 88);
-  const rightPositions = buildCenteredSegmentPositions(rightCount, start + leftWidth + phaseGap, end, 88);
-
-  return [
-    ...leftPositions,
-    ...rightPositions
-  ];
 }
 
 function buildCenteredSegmentPositions(count, start, end, maxStep) {

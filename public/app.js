@@ -5049,7 +5049,8 @@ function masteryMarkersForProgram(programId) {
       date,
       label: "Target mastered",
       detail: targetNames.join(", "),
-      dashed: true,
+      phaseType: "targetMastered",
+      lineStyle: "dashed",
       position: "after-date"
     }));
 }
