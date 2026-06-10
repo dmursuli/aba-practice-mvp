@@ -95,6 +95,7 @@ const programList = document.querySelector("#program-list");
 const targetStatusTabs = document.querySelector("#target-status-tabs");
 const parentGoalList = document.querySelector("#parent-goal-list");
 const parentGoalTabs = document.querySelector("#parent-goal-tabs");
+const parentGoalEmpty = document.querySelector("#parent-goal-empty");
 const domainTabs = document.querySelector("#domain-tabs");
 const behaviorList = document.querySelector("#behavior-list");
 const skillCharts = document.querySelector("#skill-charts");
@@ -113,6 +114,7 @@ const fadePlanRows = document.querySelector("#fade-plan-rows");
 const addFadeRowButton = document.querySelector("#add-fade-row");
 const serviceHourRows = document.querySelector("#service-hour-rows");
 const addServiceHourRowButton = document.querySelector("#add-service-hour-row");
+const saveFunderReportButton = document.querySelector("#save-funder-report");
 const printFunderReportButton = document.querySelector("#print-funder-report");
 const downloadFunderTextButton = document.querySelector("#download-funder-text");
 const downloadFunderHtmlButton = document.querySelector("#download-funder-html");
@@ -409,6 +411,7 @@ function bindEvents() {
   reportSectionNav?.addEventListener("click", handleReportSectionNavClick);
   addFadeRowButton.addEventListener("click", () => addFadePlanRow());
   addServiceHourRowButton.addEventListener("click", () => addServiceHourRow());
+  saveFunderReportButton.addEventListener("click", handleSaveFunderReportDraft);
   printFunderReportButton.addEventListener("click", () => window.print());
   downloadFunderTextButton.addEventListener("click", () => handleDownloadFunderReport("txt"));
   downloadFunderHtmlButton.addEventListener("click", () => handleDownloadFunderReport("html"));
@@ -822,10 +825,21 @@ function renderParentGoalTabs() {
 
 function applyParentGoalFilter() {
   if (!parentGoalList) return;
-  [...parentGoalList.querySelectorAll(".parent-goal-row")].forEach((row) => {
+  const rows = [...parentGoalList.querySelectorAll(".parent-goal-row")];
+  rows.forEach((row) => {
     const rowState = row.dataset.parentGoalState === "mastered" ? "mastered" : "active";
     row.classList.toggle("hidden", rowState !== state.activeParentGoalTab);
   });
+  if (parentGoalEmpty) {
+    const visibleCount = rows.filter((row) => !row.classList.contains("hidden")).length;
+    if (visibleCount) {
+      parentGoalEmpty.textContent = "";
+    } else if (state.activeParentGoalTab === "mastered") {
+      parentGoalEmpty.textContent = "No mastered parent-training goals yet. Goals that meet mastery criteria will appear here.";
+    } else {
+      parentGoalEmpty.textContent = "No active parent-training goals available. Add a goal to begin caregiver training.";
+    }
+  }
 }
 
 function updateProgramIndependence(row) {
@@ -1376,6 +1390,9 @@ function syncClientProfileForm() {
   document.querySelectorAll("[data-admin-only]").forEach((section) => {
     section.classList.toggle("hidden", !canEditAdmin());
   });
+  document.querySelectorAll("[data-client-create]").forEach((section) => {
+    section.classList.toggle("hidden", !canCreateClients());
+  });
   syncAdminAgencyControls();
   if (!client) return;
   managementClientSelect.value = client.id;
@@ -1694,6 +1711,7 @@ function render() {
   syncParentTrainingDefaults();
   syncClientProfileForm();
   syncIntakeInterviewForm();
+  syncFunderReportForm();
   renderClientManagementSummary();
   renderClientDocuments();
   renderSummary();
@@ -1932,6 +1950,10 @@ function allowedViews() {
 
 function canEditAdmin() {
   return state.currentUser?.role === "admin";
+}
+
+function canCreateClients() {
+  return ["admin", "bcba"].includes(state.currentUser?.role);
 }
 
 function canEditClinical() {
@@ -3012,6 +3034,64 @@ function renderReportSummary() {
     : "";
 }
 
+function readFunderReportForm() {
+  const payload = {};
+  [...reportForm.querySelectorAll("input[name], textarea[name], select[name]")].forEach((field) => {
+    if (field.type === "file") return;
+    payload[field.name] = field.value || "";
+  });
+  payload.fadePlanRows = readFadePlanRows();
+  payload.serviceHours = readServiceHourRows();
+  return payload;
+}
+
+function syncFunderReportForm() {
+  if (!reportForm) return;
+  const client = currentClient();
+  if (!client) return;
+  const saved = client.profile?.funderReport || {};
+  const today = new Date();
+  const sixMonthsAgo = new Date(today);
+  sixMonthsAgo.setMonth(today.getMonth() - 6);
+  const defaults = {
+    startDate: sixMonthsAgo.toISOString().slice(0, 10),
+    endDate: today.toISOString().slice(0, 10),
+    preparedBy: "",
+    credential: "BCBA"
+  };
+  Object.entries(defaults).forEach(([key, value]) => {
+    if (reportForm.elements[key] && !saved[key]) reportForm.elements[key].value = value;
+  });
+  Object.entries(saved).forEach(([key, value]) => {
+    if (key === "fadePlanRows" || key === "serviceHours") return;
+    if (reportForm.elements[key]) reportForm.elements[key].value = value || "";
+  });
+  const fadeRows = Array.isArray(saved.fadePlanRows) && saved.fadePlanRows.length ? saved.fadePlanRows : defaultFadePlanRows();
+  fadePlanRows.innerHTML = "";
+  fadeRows.forEach((row) => addFadePlanRow(row));
+  const serviceRows = Array.isArray(saved.serviceHours) && saved.serviceHours.length ? saved.serviceHours : defaultServiceHourRows();
+  serviceHourRows.innerHTML = "";
+  serviceRows.forEach((row) => addServiceHourRow(row));
+  applyIntakeInterviewToReport();
+}
+
+async function handleSaveFunderReportDraft() {
+  const client = currentClient();
+  if (!client) return;
+  funderExportStatus.textContent = "";
+  try {
+    const updated = await updateClientProfile(client.id, {
+      ...currentClientProfilePayload(client),
+      funderReport: readFunderReportForm()
+    });
+    replaceClient(updated);
+    render();
+    funderExportStatus.textContent = "Report draft saved.";
+  } catch (error) {
+    funderExportStatus.textContent = error.message;
+  }
+}
+
 function applyIntakeInterviewToReport(force = false) {
   const interview = currentClient()?.profile?.intakeInterview;
   if (!interview || !reportForm) return;
@@ -3083,9 +3163,9 @@ function renderPlanReview() {
   const programs = clientPrograms();
   const behaviors = clientBehaviors();
   const client = currentClient();
-  const activePrograms = programs.filter((program) => programHasPlanContentForTab(program, "active")).length;
-  const pausedPrograms = programs.filter((program) => programHasPlanContentForTab(program, "paused")).length;
-  const masteredPrograms = programs.filter((program) => programHasPlanContentForTab(program, "mastered")).length;
+  const activePrograms = programs.filter((program) => programHasPlanStatusContent(program, "active")).length;
+  const pausedPrograms = programs.filter((program) => programHasPlanStatusContent(program, "paused")).length;
+  const masteredPrograms = programs.filter((program) => programHasPlanStatusContent(program, "mastered")).length;
   const activeTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "active").length;
   const pausedTargets = programs.flatMap((program) => program.targets || []).filter((target) => normalizePlanStatus(target.status) === "paused").length;
   const masteryCounts = masteryReviewCounts();
@@ -3157,9 +3237,9 @@ function renderPlanReview() {
 function renderPlanStatusTabs(programs) {
   if (!planStatusTabs) return;
   const counts = {
-    active: programs.filter((program) => programHasPlanContentForTab(program, "active")).length,
-    paused: programs.filter((program) => programHasPlanContentForTab(program, "paused")).length,
-    mastered: programs.filter((program) => programHasPlanContentForTab(program, "mastered")).length
+    active: programs.filter((program) => programHasPlanStatusContent(program, "active")).length,
+    paused: programs.filter((program) => programHasPlanStatusContent(program, "paused")).length,
+    mastered: programs.filter((program) => programHasPlanStatusContent(program, "mastered")).length
   };
   if (!counts[state.activePlanProgramTab]) {
     if (counts.active) {
@@ -3326,6 +3406,12 @@ function programHasPlanContentForTab(program, tab) {
   const visibleTargets = filteredTargetsForPlanProgram(program, tab);
   if (visibleTargets.length) return true;
   if (state.activePlanReviewFilter) return false;
+  return programHasPlanStatusContent(program, tab);
+}
+
+function programHasPlanStatusContent(program, tab) {
+  const targets = program.targets || [];
+  if (targets.some((target) => targetMatchesPlanTab(target, tab))) return true;
   if (!(program.targets || []).length) {
     const status = normalizePlanStatus(program.status || "active");
     return status === tab;
@@ -3550,12 +3636,11 @@ async function handlePlanClick(event) {
   }
   const addBehavior = event.target.closest("[data-add-plan-behavior]");
   if (addBehavior) {
-    const name = window.prompt("Behavior name");
-    if (!name?.trim()) return;
     const { programs, behaviors } = currentPlanDraft();
+    const name = "New behavior";
     const newBehavior = {
       id: slugify(name, "behavior", behaviors.map((behavior) => behavior.id)),
-      name: name.trim(),
+      name,
       status: "active"
     };
     behaviors.push(newBehavior);
@@ -3563,6 +3648,7 @@ async function handlePlanClick(event) {
       type: "behavior-added",
       targetName: newBehavior.name
     });
+    focusPlanInputByDataset("behaviorName", newBehavior.id);
     return;
   }
   const removeBehavior = event.target.closest("[data-remove-plan-behavior]");
@@ -3604,15 +3690,14 @@ async function handlePlanClick(event) {
   }
   const addTarget = event.target.closest("[data-add-target]");
   if (!addTarget) return;
-  const name = window.prompt("Target name");
-  if (!name?.trim()) return;
   const { programs, behaviors } = currentPlanDraft();
   const program = programs.find((item) => item.id === addTarget.dataset.addTarget);
   if (!program) return;
   program.targets = program.targets || [];
+  const name = "New target";
   const newTarget = {
     id: slugify(name, "target", program.targets.map((target) => target.id)),
-    name: name.trim(),
+    name,
     status: "active",
     dateAdded: new Date().toISOString().slice(0, 10),
     maintenanceDate: "",
@@ -3627,6 +3712,16 @@ async function handlePlanClick(event) {
     targetId: newTarget.id,
     targetName: newTarget.name,
     toStatus: "active"
+  });
+  focusPlanInputByDataset("targetName", `${program.id}:${newTarget.id}`);
+}
+
+function focusPlanInputByDataset(key, value) {
+  requestAnimationFrame(() => {
+    const input = [...planReview.querySelectorAll("input, textarea")]
+      .find((field) => field.dataset[key] === value);
+    input?.focus();
+    input?.select?.();
   });
 }
 
@@ -3830,6 +3925,9 @@ async function handlePlanStatusChange(event) {
   target.status = control.value;
   if (control.value === "mastered" && !target.maintenanceDate) {
     target.maintenanceDate = new Date().toISOString().slice(0, 10);
+  }
+  if (previousStatus !== control.value) {
+    state.activePlanReviewFilter = "";
   }
 
   try {
@@ -4537,8 +4635,9 @@ async function handleDeleteSession(sessionId) {
   }
 }
 
-function handleGenerateFunderReport(event) {
+async function handleGenerateFunderReport(event) {
   event.preventDefault();
+  await handleSaveFunderReportDraft();
   renderReportSummary();
   const client = currentClient();
   const sessions = filteredReportSessions().slice().reverse();
@@ -4831,13 +4930,37 @@ function renderMasteredTargetsSummary(startDate, endDate) {
 }
 
 function masteredTargetsForRange(startDate, endDate) {
-  return (currentClient()?.planChangeLog || [])
+  const loggedTargets = (currentClient()?.planChangeLog || [])
     .filter((change) => (
       change.type === "target-status-changed"
       && change.toStatus === "mastered"
       && (!startDate || change.date >= startDate)
       && (!endDate || change.date <= endDate)
-    ))
+    ));
+  const loggedKeys = new Set(loggedTargets.map((target) => `${target.programId}:${target.targetId}`));
+  const currentMasteredTargets = clientPrograms().flatMap((program) => (
+    (program.targets || []).flatMap((target) => {
+      const date = target.maintenanceDate || target.dateAdded || "";
+      const key = `${program.id}:${target.id}`;
+      if (
+        loggedKeys.has(key)
+        || normalizePlanStatus(target.status || "active") !== "mastered"
+        || (startDate && date < startDate)
+        || (endDate && date > endDate)
+      ) {
+        return [];
+      }
+      return [{
+        date,
+        domain: program.domain || "",
+        programId: program.id,
+        programName: program.name,
+        targetId: target.id,
+        targetName: target.name
+      }];
+    })
+  ));
+  return [...loggedTargets, ...currentMasteredTargets]
     .sort((a, b) => a.date.localeCompare(b.date) || a.targetName.localeCompare(b.targetName));
 }
 
@@ -5216,8 +5339,12 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute) {
 }
 
 function renderReportProgramInfo(program) {
-  const activeTargets = (program.targets || []).filter((target) => target.status === "active").map((target) => target.name);
-  const maintenanceTargets = (program.targets || []).filter((target) => target.status === "maintenance").map((target) => target.name);
+  const activeTargets = (program.targets || [])
+    .filter((target) => normalizePlanStatus(target.status || "active") === "active")
+    .map((target) => target.name);
+  const maintenanceTargets = (program.targets || [])
+    .filter((target) => normalizePlanStatus(target.status || "active") === "mastered")
+    .map((target) => target.name);
   return `
     <div class="program-report-info">
       <p><strong>Domain:</strong> ${escapeHtml(program.domain || "General")}</p>
@@ -5408,6 +5535,7 @@ function currentClientProfilePayload(client = currentClient()) {
     assessmentConductedBy: client?.profile?.assessment?.conductedBy || "",
     assessmentFileName: client?.profile?.assessment?.fileName || "",
     assessmentNotes: client?.profile?.assessment?.notes || "",
+    funderReport: structuredClone(client?.profile?.funderReport || {}),
     intakeInterview: structuredClone(client?.profile?.intakeInterview || {}),
     parentTrainingGoals: structuredClone(client?.profile?.parentTrainingGoals || [])
   };
@@ -6074,7 +6202,12 @@ These deficits significantly impact the client’s ability to function independe
 }
 
 function interviewReasonForReferral(interview) {
-  return `The client was referred for Applied Behavior Analysis (ABA) services due to ${interview.autismDiagnosis || interview.reasonForReferral || "[caregiver and provider concerns related to autism and developmental needs]"}. Caregiver priorities include ${interview.topPriorityBehavior || interview.concerningBehaviors || "[behavior reduction and skill development concerns]"} as well as broader concerns related to ${interview.schoolChallenges || interview.peerInteraction || "[communication, social interaction, adaptive functioning, and school participation]"}. Additional services currently in place include ${interview.currentServices || "[speech, occupational therapy, educational supports, or other related services]"}${interview.serviceFrequency ? `, with services occurring ${interview.serviceFrequency}` : ""}. ABA was recommended to address behavior, communication, adaptive skills, and parent priorities across settings.`;
+  const referralBasis = interview.autismDiagnosis === "Yes"
+    ? "caregiver and provider concerns related to Autism Spectrum Disorder and associated developmental needs"
+    : (interview.autismDiagnosis === "Pending"
+      ? "caregiver and provider concerns related to developmental needs while diagnostic clarification is pending"
+      : (interview.reasonForReferral || "[caregiver and provider concerns related to communication, behavior, and developmental needs]"));
+  return `The client was referred for Applied Behavior Analysis (ABA) services due to ${referralBasis}. Caregiver priorities include ${interview.topPriorityBehavior || interview.concerningBehaviors || "[behavior reduction and skill development concerns]"} as well as broader concerns related to ${interview.schoolChallenges || interview.peerInteraction || "[communication, social interaction, adaptive functioning, and school participation]"}. Additional services currently in place include ${interview.currentServices || "[speech, occupational therapy, educational supports, or other related services]"}${interview.serviceFrequency ? `, with services occurring ${interview.serviceFrequency}` : ""}. ABA was recommended to address behavior, communication, adaptive skills, and parent priorities across settings.`;
 }
 
 function defaultImpactOfBehaviors() {
