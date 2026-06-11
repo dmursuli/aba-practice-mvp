@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { removeBehaviorPointFromSession, removeTargetPointFromSession } from '../public/session-utils.js';
+import {
+  availableBehaviorsForSession,
+  availableTargetsForSession,
+  dedupeBehaviorEntries,
+  dedupeTargetEntries,
+  duplicateBehaviorIds,
+  duplicateTargetIdsFromPrograms,
+  removeBehaviorPointFromSession,
+  removeTargetPointFromSession
+} from '../public/session-utils.js';
 
 test('user can delete an individual skill-acquisition data point and empty programs are removed', () => {
   const session = {
@@ -59,4 +68,69 @@ test('deleting a missing data point leaves session data unchanged', () => {
   const behaviorDelete = removeBehaviorPointFromSession(session, 'behavior-missing');
   assert.equal(behaviorDelete.removed, false);
   assert.equal(behaviorDelete.session, session);
+});
+
+test('auto-populated session rows can be deduplicated by stable target id', () => {
+  const entries = [
+    { programId: 'program-a', targetId: 'target-1', independence: 80 },
+    { programId: 'program-a', targetId: 'target-1', independence: 60 },
+    { programId: 'program-b', targetId: 'target-2', independence: 50 }
+  ];
+
+  const result = dedupeTargetEntries(entries);
+  assert.deepEqual(result.map((entry) => entry.targetId), ['target-1', 'target-2']);
+  assert.equal(result[0].independence, 80);
+});
+
+test('manual add excludes targets that are already in the session and restores them after removal', () => {
+  const targets = [
+    { id: 'target-1', name: 'Mand 1' },
+    { id: 'target-2', name: 'Mand 2' },
+    { id: 'target-3', name: 'Mand 3' }
+  ];
+
+  const selectedIds = new Set(['target-1', 'target-2']);
+  const availableBeforeDelete = availableTargetsForSession(targets, selectedIds);
+  assert.deepEqual(availableBeforeDelete.map((target) => target.id), ['target-3']);
+
+  const availableAfterDelete = availableTargetsForSession(targets, new Set(['target-2']));
+  assert.deepEqual(availableAfterDelete.map((target) => target.id), ['target-1', 'target-3']);
+});
+
+test('attempting to re-use a selected target or behavior is detectable by stable ids', () => {
+  const programs = [
+    { programId: 'program-a', targets: [{ targetId: 'target-1' }, { targetId: 'target-2' }] },
+    { programId: 'program-b', targets: [{ targetId: 'target-1' }] }
+  ];
+  const behaviors = [{ behaviorId: 'behavior-1' }, { behaviorId: 'behavior-1' }];
+
+  assert.deepEqual(duplicateTargetIdsFromPrograms(programs), ['target-1']);
+  assert.deepEqual(duplicateBehaviorIds(behaviors), ['behavior-1']);
+});
+
+test('behavior availability excludes selected rows and reopens after deletion', () => {
+  const behaviors = [
+    { id: 'behavior-1', name: 'Aggression' },
+    { id: 'behavior-2', name: 'Elopement' }
+  ];
+  assert.deepEqual(
+    availableBehaviorsForSession(behaviors, new Set(['behavior-1'])).map((behavior) => behavior.id),
+    ['behavior-2']
+  );
+  assert.deepEqual(
+    availableBehaviorsForSession(behaviors, new Set()).map((behavior) => behavior.id),
+    ['behavior-1', 'behavior-2']
+  );
+});
+
+test('legacy duplicate behavior rows can be displayed safely without double-counting graph inputs', () => {
+  const behaviors = [
+    { behaviorId: 'behavior-1', frequency: 3 },
+    { behaviorId: 'behavior-1', frequency: 9 },
+    { behaviorId: 'behavior-2', frequency: 1 }
+  ];
+
+  const result = dedupeBehaviorEntries(behaviors);
+  assert.deepEqual(result.map((behavior) => behavior.behaviorId), ['behavior-1', 'behavior-2']);
+  assert.equal(result[0].frequency, 3);
 });

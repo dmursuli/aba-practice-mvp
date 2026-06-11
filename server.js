@@ -3,7 +3,12 @@ import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
-import { removeBehaviorPointFromSession, removeTargetPointFromSession } from "./public/session-utils.js";
+import {
+  duplicateBehaviorIds,
+  duplicateTargetIdsFromPrograms,
+  removeBehaviorPointFromSession,
+  removeTargetPointFromSession
+} from "./public/session-utils.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(root, "public");
@@ -157,18 +162,16 @@ function validateSession(payload, db) {
     errors.push("At least one target is required.");
   }
 
-  const targetKeys = new Set();
+  const duplicateTargetIds = new Set(duplicateTargetIdsFromPrograms(programs));
   programs.forEach((program) => {
     const planProgram = client?.programs?.find((item) => item.id === program.programId);
     if (!planProgram) errors.push("Program is not in this client's treatment plan.");
     program.targets.forEach((target) => {
       const planTarget = planProgram?.targets?.find((item) => item.id === target.targetId);
       if (!planTarget) errors.push("Target is not in this client's treatment plan.");
-      const key = `${program.programId}:${target.targetId}`;
-      if (targetKeys.has(key)) {
+      if (duplicateTargetIds.has(target.targetId)) {
         errors.push("Each target can only appear once per session.");
       }
-      targetKeys.add(key);
     });
   });
 
@@ -187,12 +190,11 @@ function validateSession(payload, db) {
     if (!planBehavior) errors.push("Behavior is not in this client's treatment plan.");
   });
 
-  const behaviorKeys = new Set();
+  const duplicateBehaviorIdsSet = new Set(duplicateBehaviorIds(behaviors));
   behaviors.forEach((behavior) => {
-    if (behaviorKeys.has(behavior.behaviorId)) {
+    if (duplicateBehaviorIdsSet.has(behavior.behaviorId)) {
       errors.push("Each behavior can only appear once per session.");
     }
-    behaviorKeys.add(behavior.behaviorId);
   });
 
   const parentGoals = isParentTraining

@@ -2,6 +2,7 @@ import { createAuditEvent, createClient, createSession, createUser, deleteClient
 import { buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { generateSoapNote } from "./soap.js";
+import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms } from "./session-utils.js";
 
 const state = {
   clients: [],
@@ -390,14 +391,32 @@ function bindEvents() {
   });
   form.addEventListener("change", (event) => {
     if (event.target.matches('[data-field="programId"]')) {
-      syncTargetOptions(event.target.closest(".program-row"));
+      const row = event.target.closest(".program-row");
+      syncTargetOptions(row);
+      row.dataset.lastTargetId = row.querySelector('[data-field="targetId"]').value || "";
       renderDomainTabs();
       refreshTargetAvailability();
     }
     if (event.target.matches('[data-field="targetId"]')) {
+      const row = event.target.closest(".program-row");
+      if (selectedTargetIds(programList, row).has(event.target.value)) {
+        event.target.value = row.dataset.lastTargetId || "";
+        syncTargetOptions(row, event.target.value);
+        formMessage.textContent = "This target is already in the session.";
+      } else {
+        row.dataset.lastTargetId = event.target.value || "";
+      }
       refreshTargetAvailability();
     }
     if (event.target.matches('[data-field="behaviorId"]')) {
+      const row = event.target.closest(".behavior-row");
+      if (selectedBehaviorIds(behaviorList, row).has(event.target.value)) {
+        event.target.value = row.dataset.lastBehaviorId || "";
+        syncBehaviorOptions(row, event.target.value);
+        formMessage.textContent = "This target is already in the session.";
+      } else {
+        row.dataset.lastBehaviorId = event.target.value || "";
+      }
       refreshBehaviorAvailability();
     }
     saveSessionDraft();
@@ -628,6 +647,11 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
 }
 
 function addProgramRow(programId = "", targetId = "", values = {}) {
+  const allowDuplicateExisting = Boolean(values.__allowDuplicateExisting);
+  if (targetId && !allowDuplicateExisting && selectedTargetIds().has(targetId)) {
+    formMessage.textContent = "This target is already in the session.";
+    return null;
+  }
   const suppressRefresh = Boolean(values.__suppressRefresh);
   const node = document.querySelector("#program-template").content.cloneNode(true);
   const row = node.querySelector(".program-row");
@@ -635,6 +659,7 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
   populateSelect(row.querySelector('[data-field="programId"]'), clientPrograms(), programId);
   row.querySelector('[data-field="entryMode"]').value = entryMode;
   syncTargetOptions(row, targetId);
+  row.dataset.lastTargetId = row.querySelector('[data-field="targetId"]').value || "";
   row.querySelector('[data-field="trials"]').value = values.trials ?? 10;
   row.querySelector('[data-field="correct"]').value = values.correct ?? 0;
   row.querySelector('[data-field="incorrect"]').value = values.incorrect ?? Math.max((values.trials ?? 10) - (values.correct ?? 0), 0);
@@ -659,6 +684,7 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
   if (!suppressRefresh) renderDomainTabs();
   refreshTargetAvailability();
   saveSessionDraft();
+  return row;
 }
 
 function preloadTargetRows() {
@@ -668,8 +694,8 @@ function preloadTargetRows() {
 }
 
 function addFirstAvailableTargetRow(status = "active", preferredDomain = state.activeDomain) {
-  const used = selectedTargetKeys();
-  const assignable = sessionAssignableTargets(status).filter(({ program, target }) => !used.has(targetKey(program.id, target.id)));
+  const used = selectedTargetIds();
+  const assignable = sessionAssignableTargets(status).filter(({ target }) => !used.has(target.id));
   const available = assignable.find(({ program }) => !preferredDomain || (program.domain || "General") === preferredDomain)
     || assignable[0];
 
@@ -683,9 +709,15 @@ function addFirstAvailableTargetRow(status = "active", preferredDomain = state.a
 }
 
 function addBehaviorRow(behaviorId = "", values = {}) {
+  const allowDuplicateExisting = Boolean(values.__allowDuplicateExisting);
+  if (behaviorId && !allowDuplicateExisting && selectedBehaviorIds().has(behaviorId)) {
+    formMessage.textContent = "This target is already in the session.";
+    return null;
+  }
   const node = document.querySelector("#behavior-template").content.cloneNode(true);
   const row = node.querySelector(".behavior-row");
-  populateSelect(row.querySelector('[data-field="behaviorId"]'), clientBehaviors().filter((behavior) => behavior.status !== "inactive"), behaviorId);
+  syncBehaviorOptions(row, behaviorId);
+  row.dataset.lastBehaviorId = row.querySelector('[data-field="behaviorId"]').value || "";
   row.querySelector('[data-field="frequency"]').value = values.frequency ?? 0;
   row.querySelector('[data-field="duration"]').value = values.duration || "";
   row.querySelector('[data-field="intensity"]').value = values.intensity || "";
@@ -701,6 +733,7 @@ function addBehaviorRow(behaviorId = "", values = {}) {
   behaviorList.append(row);
   refreshBehaviorAvailability();
   saveSessionDraft();
+  return row;
 }
 
 function preloadBehaviorRows() {
@@ -712,7 +745,7 @@ function preloadBehaviorRows() {
 }
 
 function addFirstAvailableBehaviorRow() {
-  const used = selectedBehaviorKeys();
+  const used = selectedBehaviorIds();
   const available = clientBehaviors().filter((behavior) => behavior.status !== "inactive").find((behavior) => !used.has(behavior.id));
   if (!available) {
     formMessage.textContent = "All active behaviors are already on this session.";
@@ -1342,14 +1375,14 @@ function restoreSessionDraft() {
     programList.innerHTML = "";
     state.loadedSessionDomainKeys = [];
     draft.programs.forEach((row) => {
-      addProgramRow(row.programId, row.targetId, { ...row, __suppressRefresh: true });
+      addProgramRow(row.programId, row.targetId, { ...row, __suppressRefresh: true, __allowDuplicateExisting: true });
       const program = clientPrograms().find((item) => item.id === row.programId);
       markSessionDomainLoaded(row.entryMode || "active", program?.domain || "General");
     });
   }
   if (Array.isArray(draft.behaviors)) {
     behaviorList.innerHTML = "";
-    draft.behaviors.forEach((row) => addBehaviorRow(row.behaviorId, row));
+    draft.behaviors.forEach((row) => addBehaviorRow(row.behaviorId, { ...row, __allowDuplicateExisting: true }));
   }
   formMessage.textContent = "Unsaved session draft restored.";
 }
@@ -1641,6 +1674,10 @@ function buildSessionPayload() {
     programs: groupTargetsByProgram(targets),
     behaviors
   };
+}
+
+function behaviorEntriesForSession(session) {
+  return dedupeBehaviorEntries(session.behaviors || []);
 }
 
 function readDataRow(row) {
@@ -2268,9 +2305,9 @@ function ensureDomainSessionRowsLoaded(status = state.activeSessionTargetTab, do
   const key = sessionDomainLoadKey(status, domain);
   if (state.loadedSessionDomainKeys.includes(key)) return;
 
-  const used = selectedTargetKeys();
+  const used = selectedTargetIds();
   const rowsToAdd = sessionAssignableTargets(status)
-    .filter(({ program, target }) => (program.domain || "General") === domain && !used.has(targetKey(program.id, target.id)));
+    .filter(({ program, target }) => (program.domain || "General") === domain && !used.has(target.id));
 
   rowsToAdd.forEach(({ program, target }) => {
     addProgramRow(program.id, target.id, { entryMode: status, __suppressRefresh: true });
@@ -2932,11 +2969,11 @@ function checkSessionHealth(client, sessions, issues) {
 }
 
 function targetEntriesForSession(session) {
-  return (session.programs || []).flatMap((program) => (
+  return dedupeTargetEntries((session.programs || []).flatMap((program) => (
     Array.isArray(program.targets)
       ? program.targets.map((target) => ({ ...target, programId: program.programId }))
       : [{ ...program, targetId: program.targetId || program.programId }]
-  )).filter((target) => target.targetId);
+  )).filter((target) => target.targetId));
 }
 
 function hasTargetData(sessions, programId, targetId) {
@@ -2944,7 +2981,7 @@ function hasTargetData(sessions, programId, targetId) {
 }
 
 function hasBehaviorData(sessions, behaviorId) {
-  return sessions.some((session) => (session.behaviors || []).some((behavior) => behavior.behaviorId === behaviorId));
+  return sessions.some((session) => behaviorEntriesForSession(session).some((behavior) => behavior.behaviorId === behaviorId));
 }
 
 function healthIssue(severity, clientName, area, issue, recommendation) {
@@ -3724,7 +3761,7 @@ function buildBehaviorChart(behaviorId, sessions) {
   const behavior = clientBehaviors().find((item) => item.id === behaviorId);
   if (!behavior) return null;
   const points = sessions.flatMap((session) => {
-    const entry = (session.behaviors || []).find((item) => item.behaviorId === behaviorId);
+    const entry = behaviorEntriesForSession(session).find((item) => item.behaviorId === behaviorId);
     return entry ? [{ x: session.date, y: Number(entry.frequency || 0), phase: entry.phase || "intervention" }] : [];
   });
   return {
@@ -4872,7 +4909,7 @@ function funderReportMetrics(sessions) {
     : 0;
   const targetKeys = new Set(targets.map((target) => `${target.programId}:${target.targetId}`));
   const totalBehaviorFrequency = sessions
-    .flatMap((session) => session.behaviors || [])
+    .flatMap((session) => behaviorEntriesForSession(session))
     .reduce((sum, behavior) => sum + Number(behavior.frequency || 0), 0);
   return {
     averageIndependence,
@@ -5306,7 +5343,7 @@ function behaviorChartSeries(sessions) {
   return clientBehaviors().map((behavior) => ({
     name: behavior.name,
     points: sessions.flatMap((session) => {
-      const target = session.behaviors.find((item) => item.behaviorId === behavior.id);
+      const target = behaviorEntriesForSession(session).find((item) => item.behaviorId === behavior.id);
       return target ? [{
         x: session.date,
         y: Number(target.frequency || 0),
@@ -5989,9 +6026,17 @@ function lookups() {
 function syncTargetOptions(row, selected = "") {
   const programId = row.querySelector('[data-field="programId"]').value;
   const program = clientPrograms().find((item) => item.id === programId);
-  populateSelect(row.querySelector('[data-field="targetId"]'), program?.targets || [], selected);
+  const selectedIds = selectedTargetIds(programList, row);
+  const options = availableTargetsForSession(program?.targets || [], selectedIds, selected);
+  populateSelect(row.querySelector('[data-field="targetId"]'), options, selected);
   updateRowDomain(row);
   updateProgramDisplay(row);
+}
+
+function syncBehaviorOptions(row, selected = "") {
+  const selectedIds = selectedBehaviorIds(behaviorList, row);
+  const options = availableBehaviorsForSession(clientBehaviors().filter((behavior) => behavior.status !== "inactive"), selectedIds, selected);
+  populateSelect(row.querySelector('[data-field="behaviorId"]'), options, selected);
 }
 
 function updateRowDomain(row) {
@@ -6075,7 +6120,7 @@ function targetEntries(session) {
     return [{ ...program, targetId: program.targetId || program.programId }];
   });
   const actualTargets = structuredTargets.filter(isActualTargetEntry);
-  return actualTargets.length ? structuredTargets : recoverTargetsFromSoap(session.soapNote);
+  return actualTargets.length ? dedupeTargetEntries(structuredTargets) : recoverTargetsFromSoap(session.soapNote);
 }
 
 function configuredTargetsForProgram(program) {
@@ -6126,15 +6171,16 @@ function safeFilename(value) {
 }
 
 function refreshTargetAvailability() {
-  const selected = selectedTargetKeys();
   [...programList.querySelectorAll(".program-row")].forEach((row) => {
-    const programId = row.querySelector('[data-field="programId"]').value;
-    const targetSelect = row.querySelector('[data-field="targetId"]');
-    [...targetSelect.options].forEach((option) => {
-      const key = targetKey(programId, option.value);
-      option.disabled = option.value !== targetSelect.value && selected.has(key);
-    });
+    syncTargetOptions(row, row.querySelector('[data-field="targetId"]').value);
   });
+}
+
+function selectedTargetIds(container = programList, excludeRow = null) {
+  return new Set([...container.querySelectorAll('.program-row')]
+    .filter((row) => row !== excludeRow)
+    .map((row) => row.querySelector('[data-field="targetId"]').value)
+    .filter(Boolean));
 }
 
 function selectedTargetKeys(container = programList) {
@@ -6147,14 +6193,11 @@ function selectedTargetKeys(container = programList) {
 }
 
 function duplicateTargetNames(targets) {
-  const seen = new Set();
-  const duplicates = new Set();
-  targets.forEach((target) => {
-    const key = targetKey(target.programId, target.targetId);
-    if (seen.has(key)) duplicates.add(lookups().targetName(target.programId, target.targetId));
-    seen.add(key);
-  });
-  return [...duplicates];
+  const duplicateIds = new Set(duplicateTargetIdsFromPrograms(groupTargetsByProgram(targets)));
+  return targets
+    .filter((target) => duplicateIds.has(target.targetId))
+    .map((target) => lookups().targetName(target.programId, target.targetId))
+    .filter((name, index, list) => list.indexOf(name) === index);
 }
 
 function targetKey(programId, targetId) {
@@ -6162,13 +6205,16 @@ function targetKey(programId, targetId) {
 }
 
 function refreshBehaviorAvailability() {
-  const selected = selectedBehaviorKeys();
   [...behaviorList.querySelectorAll(".behavior-row")].forEach((row) => {
-    const behaviorSelect = row.querySelector('[data-field="behaviorId"]');
-    [...behaviorSelect.options].forEach((option) => {
-      option.disabled = option.value !== behaviorSelect.value && selected.has(option.value);
-    });
+    syncBehaviorOptions(row, row.querySelector('[data-field="behaviorId"]').value);
   });
+}
+
+function selectedBehaviorIds(container = behaviorList, excludeRow = null) {
+  return new Set([...container.querySelectorAll('.behavior-row')]
+    .filter((row) => row !== excludeRow)
+    .map((row) => row.querySelector('[data-field="behaviorId"]').value)
+    .filter(Boolean));
 }
 
 function selectedBehaviorKeys(container = behaviorList) {
@@ -6178,13 +6224,11 @@ function selectedBehaviorKeys(container = behaviorList) {
 }
 
 function duplicateBehaviorNames(behaviors) {
-  const seen = new Set();
-  const duplicates = new Set();
-  behaviors.forEach((behavior) => {
-    if (seen.has(behavior.behaviorId)) duplicates.add(lookups().behaviorName(behavior.behaviorId));
-    seen.add(behavior.behaviorId);
-  });
-  return [...duplicates];
+  const duplicateIds = new Set(duplicateBehaviorIds(behaviors));
+  return behaviors
+    .filter((behavior) => duplicateIds.has(behavior.behaviorId))
+    .map((behavior) => lookups().behaviorName(behavior.behaviorId))
+    .filter((name, index, list) => list.indexOf(name) === index);
 }
 
 function slugify(value, fallback, existingIds) {
