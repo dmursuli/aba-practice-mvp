@@ -150,6 +150,20 @@ export async function deleteSession(sessionId) {
   return parseResponse(response);
 }
 
+export async function deleteSessionTargetData(sessionId, programId, targetId) {
+  const response = await fetch(`/api/sessions/${sessionId}/targets/${programId}/${targetId}`, {
+    method: "DELETE"
+  });
+  return parseResponse(response);
+}
+
+export async function deleteSessionBehaviorData(sessionId, behaviorId) {
+  const response = await fetch(`/api/sessions/${sessionId}/behaviors/${behaviorId}`, {
+    method: "DELETE"
+  });
+  return parseResponse(response);
+}
+
 export async function updateClientPlan(clientId, plan) {
   const response = await fetch(`/api/clients/${clientId}/plan`, {
     method: "PUT",

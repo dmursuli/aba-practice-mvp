@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import { removeBehaviorPointFromSession, removeTargetPointFromSession } from "./public/session-utils.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(root, "public");
@@ -859,6 +860,76 @@ const server = createServer(async (req, res) => {
       });
       await writeDb(db);
       sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    const targetPointMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/targets\/([^/]+)\/([^/]+)$/);
+    if (req.method === "DELETE" && targetPointMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba", "rbt"])) return;
+      const actor = currentUser(req, db);
+      const session = db.sessions.find((item) => item.id === targetPointMatch[1]);
+      if (!session) {
+        sendJson(res, 404, { errors: ["Session not found."] });
+        return;
+      }
+      if (!canAccessAgency(actor, session.agency)) {
+        sendJson(res, 403, { errors: ["You cannot access this session."] });
+        return;
+      }
+      const client = db.clients.find((item) => item.id === session.clientId);
+      if (!client || !canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
+      const [, sessionId, programId, targetId] = targetPointMatch;
+      const result = removeTargetPointFromSession(session, programId, targetId);
+      if (!result.removed) {
+        sendJson(res, 404, { errors: ["Target data point not found."] });
+        return;
+      }
+      Object.assign(session, result.session, { updatedAt: new Date().toISOString() });
+      logAudit(db, req, actor, "session-target-data-deleted", {
+        clientId: session.clientId,
+        details: { sessionId, programId, targetId, date: session.date, serviceType: session.serviceType || "97153" }
+      });
+      await writeDb(db);
+      sendJson(res, 200, session);
+      return;
+    }
+
+    const behaviorPointMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/behaviors\/([^/]+)$/);
+    if (req.method === "DELETE" && behaviorPointMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba", "rbt"])) return;
+      const actor = currentUser(req, db);
+      const session = db.sessions.find((item) => item.id === behaviorPointMatch[1]);
+      if (!session) {
+        sendJson(res, 404, { errors: ["Session not found."] });
+        return;
+      }
+      if (!canAccessAgency(actor, session.agency)) {
+        sendJson(res, 403, { errors: ["You cannot access this session."] });
+        return;
+      }
+      const client = db.clients.find((item) => item.id === session.clientId);
+      if (!client || !canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
+      const [, sessionId, behaviorId] = behaviorPointMatch;
+      const result = removeBehaviorPointFromSession(session, behaviorId);
+      if (!result.removed) {
+        sendJson(res, 404, { errors: ["Behavior data point not found."] });
+        return;
+      }
+      Object.assign(session, result.session, { updatedAt: new Date().toISOString() });
+      logAudit(db, req, actor, "session-behavior-data-deleted", {
+        clientId: session.clientId,
+        details: { sessionId, behaviorId, date: session.date, serviceType: session.serviceType || "97153" }
+      });
+      await writeDb(db);
+      sendJson(res, 200, session);
       return;
     }
 

@@ -1,5 +1,6 @@
-import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, getAuditLog, getCurrentUser, getData, getPracticeBackup, getUsers, login, logout, restorePracticeBackup, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument } from "./api.js";
-import { drawLineChart } from "./charts.js";
+import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getUsers, login, logout, restorePracticeBackup, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument } from "./api.js";
+import { buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
+import { graphScopeVisibility } from "./graph-ui.js";
 import { generateSoapNote } from "./soap.js";
 
 const state = {
@@ -98,6 +99,7 @@ const parentGoalTabs = document.querySelector("#parent-goal-tabs");
 const domainTabs = document.querySelector("#domain-tabs");
 const behaviorList = document.querySelector("#behavior-list");
 const skillCharts = document.querySelector("#skill-charts");
+const behaviorChartPanel = document.querySelector("#behavior-chart")?.closest(".chart-panel");
 const behaviorCharts = document.querySelector("#behavior-charts");
 const graphsClientSummary = document.querySelector("#graphs-client-summary");
 const graphScopeTabs = document.querySelector("#graph-scope-tabs");
@@ -191,6 +193,9 @@ const healthReportTable = document.querySelector("#health-report-table");
 const runHealthCheckButton = document.querySelector("#run-health-check");
 const exportHealthCsvButton = document.querySelector("#export-health-csv");
 const exportHealthJsonButton = document.querySelector("#export-health-json");
+
+const graphsMessage = ensureGraphsMessage();
+const programGraphModalLegend = ensureProgramGraphModalLegend();
 const intakeVbMappLevelSelect = document.querySelector("#intake-vbmapp-level");
 const intakeDraftFields = [
   "interviewDate",
@@ -338,6 +343,28 @@ async function refreshUsers(showMessage = true) {
   }
 }
 
+function ensureGraphsMessage() {
+  if (!graphsClientSummary?.parentElement) return { textContent: "" };
+  const existing = document.querySelector("#graphs-message");
+  if (existing) return existing;
+  const node = document.createElement("p");
+  node.id = "graphs-message";
+  node.className = "form-message";
+  node.setAttribute("role", "status");
+  graphsClientSummary.insertAdjacentElement("afterend", node);
+  return node;
+}
+
+function ensureProgramGraphModalLegend() {
+  const existing = document.querySelector("#program-graph-modal-legend");
+  if (existing) return existing;
+  if (!programGraphModalCanvas?.parentElement) return null;
+  const node = document.createElement("div");
+  node.id = "program-graph-modal-legend";
+  programGraphModalCanvas.insertAdjacentElement("afterend", node);
+  return node;
+}
+
 function bindEvents() {
   loginForm.addEventListener("submit", handleLogin);
   logoutButton.addEventListener("click", handleLogout);
@@ -404,6 +431,8 @@ function bindEvents() {
   addProgramForm.addEventListener("submit", handleAddProgram);
   addDomainButton.addEventListener("click", handleAddDomain);
   deleteDomainButton.addEventListener("click", handleDeleteDomain);
+  skillCharts.addEventListener("click", handleGraphDataDeleteClick);
+  behaviorCharts.addEventListener("click", handleGraphDataDeleteClick);
   reportForm.addEventListener("submit", handleGenerateFunderReport);
   reportForm.addEventListener("change", renderReportSummary);
   reportSectionNav?.addEventListener("click", handleReportSectionNavClick);
@@ -3687,6 +3716,7 @@ function openProgramGraphModal(programId) {
       emptyMessage: "No target data for this program",
       phaseMarkers: masteryMarkersForProgram(program.id)
     });
+    if (programGraphModalLegend) programGraphModalLegend.innerHTML = renderGraphLegendMarkup(chart.series);
   });
 }
 
@@ -3716,12 +3746,14 @@ function openBehaviorGraphModal(behaviorId) {
       yLabel: "frequency",
       emptyMessage: "No behavior data for this behavior"
     });
+    if (programGraphModalLegend) programGraphModalLegend.innerHTML = renderGraphLegendMarkup(chart.series);
   });
 }
 
 function closeProgramGraphModal() {
   programGraphModal.classList.add("hidden");
   programGraphModal.setAttribute("aria-hidden", "true");
+  if (programGraphModalLegend) programGraphModalLegend.innerHTML = "";
 }
 
 async function handlePlanTextEdit(event) {
@@ -4537,6 +4569,43 @@ async function handleDeleteSession(sessionId) {
   }
 }
 
+async function handleGraphDataDeleteClick(event) {
+  const skillDelete = event.target.closest("[data-delete-skill-point]");
+  const behaviorDelete = event.target.closest("[data-delete-behavior-point]");
+  if (!skillDelete && !behaviorDelete) return;
+
+  graphsMessage.textContent = "";
+  try {
+    if (skillDelete) {
+      const label = skillDelete.dataset.pointLabel || "this target";
+      const date = skillDelete.dataset.pointDate ? formatGraphDate(skillDelete.dataset.pointDate) : "this date";
+      if (!window.confirm(`Delete ${label} data for ${date}? This will immediately update graphs, mastery review, and report summaries.`)) return;
+      await deleteSessionTargetData(
+        skillDelete.dataset.sessionId,
+        skillDelete.dataset.programId,
+        skillDelete.dataset.targetId
+      );
+      await refreshData();
+      render();
+      graphsMessage.textContent = `${label} data for ${date} deleted.`;
+      return;
+    }
+
+    const label = behaviorDelete.dataset.pointLabel || "this behavior";
+    const date = behaviorDelete.dataset.pointDate ? formatGraphDate(behaviorDelete.dataset.pointDate) : "this date";
+    if (!window.confirm(`Delete ${label} data for ${date}? This will immediately update graphs and summaries.`)) return;
+    await deleteSessionBehaviorData(
+      behaviorDelete.dataset.sessionId,
+      behaviorDelete.dataset.behaviorId
+    );
+    await refreshData();
+    render();
+    graphsMessage.textContent = `${label} data for ${date} deleted.`;
+  } catch (error) {
+    graphsMessage.textContent = error.message;
+  }
+}
+
 function handleGenerateFunderReport(event) {
   event.preventDefault();
   renderReportSummary();
@@ -4913,23 +4982,17 @@ function drawFunderReportCharts(sessions) {
 
 function renderCharts() {
   const sessions = currentSessions().slice().reverse();
+  const scope = graphScopeVisibility(state.activeGraphTab);
   renderGraphScopeTabs();
-  if (state.activeGraphTab === "skills") {
+  behaviorChartPanel?.classList.toggle("hidden", !scope.showBehaviorGraphs);
+  behaviorCharts.classList.toggle("hidden", !scope.showBehaviorGraphs);
+  graphDomainTabs.classList.toggle("hidden", !scope.showSkillCharts);
+  if (scope.showSkillCharts) {
     renderSkillCharts(sessions);
-    graphDomainTabs.classList.remove("hidden");
     behaviorCharts.innerHTML = "";
-    const behaviorCanvas = document.querySelector("#behavior-chart");
-    if (behaviorCanvas) {
-      drawLineChart(behaviorCanvas, [], {
-        yStep: 1,
-        yLabel: "frequency",
-        emptyMessage: "Behavior graphs are available in the Behaviors tab"
-      });
-    }
     return;
   }
 
-  graphDomainTabs.classList.add("hidden");
   skillCharts.innerHTML = "";
   const behaviorSeries = behaviorChartSeries(sessions);
   drawLineChart(document.querySelector("#behavior-chart"), behaviorSeries, {
@@ -4937,6 +5000,7 @@ function renderCharts() {
     yLabel: "frequency",
     emptyMessage: "Save a session to graph behavior frequency"
   });
+  renderGraphLegend(document.querySelector("#behavior-chart")?.closest(".chart-panel"), behaviorSeries);
   drawBehaviorChartSet(sessions, behaviorCharts, "behavior-single-chart");
 }
 
@@ -4987,6 +5051,8 @@ function renderSkillCharts(sessions) {
           <article class="chart-panel">
             <h3>${chart.program.name}</h3>
             <canvas data-program-chart="${chart.program.id}" width="760" height="320"></canvas>
+            ${renderGraphLegendMarkup(chart.series)}
+            ${renderSkillDataManagerMarkup(chart)}
           </article>
         `).join("")}
       </div>
@@ -5021,7 +5087,14 @@ function buildProgramSkillChart(program, sessions) {
       const entry = targetEntries(session)
         .filter(isActualTargetEntry)
         .find((item) => item.programId === program.id && item.targetId === target.id);
-      return entry ? [{ x: session.date, y: entry.independence, phase: entry.phase || "intervention" }] : [];
+      return entry ? [{
+        x: session.date,
+        y: entry.independence,
+        phase: entry.phase || "intervention",
+        sessionId: session.id,
+        programId: program.id,
+        targetId: target.id
+      }] : [];
     })
   })).filter((item) => item.points.length);
   return { program, series };
@@ -5053,6 +5126,101 @@ function masteryMarkersForProgram(programId) {
       lineStyle: "dashed",
       position: "after-date"
     }));
+}
+
+function renderGraphLegendMarkup(series) {
+  const items = buildLegendItems(series || []);
+  if (!items.length) return "";
+  return `
+    <div class="graph-legend" aria-label="Graph target legend">
+      ${items.map((item) => `
+        <span class="graph-legend-item">
+          <span class="graph-legend-swatch" style="background:${escapeHtml(item.color)};"></span>
+          <span>${escapeHtml(item.label)}</span>
+        </span>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderGraphLegend(container, series) {
+  if (!container) return;
+  const existing = container.querySelector(".graph-legend");
+  const markup = renderGraphLegendMarkup(series);
+  if (existing) existing.remove();
+  if (markup) container.insertAdjacentHTML("beforeend", markup);
+}
+
+function renderSkillDataManagerMarkup(chart) {
+  const rows = chart.series.flatMap((series) => series.points.map((point) => ({
+    sessionId: point.sessionId,
+    programId: point.programId,
+    targetId: point.targetId,
+    targetName: series.name,
+    date: point.x,
+    value: point.y
+  }))).sort((a, b) => b.date.localeCompare(a.date));
+  if (!rows.length) return "";
+  return `
+    <details class="graph-data-manager">
+      <summary>Manage data points</summary>
+      <div class="graph-data-list">
+        ${rows.map((row) => `
+          <div class="graph-data-row">
+            <div>
+              <strong>${escapeHtml(row.targetName)}</strong>
+              <span>${escapeHtml(formatGraphDate(row.date))} - ${row.value}% independence</span>
+            </div>
+            <button
+              type="button"
+              class="delete-button"
+              data-delete-skill-point="true"
+              data-session-id="${escapeHtml(row.sessionId)}"
+              data-program-id="${escapeHtml(row.programId)}"
+              data-target-id="${escapeHtml(row.targetId)}"
+              data-point-label="${escapeHtml(row.targetName)}"
+              data-point-date="${escapeHtml(row.date)}"
+            >Delete</button>
+          </div>
+        `).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function renderBehaviorDataManagerMarkup(chart) {
+  const rows = chart.series.flatMap((series) => series.points.map((point) => ({
+    sessionId: point.sessionId,
+    behaviorId: point.behaviorId,
+    behaviorName: series.name,
+    date: point.x,
+    value: point.y
+  }))).sort((a, b) => b.date.localeCompare(a.date));
+  if (!rows.length) return "";
+  return `
+    <details class="graph-data-manager">
+      <summary>Manage data points</summary>
+      <div class="graph-data-list">
+        ${rows.map((row) => `
+          <div class="graph-data-row">
+            <div>
+              <strong>${escapeHtml(row.behaviorName)}</strong>
+              <span>${escapeHtml(formatGraphDate(row.date))} - ${row.value} frequency</span>
+            </div>
+            <button
+              type="button"
+              class="delete-button"
+              data-delete-behavior-point="true"
+              data-session-id="${escapeHtml(row.sessionId)}"
+              data-behavior-id="${escapeHtml(row.behaviorId)}"
+              data-point-label="${escapeHtml(row.behaviorName)}"
+              data-point-date="${escapeHtml(row.date)}"
+            >Delete</button>
+          </div>
+        `).join("")}
+      </div>
+    </details>
+  `;
 }
 
 function renderGraphDomainTabs(groups) {
@@ -5120,6 +5288,7 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
       <h3>${chart.program.name}</h3>
       ${includeProgramInfo ? renderReportProgramInfo(chart.program) : ""}
       <canvas data-${chartAttribute}="${chart.program.id}" width="760" height="320"></canvas>
+      ${renderGraphLegendMarkup(chart.series)}
     </article>
   `).join("");
 
@@ -5138,7 +5307,13 @@ function behaviorChartSeries(sessions) {
     name: behavior.name,
     points: sessions.flatMap((session) => {
       const target = session.behaviors.find((item) => item.behaviorId === behavior.id);
-      return target ? [{ x: session.date, y: Number(target.frequency || 0), phase: target.phase || "intervention" }] : [];
+      return target ? [{
+        x: session.date,
+        y: Number(target.frequency || 0),
+        phase: target.phase || "intervention",
+        sessionId: session.id,
+        behaviorId: behavior.id
+      }] : [];
     })
   })).filter((series) => series.points.length);
 }
@@ -5158,6 +5333,8 @@ function drawBehaviorChartSet(sessions, container, chartAttribute) {
     <article class="chart-panel">
       <h3>${escapeHtml(chart.behavior)}</h3>
       <canvas data-${chartAttribute}="${index}" width="760" height="320"></canvas>
+      ${renderGraphLegendMarkup(chart.series)}
+      ${renderBehaviorDataManagerMarkup(chart)}
     </article>
   `).join("");
 
@@ -5203,6 +5380,7 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute) {
     <article class="chart-panel">
       <h3>${escapeHtml(chart.goalName)}</h3>
       <canvas data-${chartAttribute}="${index}" width="760" height="320"></canvas>
+      ${renderGraphLegendMarkup(chart.series)}
     </article>
   `).join("");
 

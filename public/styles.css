@@ -1056,6 +1056,75 @@ button:focus-visible {
   padding: 14px;
 }
 
+.graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 10px;
+  max-height: 108px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.graph-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 0.92rem;
+  color: var(--ink);
+}
+
+.graph-legend-item span:last-child {
+  word-break: break-word;
+}
+
+.graph-legend-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+
+.graph-data-manager {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.graph-data-manager summary {
+  cursor: pointer;
+  font-weight: 800;
+  color: var(--teal);
+}
+
+.graph-data-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.graph-data-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.graph-data-row strong,
+.graph-data-row span {
+  display: block;
+}
+
+.graph-data-row span {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
 .modal-shell {
   position: fixed;
   inset: 0;

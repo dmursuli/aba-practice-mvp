@@ -10,17 +10,19 @@ export function drawLineChart(canvas, series, options = {}) {
 
   const width = canvas.width / dpr;
   const height = canvas.height / dpr;
-  const legendRows = Math.ceil(series.length / 2);
-  const margin = { top: 52, right: 28, bottom: 102 + legendRows * 20, left: 56 };
+  const allPoints = series.flatMap((item) => item.points);
+  const dateCount = new Set(allPoints.map((point) => point.x)).size;
+  const useAngledDates = dateCount > 2;
+  const margin = { top: 52, right: 28, bottom: useAngledDates ? 92 : 68, left: 56 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
-  const allPoints = series.flatMap((item) => item.points);
 
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, width, height);
 
   if (!allPoints.length) {
+    canvas.title = "";
     drawEmpty(ctx, width, height, options.emptyMessage || "No session data yet");
     return;
   }
@@ -45,19 +47,20 @@ export function drawLineChart(canvas, series, options = {}) {
   dates.forEach((date, index) => {
     const x = xPositions[index];
     ctx.fillStyle = "#59656f";
-    ctx.font = "11px system-ui, sans-serif";
-    ctx.textAlign = dates.length > 3 ? "right" : "center";
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.textAlign = useAngledDates ? "right" : "center";
     ctx.save();
-    if (dates.length > 3) {
-      ctx.translate(x - 4, margin.top + plotHeight + 38);
-      ctx.rotate(-Math.PI / 7);
-      ctx.fillText(formatDate(date), 0, 0);
+    if (useAngledDates) {
+      ctx.translate(x - 4, margin.top + plotHeight + 52);
+      ctx.rotate(-Math.PI / 4);
+      ctx.fillText(formatGraphDate(date), 0, 0);
     } else {
-      ctx.fillText(formatDate(date), x, margin.top + plotHeight + 30);
+      ctx.fillText(formatGraphDate(date), x, margin.top + plotHeight + 30);
     }
     ctx.restore();
   });
 
+  const interactivePoints = [];
   series.forEach((item, seriesIndex) => {
     const color = palette[seriesIndex % palette.length];
     const points = item.points
@@ -71,7 +74,10 @@ export function drawLineChart(canvas, series, options = {}) {
           y: margin.top + plotHeight - (point.y / yTop) * plotHeight,
           value: point.y,
           dateIndex,
-          phase: derivedPointPhase(dateIndex, phaseBoundary)
+          phase: derivedPointPhase(dateIndex, phaseBoundary),
+          label: item.name,
+          date: point.x,
+          source: point
         };
       });
 
@@ -84,16 +90,11 @@ export function drawLineChart(canvas, series, options = {}) {
       ctx.beginPath();
       ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
       ctx.fill();
+      interactivePoints.push(point);
     });
-
-    drawLegendItem(
-      ctx,
-      item.name,
-      color,
-      margin.left + (seriesIndex % 2) * Math.min(260, plotWidth / 2),
-      margin.top + plotHeight + 72 + Math.floor(seriesIndex / 2) * 20
-    );
   });
+
+  bindCanvasTooltip(canvas, interactivePoints);
 }
 
 export function buildClinicalGraphModel(series, options = {}) {
@@ -107,6 +108,13 @@ export function buildClinicalGraphModel(series, options = {}) {
     phaseBoundary,
     phaseMarkers
   };
+}
+
+export function buildLegendItems(series) {
+  return series.map((item, index) => ({
+    label: item.name,
+    color: palette[index % palette.length]
+  }));
 }
 
 export function buildBaselineToTreatmentBoundary(dates) {
@@ -394,15 +402,6 @@ function axisTicks(yTop, yStep) {
   return ticks;
 }
 
-function drawLegendItem(ctx, label, color, x, y) {
-  ctx.fillStyle = color;
-  ctx.fillRect(x, y - 9, 12, 12);
-  ctx.fillStyle = "#1f2933";
-  ctx.font = "12px system-ui, sans-serif";
-  ctx.textAlign = "left";
-  ctx.fillText(label, x + 18, y + 1);
-}
-
 function drawEmpty(ctx, width, height, message) {
   ctx.fillStyle = "#59656f";
   ctx.font = "15px system-ui, sans-serif";
@@ -421,7 +420,28 @@ function buildCenteredSegmentPositions(count, start, end, maxStep) {
   return Array.from({ length: count }, (_, index) => start + offset + index * step);
 }
 
-function formatDate(value) {
+export function formatGraphDate(value) {
   const date = new Date(`${value}T00:00:00`);
-  return `${date.getMonth() + 1}/${date.getDate()}`;
+  return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+}
+
+function bindCanvasTooltip(canvas, points) {
+  if (!canvas) return;
+  canvas.onmousemove = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const nearest = points.reduce((best, point) => {
+      const distance = Math.hypot(point.x - x, point.y - y);
+      if (distance > 12) return best;
+      if (!best || distance < best.distance) return { point, distance };
+      return best;
+    }, null);
+    canvas.title = nearest
+      ? `${nearest.point.label}: ${nearest.point.value} on ${formatGraphDate(nearest.point.date)}`
+      : "";
+  };
+  canvas.onmouseleave = () => {
+    canvas.title = "";
+  };
 }

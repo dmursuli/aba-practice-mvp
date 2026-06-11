@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildClinicalGraphModel, derivedPointPhase } from '../public/charts.js';
+import { buildClinicalGraphModel, buildLegendItems, derivedPointPhase, formatGraphDate } from '../public/charts.js';
 
 function makeSeries(label, points) {
   return [{ name: label, points }];
@@ -160,4 +160,23 @@ test('grid configuration stays disabled while axes and phase model remain availa
   assert.equal(model.showGridLines, false);
   assert.ok(model.phaseBoundary);
   assert.equal(model.phaseBoundary.label, 'Treatment');
+});
+
+test('legend items preserve all target labels for readable HTML legends', () => {
+  const legend = buildLegendItems([
+    { name: 'What can be full? -> cup', points: [] },
+    { name: 'What is shiny? -> spoon', points: [] },
+    { name: 'What is dry? -> towel', points: [] }
+  ]);
+
+  assert.equal(legend.length, 3);
+  assert.deepEqual(legend.map((item) => item.label), [
+    'What can be full? -> cup',
+    'What is shiny? -> spoon',
+    'What is dry? -> towel'
+  ]);
+});
+
+test('graph date labels include the year in M/D/YYYY format', () => {
+  assert.equal(formatGraphDate('2026-05-21'), '5/21/2026');
 });
