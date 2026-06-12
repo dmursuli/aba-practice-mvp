@@ -480,7 +480,7 @@
           <div id="client-document-list" class="document-list"></div>
         </section>
 
-        <form id="new-client-form" class="session-form" data-admin-only>
+        <form id="new-client-form" class="session-form" data-client-create>
           <div class="block-heading">
             <h3>Add new client</h3>
             <button type="submit" class="primary-button">Create client</button>
@@ -850,10 +850,6 @@
                 Group and school readiness
                 <input type="text" name="level3SchoolReadiness" placeholder="Group / transitions / routines">
               </label>
-              <label>
-                Preferred interests
-                <input type="text" name="preferredInterests" placeholder="Cars / videos / songs / sensory">
-              </label>
             </div>
           </section>
 
@@ -861,6 +857,10 @@
             <div class="block-heading">
               <h3 id="intake-notes-title">Interview notes</h3>
             </div>
+            <label>
+              Preferred interests
+              <input type="text" name="preferredInterests" placeholder="Cars / videos / songs / sensory">
+            </label>
             <label>
               Freeform notes
               <textarea name="interviewNotes" rows="5" placeholder="Extra caregiver interview notes, context, examples, or wording you want kept in mind for the assessment draft"></textarea>
@@ -940,6 +940,7 @@
           </div>
           <div id="parent-goal-tabs" class="domain-tabs" aria-label="Parent training goal status"></div>
           <div id="parent-goal-list" class="stack"></div>
+          <p id="parent-goal-empty" class="muted"></p>
 
           <label>
             Session note
@@ -1009,11 +1010,12 @@
           <h2 id="graphs-title">Graphs</h2>
         </div>
         <div id="graphs-client-summary" class="summary-strip"></div>
+        <p id="graphs-message" class="form-message" role="status"></p>
         <div id="graph-scope-tabs" class="domain-tabs" aria-label="Graph type"></div>
         <div id="graph-domain-tabs" class="domain-tabs" aria-label="Graph domains"></div>
         <div class="chart-zone">
           <div id="skill-charts" class="chart-zone"></div>
-          <article class="chart-panel">
+          <article class="chart-panel" id="behavior-chart-panel">
             <h3>Behavior frequency</h3>
             <canvas id="behavior-chart" width="760" height="320"></canvas>
           </article>
@@ -1274,6 +1276,19 @@ The client demonstrated improved engagement when provided with structure and rei
             Progress summary
             <textarea name="progressSummary" rows="4" placeholder="Summarize progress across skill acquisition, behavior reduction, maintenance, and barriers"></textarea>
           </label>
+          <section class="report-form-section" aria-labelledby="parent-training-report-title">
+            <div class="block-heading">
+              <h3 id="parent-training-report-title">Parent training report section</h3>
+            </div>
+            <label>
+              Parent training progress summary
+              <textarea name="parentTrainingSummary" rows="5" placeholder="Summarize parent-training participation, caregiver fidelity, and overall progress"></textarea>
+            </label>
+            <label>
+              Parent training recommendations / next steps
+              <textarea name="parentTrainingRecommendations" rows="4" placeholder="Document next steps for caregiver coaching, generalization, and maintenance"></textarea>
+            </label>
+          </section>
           </details>
           <details class="report-accordion" id="report-section-treatment">
             <summary>Treatment recommendations</summary>
@@ -1364,6 +1379,7 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
           </section>
           </details>
           <div class="button-row">
+            <button type="button" class="secondary-button" id="save-funder-report">Save report draft</button>
             <button type="submit" class="primary-button">Generate funder report</button>
             <button type="button" class="secondary-button" id="print-funder-report">Print report</button>
             <button type="button" class="secondary-button" id="download-funder-text">Download .txt</button>
@@ -1707,6 +1723,7 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
         <p id="program-graph-modal-subtitle" class="muted"></p>
         <article class="chart-panel">
           <canvas id="program-graph-modal-canvas" width="760" height="320"></canvas>
+          <div id="program-graph-modal-legend"></div>
         </article>
       </section>
     </div>

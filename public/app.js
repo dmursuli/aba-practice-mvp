@@ -1,6 +1,7 @@
 import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getUsers, login, logout, restorePracticeBackup, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument } from "./api.js";
 import { buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
+import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
 import { generateSoapNote } from "./soap.js";
 import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms } from "./session-utils.js";
 
@@ -3069,6 +3070,7 @@ function renderReportSummary() {
   const client = currentClient();
   const sessions = filteredReportSessions();
   applyIntakeInterviewToReport();
+  syncParentTrainingReportFields();
   reportClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
@@ -3111,6 +3113,58 @@ function setSimpleReportFieldFromInterview(name, value, force = false) {
     field.value = value;
     field.dataset.autofillValue = value;
   }
+}
+
+function setGeneratedReportField(name, value, force = false) {
+  const field = reportForm.elements[name];
+  if (!field) return;
+  const nextValue = String(value || "");
+  const previous = field.dataset.autofillValue || "";
+  const current = field.value || "";
+  if (force || !current || current === previous) {
+    field.value = nextValue;
+    field.dataset.autofillValue = nextValue;
+  }
+}
+
+function parentTrainingReportModel(startDate, endDate) {
+  const parentSessions = parentTrainingSessionsForRange(startDate, endDate);
+  const criteria = currentMasteryCriteria();
+  const goalReviewsByKey = Object.fromEntries(
+    currentParentTrainingGoals().map((goal) => [parentTrainingGoalKey(goal), parentGoalReview(goal).state])
+  );
+  const masteredGoalsDuringPeriod = filterMasteredGoalsForPeriod(
+    currentParentTrainingGoals().flatMap((goal) => {
+      const history = parentGoalSessionHistory(goal);
+      const fidelitySessions = history.map((item) => ({
+        session: item.session,
+        entry: { independence: Number(item.goal.fidelity || 0) }
+      }));
+      const masteryWindow = findMasteryWindow(fidelitySessions, criteria.consecutiveSessions, criteria.thresholdPercent);
+      if (!masteryWindow?.length) return [];
+      const masteryDate = masteryWindow[0]?.session?.date;
+      if (!masteryDate) return [];
+      return [{
+        ...goal,
+        masteredDate: masteryDate
+      }];
+    }),
+    startDate,
+    endDate
+  );
+  return summarizeParentTrainingReport({
+    parentSessions,
+    currentGoals: currentParentTrainingGoals(),
+    goalReviewsByKey,
+    masteredGoalsDuringPeriod
+  });
+}
+
+function syncParentTrainingReportFields(force = false) {
+  if (!reportForm) return;
+  const model = parentTrainingReportModel(reportForm.elements.startDate.value, reportForm.elements.endDate.value);
+  setGeneratedReportField("parentTrainingSummary", buildEditableParentTrainingSummary(model), force);
+  setGeneratedReportField("parentTrainingRecommendations", model.recommendationText, force);
 }
 
 function renderSoapSummary() {
@@ -4646,6 +4700,7 @@ async function handleGraphDataDeleteClick(event) {
 function handleGenerateFunderReport(event) {
   event.preventDefault();
   renderReportSummary();
+  syncParentTrainingReportFields();
   const client = currentClient();
   const sessions = filteredReportSessions().slice().reverse();
   const values = new FormData(reportForm);
@@ -4733,7 +4788,10 @@ function handleGenerateFunderReport(event) {
       </section>
       <section>
         <h3>Parent Training</h3>
-        ${renderParentTrainingReportSummary(values.get("startDate"), values.get("endDate"))}
+        ${renderParentTrainingReportSummary(values.get("startDate"), values.get("endDate"), {
+          summaryText: values.get("parentTrainingSummary"),
+          recommendationText: values.get("parentTrainingRecommendations")
+        })}
         <div id="report-parent-training-charts" class="chart-zone"></div>
       </section>
       <section>
@@ -4947,43 +5005,103 @@ function masteredTargetsForRange(startDate, endDate) {
     .sort((a, b) => a.date.localeCompare(b.date) || a.targetName.localeCompare(b.targetName));
 }
 
-function renderParentTrainingReportSummary(startDate, endDate) {
-  const parentSessions = parentTrainingSessionsForRange(startDate, endDate);
-  if (!parentSessions.length) {
-    return "<p>No parent training sessions were documented during this reporting period.</p>";
-  }
-
-  const goalEntries = parentSessions.flatMap((session) => (
-    (session.parentGoals || []).map((goal) => ({
-      ...goal,
-      date: session.date,
-      caregiverName: session.parentTraining?.caregiverName || "Caregiver",
-      trainingFocus: session.parentTraining?.trainingFocus || "parent training"
-    }))
-  ));
-  const averageFidelity = goalEntries.length
-    ? Math.round(goalEntries.reduce((sum, goal) => sum + Number(goal.fidelity || 0), 0) / goalEntries.length)
-    : 0;
-  const caregivers = [...new Set(parentSessions.map((session) => session.parentTraining?.caregiverName).filter(Boolean))];
+function renderParentTrainingReportSummary(startDate, endDate, options = {}) {
+  const model = parentTrainingReportModel(startDate, endDate);
+  const summaryText = String(options.summaryText || model.summaryText || "").trim();
+  const recommendationText = String(options.recommendationText || model.recommendationText || "").trim();
 
   return `
     <div class="report-detail-grid">
-      <div><strong>Sessions completed</strong><span>${parentSessions.length}</span></div>
-      <div><strong>Average caregiver fidelity</strong><span>${averageFidelity}%</span></div>
-      <div><strong>Caregivers trained</strong><span>${escapeHtml(caregivers.join(", ") || "Not specified")}</span></div>
+      <div><strong>Sessions completed</strong><span>${model.sessionCount}</span></div>
+      <div><strong>Average caregiver fidelity</strong><span>${model.sessionCount ? `${model.averageFidelity}%` : "No data"}</span></div>
+      <div><strong>Caregivers trained</strong><span>${escapeHtml(model.caregivers.join(", ") || "Not specified")}</span></div>
+      <div><strong>Parent training focus</strong><span>${escapeHtml(model.focusAreas.join(", ") || "Not specified")}</span></div>
     </div>
-    ${goalEntries.length ? `
-      <p>Parent training goals practiced during this reporting period:</p>
-      <ul class="mastered-target-list">
-        ${goalEntries.map((goal) => `
-          <li>
-            <strong>${escapeHtml(goal.goalName)} - ${escapeHtml(goal.targetName)}</strong>
-            <span>${formatDate(goal.date)}; ${escapeHtml(goal.caregiverName)}; ${goal.fidelity}% caregiver fidelity (${goal.independent}/${goal.opportunities || goal.independent + goal.prompted} independent); focus: ${escapeHtml(goal.trainingFocus)}</span>
-          </li>
-        `).join("")}
-      </ul>
-    ` : "<p>No parent training goal data were collected during these sessions.</p>"}
+    <section class="report-parent-training-summary">
+      <h4>Progress summary</h4>
+      ${renderParentTrainingProgressSummary(summaryText)}
+    </section>
+    ${model.activeGoals.length ? `
+      <section class="report-parent-training-summary">
+        <h4>Active parent-training goals</h4>
+        <ul class="mastered-target-list">
+          ${model.activeGoals.map((goal) => `
+            <li>
+              <strong>${escapeHtml(parentTrainingGoalLabel(goal))}</strong>
+            </li>
+          `).join("")}
+        </ul>
+      </section>
+    ` : ""}
+    ${model.masteredGoals.length ? `
+      <section class="report-parent-training-summary">
+        <h4>Mastered parent-training goals</h4>
+        <ul class="mastered-target-list">
+          ${model.masteredGoals.map((goal) => `
+            <li>
+              <strong>${escapeHtml(parentTrainingGoalLabel(goal))}</strong>
+            </li>
+          `).join("")}
+        </ul>
+      </section>
+    ` : ""}
+    <section class="report-parent-training-summary">
+      <h4>Recommendations / next steps</h4>
+      ${reportParagraph(recommendationText)}
+    </section>
   `;
+}
+
+function renderParentTrainingProgressSummary(value) {
+  const lines = String(value || "")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return "<p></p>";
+
+  const sections = [];
+  let paragraphBuffer = [];
+  let listHeading = "";
+  let listItems = [];
+
+  const flushParagraph = () => {
+    if (!paragraphBuffer.length) return;
+    sections.push(`<p>${escapeHtml(paragraphBuffer.join(" "))}</p>`);
+    paragraphBuffer = [];
+  };
+  const flushList = () => {
+    if (!listHeading && !listItems.length) return;
+    if (listHeading) sections.push(`<p><strong>${escapeHtml(listHeading)}</strong></p>`);
+    if (listItems.length) {
+      sections.push(`
+        <ul class="mastered-target-list">
+          ${listItems.map((item) => `<li><strong>${escapeHtml(item)}</strong></li>`).join("")}
+        </ul>
+      `);
+    }
+    listHeading = "";
+    listItems = [];
+  };
+
+  lines.forEach((line) => {
+    if (line.startsWith("- ")) {
+      flushParagraph();
+      listItems.push(line.slice(2).trim());
+      return;
+    }
+    if (line.endsWith(":")) {
+      flushParagraph();
+      flushList();
+      listHeading = line;
+      return;
+    }
+    if (listItems.length) flushList();
+    paragraphBuffer.push(line);
+  });
+
+  flushParagraph();
+  flushList();
+  return sections.join("");
 }
 
 function parentTrainingSessionsForRange(startDate, endDate) {
