@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
@@ -28,6 +29,8 @@ const SESSION_MAX_AGE_SECONDS = SESSION_ABSOLUTE_TIMEOUT_SECONDS;
 const MFA_PENDING_TIMEOUT_SECONDS = Number(process.env.MFA_PENDING_TIMEOUT_SECONDS || (60 * 10));
 const MFA_ISSUER = process.env.MFA_ISSUER || "Triumph Workspace";
 let otpAuthModulePromise = null;
+let cachedDbCaCert = null;
+let cachedDbCaCertKey = null;
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -71,7 +74,32 @@ async function writeDb(db) {
   await writeFile(dbPath, `${JSON.stringify(db, null, 2)}\n`, "utf8");
 }
 
-function postgresConfig(Pool) {
+function decodeEnvMultiline(value) {
+  return String(value || "").replace(/\\n/g, "\n");
+}
+
+export function resolveDbCaCert() {
+  const inlineCert = String(process.env.DB_CA_CERT || "").trim();
+  const base64Cert = String(process.env.DB_CA_CERT_BASE64 || "").trim();
+  const certPath = String(process.env.DB_CA_CERT_PATH || "").trim();
+  const cacheKey = `${inlineCert}|${base64Cert}|${certPath}`;
+  if (cacheKey === cachedDbCaCertKey) return cachedDbCaCert;
+
+  let caCert = "";
+  if (inlineCert) {
+    caCert = decodeEnvMultiline(inlineCert);
+  } else if (base64Cert) {
+    caCert = Buffer.from(base64Cert, "base64").toString("utf8");
+  } else if (certPath) {
+    caCert = readFileSync(certPath, "utf8");
+  }
+
+  cachedDbCaCertKey = cacheKey;
+  cachedDbCaCert = caCert;
+  return caCert;
+}
+
+export function postgresConfig(Pool) {
   const sslEnabled = process.env.DB_SSL === "true" || (process.env.NODE_ENV === "production" && process.env.DB_SSL !== "false");
   return {
     Pool,
@@ -83,7 +111,7 @@ function postgresConfig(Pool) {
     password: process.env.DB_PASSWORD || "",
     ssl: sslEnabled,
     sslRejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== "false",
-    caCert: process.env.DB_CA_CERT || ""
+    caCert: resolveDbCaCert()
   };
 }
 
@@ -1178,6 +1206,14 @@ export function createAppServer() {
 
     await serveStatic(req, res);
   } catch (error) {
+    if (isDatabaseTlsError(error)) {
+      console.error("Database TLS configuration error", { code: error?.code || null });
+      sendJson(res, 503, {
+        code: "DATABASE_UNAVAILABLE",
+        errors: ["Secure database connection is temporarily unavailable. Please contact your administrator if this continues."]
+      });
+      return;
+    }
     sendJson(res, 500, { errors: [error.message || "Unexpected server error."] });
   }
   });
@@ -1422,6 +1458,14 @@ function authServiceUnavailable(res) {
     code: "AUTH_UNAVAILABLE",
     errors: ["Authentication is temporarily unavailable. Please try again shortly or contact support."]
   });
+}
+
+function isDatabaseTlsError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return message.includes("self-signed certificate in certificate chain")
+    || message.includes("unable to verify the first certificate")
+    || message.includes("unable to get local issuer certificate")
+    || message.includes("certificate has expired");
 }
 
 function createSessionRecord(userId, stage, extra = {}) {
