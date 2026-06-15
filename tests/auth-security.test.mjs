@@ -10,6 +10,7 @@ process.env.SESSION_ABSOLUTE_TIMEOUT_SECONDS = '5';
 process.env.SESSION_INACTIVITY_TIMEOUT_SECONDS = '1';
 process.env.MFA_PENDING_TIMEOUT_SECONDS = '30';
 process.env.MFA_ENCRYPTION_KEY = 'test-mfa-encryption-key';
+process.env.ABA_DISABLE_AUTOSTART = '1';
 
 const dbPath = process.env.DB_PATH;
 await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');

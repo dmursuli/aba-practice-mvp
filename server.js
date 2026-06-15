@@ -1183,8 +1183,8 @@ export function createAppServer() {
   });
 }
 
-const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
-if (isDirectRun) {
+const shouldAutostartServer = process.env.ABA_DISABLE_AUTOSTART !== "1";
+if (shouldAutostartServer) {
   const server = createAppServer();
   server.listen(port, host, () => {
     console.log(`ABA practice MVP running at http://localhost:${port}`);
