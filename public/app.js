@@ -1,4 +1,4 @@
-import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getUsers, login, logout, restorePracticeBackup, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument } from "./api.js";
+import { completeMfaSetup, createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getUsers, login, logout, restorePracticeBackup, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifyMfa } from "./api.js";
 import { buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
@@ -27,7 +27,14 @@ const state = {
   activeSoapHistoryTab: "97153",
   currentUser: null,
   skipNextSessionDraftRestore: false,
-  loadedSessionDomainKeys: []
+  loadedSessionDomainKeys: [],
+  authFlow: "password",
+  authChallenge: null,
+  draftCache: {
+    intake: {},
+    session: {}
+  },
+  inactivityTimerId: null
 };
 
 const roleViews = {
@@ -66,6 +73,19 @@ const agencyOptions = ["Triumph ABA", "One Clinical Care"];
 const loginScreen = document.querySelector("#login-screen");
 const loginForm = document.querySelector("#login-form");
 const loginMessage = document.querySelector("#login-message");
+const loginPanel = document.querySelector("#login-form");
+const mfaVerifyPanel = document.querySelector("#mfa-verify-panel");
+const mfaSetupPanel = document.querySelector("#mfa-setup-panel");
+const mfaRecoveryPanel = document.querySelector("#mfa-recovery-panel");
+const mfaVerifyForm = document.querySelector("#mfa-verify-form");
+const mfaSetupForm = document.querySelector("#mfa-setup-form");
+const mfaMessage = document.querySelector("#mfa-message");
+const mfaSetupMessage = document.querySelector("#mfa-setup-message");
+const mfaManualEntryKey = document.querySelector("#mfa-manual-entry-key");
+const mfaOtpAuthUri = document.querySelector("#mfa-otpauth-uri");
+const mfaRecoveryCodesList = document.querySelector("#mfa-recovery-codes");
+const mfaRecoveryContinueButton = document.querySelector("#mfa-recovery-continue");
+const mfaCancelButtons = document.querySelectorAll("[data-auth-cancel]");
 const appRoot = document.querySelector("#app-root");
 const currentUserLabel = document.querySelector("#current-user-label");
 const logoutButton = document.querySelector("#logout-button");
@@ -282,6 +302,8 @@ const sessionPreloadLimits = {
   behaviors: 2
 };
 
+const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
+
 init();
 
 async function init() {
@@ -295,13 +317,23 @@ async function restoreSession() {
     const { user } = await getCurrentUser();
     state.currentUser = user;
     await startAuthenticatedApp();
-  } catch {
-    showLogin();
+  } catch (error) {
+    if (error.code === "MFA_REQUIRED" || error.code === "MFA_SETUP_REQUIRED") {
+      state.authChallenge = error.details;
+      if (error.code === "MFA_SETUP_REQUIRED") {
+        showAuthStep("mfa-setup", error.details);
+      } else {
+        showAuthStep("mfa-verify", error.details);
+      }
+      return;
+    }
+    showLogin(error.code === "SESSION_TIMEOUT" ? "Session timed out due to inactivity." : "");
   }
 }
 
 async function startAuthenticatedApp() {
   showApp();
+  startInactivityTimer();
   await refreshData();
   const requested = requestedWorkspaceState();
   if (requested.clientId && state.clients.some((client) => client.id === requested.clientId)) {
@@ -318,6 +350,29 @@ async function startAuthenticatedApp() {
   } else {
     syncWorkspaceUrl(currentView());
   }
+}
+
+function startInactivityTimer() {
+  clearInactivityTimer();
+  if (!state.currentUser) return;
+  state.inactivityTimerId = window.setTimeout(async () => {
+    try {
+      await logout("timeout");
+    } catch {}
+    handleAuthFailureEvent({ code: "SESSION_TIMEOUT", errors: ["Session timed out due to inactivity."] });
+  }, INACTIVITY_TIMEOUT_MS);
+}
+
+function clearInactivityTimer() {
+  if (state.inactivityTimerId) {
+    window.clearTimeout(state.inactivityTimerId);
+    state.inactivityTimerId = null;
+  }
+}
+
+function resetInactivityTimer() {
+  if (!state.currentUser) return;
+  startInactivityTimer();
 }
 
 async function refreshData() {
@@ -369,6 +424,10 @@ function ensureProgramGraphModalLegend() {
 
 function bindEvents() {
   loginForm.addEventListener("submit", handleLogin);
+  mfaVerifyForm?.addEventListener("submit", handleVerifyMfa);
+  mfaSetupForm?.addEventListener("submit", handleCompleteMfaSetup);
+  mfaRecoveryContinueButton?.addEventListener("click", handleRecoveryContinue);
+  mfaCancelButtons.forEach((button) => button.addEventListener("click", handleCancelAuthFlow));
   logoutButton.addEventListener("click", handleLogout);
   newUserForm.addEventListener("submit", handleCreateUser);
   newUserForm.elements.role?.addEventListener("change", syncUserRoleControls);
@@ -489,6 +548,17 @@ function bindEvents() {
   exportHealthCsvButton.addEventListener("click", () => exportHealthReport("csv"));
   exportHealthJsonButton.addEventListener("click", () => exportHealthReport("json"));
   window.addEventListener("resize", renderCharts);
+  window.addEventListener("aba-auth-error", (event) => handleAuthFailureEvent(event.detail));
+  window.addEventListener("pageshow", () => {
+    if (state.currentUser) {
+      restoreSession();
+      return;
+    }
+    if (!state.authChallenge) showLogin();
+  });
+  ["click", "keydown", "mousemove", "touchstart", "scroll"].forEach((eventName) => {
+    window.addEventListener(eventName, resetInactivityTimer, { passive: true });
+  });
 }
 
 async function handleLogin(event) {
@@ -496,10 +566,20 @@ async function handleLogin(event) {
   loginMessage.textContent = "";
   const values = new FormData(loginForm);
   try {
-    const { user } = await login(values.get("username"), values.get("password"));
-    state.currentUser = user;
+    const payload = await login(values.get("username"), values.get("password"));
     loginForm.reset();
-    await startAuthenticatedApp();
+    if (payload.user && !payload.mfaRequired) {
+      state.currentUser = payload.user;
+      state.authChallenge = null;
+      await startAuthenticatedApp();
+      return;
+    }
+    state.authChallenge = payload;
+    if (payload.setupRequired) {
+      showAuthStep("mfa-setup", payload);
+    } else {
+      showAuthStep("mfa-verify", payload);
+    }
   } catch (error) {
     loginMessage.textContent = error.message;
   }
@@ -507,10 +587,176 @@ async function handleLogin(event) {
 
 async function handleLogout() {
   await logout().catch(() => {});
+  resetSensitiveState();
+  showLogin();
+}
+
+async function handleVerifyMfa(event) {
+  event.preventDefault();
+  if (!mfaVerifyForm) return;
+  mfaMessage.textContent = "";
+  const values = new FormData(mfaVerifyForm);
+  try {
+    const payload = await verifyMfa(values.get("code"), values.get("recoveryCode"));
+    state.currentUser = payload.user;
+    state.authChallenge = null;
+    mfaVerifyForm.reset();
+    await startAuthenticatedApp();
+  } catch (error) {
+    mfaMessage.textContent = error.message;
+  }
+}
+
+async function handleCompleteMfaSetup(event) {
+  event.preventDefault();
+  if (!mfaSetupForm) return;
+  mfaSetupMessage.textContent = "";
+  const values = new FormData(mfaSetupForm);
+  try {
+    const payload = await completeMfaSetup(values.get("code"));
+    state.currentUser = payload.user;
+    state.authChallenge = null;
+    mfaSetupForm.reset();
+    showAuthStep("mfa-recovery", { recoveryCodes: payload.recoveryCodes || [] });
+  } catch (error) {
+    mfaSetupMessage.textContent = error.message;
+  }
+}
+
+function handleRecoveryContinue() {
+  state.authChallenge = null;
+  startAuthenticatedApp().catch((error) => {
+    showLogin(error?.message || "Unable to restore your session.");
+  });
+}
+
+async function handleCancelAuthFlow() {
+  await logout().catch(() => {});
+  resetSensitiveState();
+  showLogin();
+}
+
+function showAuthStep(step, details = {}) {
+  state.authFlow = step;
+  loginScreen.classList.remove("hidden");
+  appRoot.classList.add("hidden");
+  loginPanel?.classList.toggle("hidden", step !== "password");
+  mfaVerifyPanel?.classList.toggle("hidden", step !== "mfa-verify");
+  mfaSetupPanel?.classList.toggle("hidden", step !== "mfa-setup");
+  mfaRecoveryPanel?.classList.toggle("hidden", step !== "mfa-recovery");
+  loginMessage.textContent = step === "password" ? "" : loginMessage.textContent;
+  if (step === "mfa-verify") {
+    mfaMessage.textContent = details.message || "Enter the code from your authenticator app or a recovery code.";
+    mfaVerifyForm?.reset();
+  }
+  if (step === "mfa-setup") {
+    if (mfaManualEntryKey) mfaManualEntryKey.value = details.manualEntryKey || "";
+    if (mfaOtpAuthUri) mfaOtpAuthUri.value = details.otpauthUrl || "";
+    mfaSetupMessage.textContent = details.message || "Add this secret to your authenticator app, then enter the 6-digit code.";
+    mfaSetupForm?.reset();
+  }
+  if (step === "mfa-recovery") {
+    const codes = details.recoveryCodes || [];
+    if (mfaRecoveryCodesList) {
+      mfaRecoveryCodesList.innerHTML = codes.map((code) => `<li><code>${escapeHtml(code)}</code></li>`).join("");
+    }
+  }
+}
+
+function resetSensitiveState() {
+  clearInactivityTimer();
   state.currentUser = null;
   state.clients = [];
+  state.programs = [];
+  state.behaviors = [];
   state.sessions = [];
-  showLogin();
+  state.auditLog = [];
+  state.users = [];
+  state.selectedSessionId = null;
+  state.selectedSoapEntryKey = "";
+  state.activeClientId = "";
+  state.activeDomain = "";
+  state.activeGraphDomain = "";
+  state.activePlanDomain = "";
+  state.activeSoapHistoryTab = "97153";
+  state.loadedSessionDomainKeys = [];
+  state.authChallenge = null;
+  state.authFlow = "password";
+  state.draftCache = { intake: {}, session: {} };
+  currentUserLabel.textContent = "";
+  clearSensitiveDom();
+  appRoot.classList.add("hidden");
+  try {
+    window.history.replaceState({}, "", "/");
+  } catch {}
+}
+
+function handleAuthFailureEvent(detail = {}) {
+  resetSensitiveState();
+  const message = detail.code === "SESSION_TIMEOUT"
+    ? "Session timed out due to inactivity."
+    : detail.code === "SESSION_EXPIRED"
+      ? "Session expired. Please sign in again."
+      : detail.errors?.[0] || "";
+  showLogin(message);
+}
+
+function clearSensitiveDom() {
+  const soapHistoryList = document.querySelector("#soap-history-list");
+  const graphLegends = document.querySelectorAll(".graph-legend");
+  [
+    soapEditor,
+    note97151Editor,
+    planNote97151Editor,
+    note97155Editor,
+    rbtWrittenFeedback
+  ].forEach((field) => {
+    if (field) field.value = "";
+  });
+  [
+    selectedSoapNoteTitle,
+    currentUserLabel,
+    soapClientSummary,
+    planClientSummary,
+    parentClientSummary,
+    intakeSummary,
+    graphsMessage,
+    healthSummary,
+    billingSummary,
+    clientManagementSummary,
+    reportClientSummary,
+    workflowClientSummary,
+    funderExportStatus
+  ].forEach((node) => {
+    if (node) node.textContent = "";
+  });
+  [
+    programList,
+    behaviorList,
+    parentGoalList,
+    targetStatusTabs,
+    domainTabs,
+    planDomainTabs,
+    planReview,
+    clientDocumentList,
+    auditLogTable,
+    billingTable,
+    healthReportTable,
+    soapHistoryList,
+    reportPreview,
+    workflowBoard,
+    skillCharts,
+    behaviorCharts
+  ].forEach((node) => {
+    if (node) node.innerHTML = "";
+  });
+  graphLegends.forEach((node) => {
+    node.innerHTML = "";
+  });
+  if (programGraphModalCanvas) {
+    const ctx = programGraphModalCanvas.getContext("2d");
+    ctx?.clearRect(0, 0, programGraphModalCanvas.width, programGraphModalCanvas.height);
+  }
 }
 
 async function handleCreateUser(event) {
@@ -577,9 +823,15 @@ async function saveUserRow(row, resetPassword, password = "") {
   }
 }
 
-function showLogin() {
+function showLogin(message = "") {
+  state.authFlow = "password";
   loginScreen.classList.remove("hidden");
   appRoot.classList.add("hidden");
+  loginPanel?.classList.remove("hidden");
+  mfaVerifyPanel?.classList.add("hidden");
+  mfaSetupPanel?.classList.add("hidden");
+  mfaRecoveryPanel?.classList.add("hidden");
+  loginMessage.textContent = message;
 }
 
 function showApp() {
@@ -1300,22 +1552,17 @@ function intakeDraftPayload() {
 function saveIntakeDraft() {
   const clientId = intakeClientSelect.value || currentClient()?.id;
   if (!clientId || !intakeForm) return;
-  window.localStorage.setItem(intakeDraftStorageKey(clientId), JSON.stringify(intakeDraftPayload()));
+  state.draftCache.intake[clientId] = intakeDraftPayload();
 }
 
 function loadIntakeDraft(clientId) {
   if (!clientId) return null;
-  try {
-    const raw = window.localStorage.getItem(intakeDraftStorageKey(clientId));
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
+  return structuredClone(state.draftCache.intake[clientId] || null);
 }
 
 function clearIntakeDraft(clientId) {
   if (!clientId) return;
-  window.localStorage.removeItem(intakeDraftStorageKey(clientId));
+  delete state.draftCache.intake[clientId];
 }
 
 function sessionDraftStorageKey(clientId) {
@@ -1342,22 +1589,17 @@ function saveSessionDraft() {
     clearSessionDraft(clientId);
     return;
   }
-  window.localStorage.setItem(sessionDraftStorageKey(clientId), JSON.stringify(draft));
+  state.draftCache.session[clientId] = structuredClone(draft);
 }
 
 function loadSessionDraft(clientId) {
   if (!clientId) return null;
-  try {
-    const raw = window.localStorage.getItem(sessionDraftStorageKey(clientId));
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
+  return structuredClone(state.draftCache.session[clientId] || null);
 }
 
 function clearSessionDraft(clientId) {
   if (!clientId) return;
-  window.localStorage.removeItem(sessionDraftStorageKey(clientId));
+  delete state.draftCache.session[clientId];
 }
 
 function restoreSessionDraft() {

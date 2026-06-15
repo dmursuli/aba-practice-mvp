@@ -22,6 +22,59 @@
         <button type="submit" class="primary-button">Sign in</button>
         <p class="form-message" id="login-message" role="status"></p>
       </form>
+      <section id="mfa-verify-panel" class="login-panel hidden">
+        <p class="eyebrow">Security Check</p>
+        <h1>Verify your sign-in</h1>
+        <p class="muted">Enter a 6-digit code from your authenticator app or a recovery code.</p>
+        <form id="mfa-verify-form">
+          <label>
+            Authenticator code
+            <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
+          </label>
+          <label>
+            Recovery code
+            <input type="text" name="recoveryCode" autocomplete="one-time-code" placeholder="Optional recovery code">
+          </label>
+          <div class="button-row">
+            <button type="submit" class="primary-button">Verify</button>
+            <button type="button" class="secondary-button" data-auth-cancel>Back to sign in</button>
+          </div>
+          <p class="form-message" id="mfa-message" role="status"></p>
+        </form>
+      </section>
+      <section id="mfa-setup-panel" class="login-panel hidden">
+        <p class="eyebrow">Security Setup</p>
+        <h1>Set up multi-factor authentication</h1>
+        <p class="muted">Add this secret to your authenticator app, then enter the current 6-digit code to finish setup.</p>
+        <label>
+          Manual entry key
+          <textarea id="mfa-manual-entry-key" rows="2" readonly></textarea>
+        </label>
+        <label>
+          Authenticator app URI
+          <textarea id="mfa-otpauth-uri" rows="3" readonly></textarea>
+        </label>
+        <form id="mfa-setup-form">
+          <label>
+            Verification code
+            <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" required>
+          </label>
+          <div class="button-row">
+            <button type="submit" class="primary-button">Complete MFA setup</button>
+            <button type="button" class="secondary-button" data-auth-cancel>Cancel</button>
+          </div>
+          <p class="form-message" id="mfa-setup-message" role="status"></p>
+        </form>
+      </section>
+      <section id="mfa-recovery-panel" class="login-panel hidden">
+        <p class="eyebrow">Recovery Codes</p>
+        <h1>Save these recovery codes</h1>
+        <p class="muted">Store these in a secure password manager. Each code can be used once if your authenticator app is unavailable.</p>
+        <ul id="mfa-recovery-codes" class="recovery-code-list"></ul>
+        <div class="button-row">
+          <button type="button" class="primary-button" id="mfa-recovery-continue">I saved these codes</button>
+        </div>
+      </section>
     </main>
 
     <div id="app-root" class="hidden">

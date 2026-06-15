@@ -6,13 +6,17 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "test": "node --test tests/*.test.mjs",
     "backup": "node scripts/backup-data.mjs",
+    "recover:notes": "node scripts/recover-note-history.mjs",
     "migrate:postgres": "node scripts/migrate-json-to-postgres.mjs",
     "check": "node --check server.js && node --check public/app.js && node --check public/charts.js && node --check public/soap.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.922.0",
-    "pg": "^8.16.3"
+    "otpauth": "^9.5.1",
+    "pg": "^8.16.3",
+    "playwright": "^1.60.0"
   },
   "engines": {
     "node": ">=18"

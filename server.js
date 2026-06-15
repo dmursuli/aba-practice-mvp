@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import * as OTPAuth from "otpauth";
 import {
   duplicateBehaviorIds,
   duplicateTargetIdsFromPrograms,
@@ -14,7 +15,7 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(root, "public");
 const dataDir = join(root, "data");
 const uploadsDir = join(root, "uploads");
-const dbPath = join(dataDir, "db.json");
+const dbPath = process.env.DB_PATH || join(dataDir, "db.json");
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || "127.0.0.1";
 const dataStore = process.env.DATA_STORE || (process.env.DB_HOST || process.env.DATABASE_URL ? "postgres" : "json");
@@ -22,7 +23,11 @@ const documentStore = process.env.DOCUMENT_STORE || (process.env.S3_BUCKET ? "s3
 const sessions = new Map();
 const AGENCIES = ["Triumph ABA", "One Clinical Care"];
 const DEFAULT_AGENCY = AGENCIES[0];
-const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
+const SESSION_ABSOLUTE_TIMEOUT_SECONDS = Number(process.env.SESSION_ABSOLUTE_TIMEOUT_SECONDS || (60 * 60 * 8));
+const SESSION_INACTIVITY_TIMEOUT_SECONDS = Number(process.env.SESSION_INACTIVITY_TIMEOUT_SECONDS || (60 * 15));
+const SESSION_MAX_AGE_SECONDS = SESSION_ABSOLUTE_TIMEOUT_SECONDS;
+const MFA_PENDING_TIMEOUT_SECONDS = Number(process.env.MFA_PENDING_TIMEOUT_SECONDS || (60 * 10));
+const MFA_ISSUER = process.env.MFA_ISSUER || "Triumph Workspace";
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -51,6 +56,7 @@ async function readDbWithUsers() {
   let changed = ensureDefaultUsers(db);
   if (ensureAgencyScoping(db)) changed = true;
   if (ensureClientNoteHistories(db)) changed = true;
+  if (ensureUserSecurityDefaults(db)) changed = true;
   if (changed) await writeDb(db);
   return db;
 }
@@ -97,6 +103,7 @@ async function readBody(req) {
 
 function sendJson(res, status, payload) {
   applySecurityHeaders(res);
+  applyNoStoreHeaders(res);
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
 }
@@ -119,6 +126,12 @@ function applySecurityHeaders(res) {
   if (process.env.NODE_ENV === "production") {
     res.setHeader("strict-transport-security", "max-age=31536000; includeSubDomains");
   }
+}
+
+function applyNoStoreHeaders(res) {
+  res.setHeader("cache-control", "no-store, no-cache, must-revalidate");
+  res.setHeader("pragma", "no-cache");
+  res.setHeader("expires", "0");
 }
 
 function validateSession(payload, db) {
@@ -254,6 +267,7 @@ async function serveStatic(req, res) {
   try {
     const body = await readFile(filePath);
     applySecurityHeaders(res);
+    if (extname(filePath) === ".html") applyNoStoreHeaders(res);
     res.writeHead(200, { "content-type": contentTypes[extname(filePath)] || "application/octet-stream" });
     res.end(body);
   } catch {
@@ -285,9 +299,9 @@ async function serveUpload(req, res, db, user) {
       const { getS3Object } = await import("./lib/s3-storage.mjs");
       const object = await getS3Object(s3Config(), safePath);
       applySecurityHeaders(res);
+      applyNoStoreHeaders(res);
       res.writeHead(200, {
-        "content-type": object.ContentType || contentTypes[extname(safePath)] || "application/octet-stream",
-        "cache-control": "private, max-age=300"
+        "content-type": object.ContentType || contentTypes[extname(safePath)] || "application/octet-stream"
       });
       for await (const chunk of object.Body) res.write(chunk);
       res.end();
@@ -309,6 +323,7 @@ async function serveUpload(req, res, db, user) {
   try {
     const body = await readFile(filePath);
     applySecurityHeaders(res);
+    applyNoStoreHeaders(res);
     res.writeHead(200, { "content-type": contentTypes[extname(filePath)] || "application/octet-stream" });
     res.end(body);
   } catch {
@@ -374,7 +389,12 @@ function ensureAgencyScoping(db) {
   return changed;
 }
 
-const server = createServer(async (req, res) => {
+export function resetRuntimeState() {
+  sessions.clear();
+}
+
+export function createAppServer() {
+  return createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
@@ -384,42 +404,203 @@ const server = createServer(async (req, res) => {
       const username = String(payload.username || "").trim().toLowerCase();
       const user = (db.users || []).find((item) => item.username === username && item.active !== false);
       if (!user || !verifyPassword(String(payload.password || ""), user.passwordHash)) {
-        sendJson(res, 401, { errors: ["Invalid username or password."] });
+        logAudit(db, req, user, "failed-login", {
+          details: { usernameAttempt: username }
+        });
+        await writeDb(db);
+        authFailure(res, 401, "AUTH_INVALID", "Invalid username or password.");
         return;
       }
       const token = crypto.randomUUID();
-      sessions.set(token, { userId: user.id, createdAt: Date.now() });
+      if (requiresMfa(user)) {
+        if (user.mfaEnabled) {
+          sessions.set(token, createSessionRecord(user.id, "pending-mfa-verify"));
+          sendAuthCookie(res, token);
+          sendJson(res, 200, {
+            mfaRequired: true,
+            setupRequired: false,
+            user: publicUser(user),
+            message: "Enter the code from your authenticator app or a recovery code to continue."
+          });
+          return;
+        }
+        const pendingSecret = createPendingMfaSecret(user);
+        sessions.set(token, createSessionRecord(user.id, "pending-mfa-setup", {
+          pendingMfaSecret: pendingSecret.base32
+        }));
+        sendAuthCookie(res, token);
+        sendJson(res, 200, {
+          mfaRequired: true,
+          setupRequired: true,
+          user: publicUser(user),
+          manualEntryKey: pendingSecret.base32,
+          otpauthUrl: pendingSecret.otpauthUrl,
+          message: "MFA setup is required before accessing clinical data."
+        });
+        return;
+      }
+      sessions.set(token, createSessionRecord(user.id, "authenticated", {
+        mfaVerifiedAt: new Date().toISOString()
+      }));
       sendAuthCookie(res, token);
+      user.lastLoginAt = new Date().toISOString();
+      logAudit(db, req, user, "login", { details: { mfaEnabled: false } });
+      await writeDb(db);
       sendJson(res, 200, { user: publicUser(user) });
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+      const db = await readDbWithUsers();
       const token = sessionToken(req);
+      const payload = await readBody(req).catch(() => ({}));
+      const session = token ? sessions.get(token) : null;
+      const user = session ? (db.users || []).find((item) => item.id === session.userId) : null;
+      if (session && user) {
+        logAudit(db, req, user, payload.reason === "timeout" ? "session-timeout" : "logout", {
+          details: { stage: session.stage || "authenticated" }
+        });
+        await writeDb(db);
+      }
       if (token) sessions.delete(token);
       clearAuthCookie(res);
       sendJson(res, 200, { ok: true });
       return;
     }
 
-    if (req.method === "GET" && url.pathname === "/api/auth/me") {
+    if (req.method === "POST" && url.pathname === "/api/auth/mfa/setup/verify") {
       const db = await readDbWithUsers();
-      const user = currentUser(req, db);
-      if (!user) {
-        sendJson(res, 401, { errors: ["Not signed in."] });
+      const state = sessionStatus(req, db, { requireAuthenticatedMfa: false });
+      if (state.status !== "ok" || state.session.stage !== "pending-mfa-setup") {
+        authFailure(res, 401, "MFA_SETUP_REQUIRED", "Sign in again to complete MFA setup.");
         return;
       }
-      sendJson(res, 200, { user: publicUser(user) });
+      const payload = await readBody(req);
+      if (!verifyTotpCode(state.session.pendingMfaSecret, payload.code)) {
+        logAudit(db, req, state.user, "mfa-challenge-failed", {
+          details: { stage: "setup" }
+        });
+        await writeDb(db);
+        authFailure(res, 401, "MFA_CODE_INVALID", "The authenticator code is not valid.");
+        return;
+      }
+      const recoveryCodes = newRecoveryCodes();
+      state.user.mfaEnabled = true;
+      state.user.mfaSecretEncrypted = encryptMfaSecret(state.session.pendingMfaSecret);
+      state.user.mfaRecoveryCodeHashes = hashRecoveryCodes(recoveryCodes);
+      state.user.mfaEnrolledAt = new Date().toISOString();
+      state.user.lastLoginAt = new Date().toISOString();
+      const nextToken = crypto.randomUUID();
+      sessions.delete(state.token);
+      sessions.set(nextToken, createSessionRecord(state.user.id, "authenticated", {
+        mfaVerifiedAt: new Date().toISOString()
+      }));
+      sendAuthCookie(res, nextToken);
+      logAudit(db, req, state.user, "login", { details: { mfaEnabled: true, enrollmentCompleted: true } });
+      await writeDb(db);
+      sendJson(res, 200, {
+        user: publicUser(state.user),
+        recoveryCodes
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/mfa/verify") {
+      const db = await readDbWithUsers();
+      const state = sessionStatus(req, db, { requireAuthenticatedMfa: false });
+      if (state.status !== "ok" || state.session.stage !== "pending-mfa-verify") {
+        authFailure(res, 401, "MFA_REQUIRED", "Sign in again to complete MFA verification.");
+        return;
+      }
+      const payload = await readBody(req);
+      const totpValid = verifyTotpCode(decryptMfaSecret(state.user.mfaSecretEncrypted), payload.code);
+      const recoveryResult = totpValid
+        ? { matched: false, hashes: state.user.mfaRecoveryCodeHashes || [] }
+        : verifyRecoveryCode(payload.recoveryCode || payload.code, state.user.mfaRecoveryCodeHashes || []);
+      if (!totpValid && !recoveryResult.matched) {
+        logAudit(db, req, state.user, "mfa-challenge-failed", {
+          details: { stage: "verify" }
+        });
+        await writeDb(db);
+        authFailure(res, 401, "MFA_CODE_INVALID", "The authenticator or recovery code is not valid.");
+        return;
+      }
+      if (recoveryResult.matched) {
+        state.user.mfaRecoveryCodeHashes = recoveryResult.hashes;
+      }
+      state.user.lastLoginAt = new Date().toISOString();
+      const nextToken = crypto.randomUUID();
+      sessions.delete(state.token);
+      sessions.set(nextToken, createSessionRecord(state.user.id, "authenticated", {
+        mfaVerifiedAt: new Date().toISOString()
+      }));
+      sendAuthCookie(res, nextToken);
+      logAudit(db, req, state.user, "login", {
+        details: { mfaEnabled: true, recoveryCodeUsed: recoveryResult.matched }
+      });
+      await writeDb(db);
+      sendJson(res, 200, { user: publicUser(state.user) });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/auth/me") {
+      const db = await readDbWithUsers();
+      const state = sessionStatus(req, db);
+      if (state.status === "expired") {
+        logAudit(db, req, state.user, "session-timeout", {
+          details: { reason: state.reason }
+        });
+        await writeDb(db);
+        authFailure(res, 401, state.reason === "inactive" ? "SESSION_TIMEOUT" : "SESSION_EXPIRED", "Session expired. Please sign in again.");
+        return;
+      }
+      if (state.status === "mfa-setup-required") {
+        const pendingSecret = state.session.pendingMfaSecret;
+        const pendingTotp = new OTPAuth.TOTP({
+          issuer: MFA_ISSUER,
+          label: `${MFA_ISSUER}:${state.user.username}`,
+          algorithm: "SHA1",
+          digits: 6,
+          period: 30,
+          secret: OTPAuth.Secret.fromBase32(pendingSecret)
+        });
+        authFailure(res, 401, "MFA_SETUP_REQUIRED", "MFA setup is required before accessing clinical data.", {
+          mfaRequired: true,
+          setupRequired: true,
+          user: publicUser(state.user),
+          manualEntryKey: pendingSecret,
+          otpauthUrl: pendingTotp.toString()
+        });
+        return;
+      }
+      if (state.status === "mfa-required") {
+        authFailure(res, 401, "MFA_REQUIRED", "MFA verification is required before accessing clinical data.", {
+          mfaRequired: true,
+          setupRequired: false,
+          user: publicUser(state.user)
+        });
+        return;
+      }
+      if (state.status !== "ok") {
+        authFailure(res, 401, "AUTH_REQUIRED", "Not signed in.");
+        return;
+      }
+      sendJson(res, 200, { user: publicUser(state.user) });
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/data") {
       const db = await readDbWithUsers();
-      const user = currentUser(req, db);
-      if (!user) {
-        sendJson(res, 401, { errors: ["Not signed in."] });
+      const state = sessionStatus(req, db);
+      if (state.status !== "ok") {
+        requireAuth(req, res, db, state);
         return;
       }
+      const user = state.user;
+      logAudit(db, req, user, "clinical-data-accessed", {
+        details: { clientsVisible: visibleClients(db, user).length }
+      });
+      await writeDb(db);
       sendJson(res, 200, redactDb(db, user));
       return;
     }
@@ -564,7 +745,7 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/clients") {
       const db = await readDbWithUsers();
-      if (!requireRole(req, res, db, ["admin"])) return;
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
       const payload = await readBody(req);
       const actor = currentUser(req, db);
       const name = String(payload.name || "").trim();
@@ -973,11 +1154,16 @@ const server = createServer(async (req, res) => {
   } catch (error) {
     sendJson(res, 500, { errors: [error.message || "Unexpected server error."] });
   }
-});
+  });
+}
 
-server.listen(port, host, () => {
-  console.log(`ABA practice MVP running at http://localhost:${port}`);
-});
+const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+if (isDirectRun) {
+  const server = createAppServer();
+  server.listen(port, host, () => {
+    console.log(`ABA practice MVP running at http://localhost:${port}`);
+  });
+}
 
 function ensureDefaultUsers(db) {
   if (Array.isArray(db.users) && db.users.length) return false;
@@ -1003,6 +1189,11 @@ function defaultUser(username, name, role, password) {
     isMasterAdmin: role === "admin",
     passwordHash: hashPassword(password),
     active: true,
+    mfaEnabled: false,
+    mfaSecretEncrypted: "",
+    mfaRecoveryCodeHashes: [],
+    mfaEnrolledAt: "",
+    lastLoginAt: "",
     createdAt: new Date().toISOString()
   };
 }
@@ -1031,6 +1222,11 @@ function createUserRecord(payload, existingUsers, actor = null) {
     isMasterAdmin: allowMasterAdmin,
     passwordHash: hashPassword(password),
     active: true,
+    mfaEnabled: false,
+    mfaSecretEncrypted: "",
+    mfaRecoveryCodeHashes: [],
+    mfaEnrolledAt: "",
+    lastLoginAt: "",
     createdAt: new Date().toISOString()
   };
 }
@@ -1080,16 +1276,165 @@ function verifyPassword(password, stored) {
   return crypto.timingSafeEqual(Buffer.from(hash, "hex"), candidate);
 }
 
-function currentUser(req, db) {
+function requiresMfa(user) {
+  return ["admin", "bcba", "rbt", "read-only"].includes(user?.role);
+}
+
+function encryptionSecret() {
+  const configured = process.env.MFA_ENCRYPTION_KEY || "";
+  if (!configured && process.env.NODE_ENV === "production") {
+    throw new Error("MFA_ENCRYPTION_KEY must be set in production.");
+  }
+  return configured || "local-dev-mfa-encryption-key";
+}
+
+function encryptionKey() {
+  return crypto.createHash("sha256").update(encryptionSecret()).digest();
+}
+
+function encryptMfaSecret(secret) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(String(secret), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString("hex")}:${tag.toString("hex")}:${encrypted.toString("hex")}`;
+}
+
+function decryptMfaSecret(payload) {
+  const [ivHex, tagHex, dataHex] = String(payload || "").split(":");
+  if (!ivHex || !tagHex || !dataHex) return "";
+  const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey(), Buffer.from(ivHex, "hex"));
+  decipher.setAuthTag(Buffer.from(tagHex, "hex"));
+  return Buffer.concat([decipher.update(Buffer.from(dataHex, "hex")), decipher.final()]).toString("utf8");
+}
+
+function newRecoveryCodes(count = 8) {
+  return Array.from({ length: count }, () => crypto.randomBytes(4).toString("hex").toUpperCase());
+}
+
+function hashRecoveryCodes(codes = []) {
+  return codes.map((code) => hashPassword(code));
+}
+
+function verifyRecoveryCode(code, hashes = []) {
+  const normalized = String(code || "").trim().toUpperCase();
+  if (!normalized) return { matched: false, hashes };
+  const index = hashes.findIndex((hash) => verifyPassword(normalized, hash));
+  if (index < 0) return { matched: false, hashes };
+  return {
+    matched: true,
+    hashes: hashes.filter((_, hashIndex) => hashIndex !== index)
+  };
+}
+
+function createPendingMfaSecret(user) {
+  const secret = new OTPAuth.Secret();
+  const totp = new OTPAuth.TOTP({
+    issuer: MFA_ISSUER,
+    label: `${MFA_ISSUER}:${user.username}`,
+    algorithm: "SHA1",
+    digits: 6,
+    period: 30,
+    secret
+  });
+  return {
+    base32: secret.base32,
+    otpauthUrl: totp.toString()
+  };
+}
+
+function verifyTotpCode(secretBase32, code) {
+  const normalized = String(code || "").trim().replace(/\s+/g, "");
+  if (!normalized) return false;
+  const totp = new OTPAuth.TOTP({
+    issuer: MFA_ISSUER,
+    algorithm: "SHA1",
+    digits: 6,
+    period: 30,
+    secret: OTPAuth.Secret.fromBase32(secretBase32)
+  });
+  return totp.validate({ token: normalized, window: 1 }) !== null;
+}
+
+function ensureUserSecurityDefaults(db) {
+  let changed = false;
+  db.users = Array.isArray(db.users) ? db.users : [];
+  db.users.forEach((user) => {
+    if (typeof user.mfaEnabled !== "boolean") {
+      user.mfaEnabled = false;
+      changed = true;
+    }
+    if (!Array.isArray(user.mfaRecoveryCodeHashes)) {
+      user.mfaRecoveryCodeHashes = [];
+      changed = true;
+    }
+    if (typeof user.mfaSecretEncrypted !== "string") {
+      user.mfaSecretEncrypted = "";
+      changed = true;
+    }
+    if (typeof user.mfaEnrolledAt !== "string") {
+      user.mfaEnrolledAt = "";
+      changed = true;
+    }
+    if (typeof user.lastLoginAt !== "string") {
+      user.lastLoginAt = "";
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function authFailure(res, status, code, message, extra = {}) {
+  if (status === 401) clearAuthCookie(res);
+  sendJson(res, status, { code, errors: [message], ...extra });
+}
+
+function createSessionRecord(userId, stage, extra = {}) {
+  const now = Date.now();
+  return {
+    userId,
+    createdAt: now,
+    lastSeenAt: now,
+    stage,
+    ...extra
+  };
+}
+
+function sessionStatus(req, db, { requireAuthenticatedMfa = true, touch = true } = {}) {
   const token = sessionToken(req);
   const session = token ? sessions.get(token) : null;
-  if (!session) return null;
+  if (!session) return { status: "missing" };
   const user = (db.users || []).find((item) => item.id === session.userId && item.active !== false);
   if (!user) {
     sessions.delete(token);
-    return null;
+    return { status: "invalid-user" };
   }
-  return user;
+  const now = Date.now();
+  const maxAgeSeconds = session.stage === "authenticated" ? SESSION_ABSOLUTE_TIMEOUT_SECONDS : MFA_PENDING_TIMEOUT_SECONDS;
+  if (now - Number(session.createdAt || 0) > maxAgeSeconds * 1000) {
+    sessions.delete(token);
+    return { status: "expired", reason: "absolute", user };
+  }
+  if (session.stage === "authenticated" && now - Number(session.lastSeenAt || 0) > SESSION_INACTIVITY_TIMEOUT_SECONDS * 1000) {
+    sessions.delete(token);
+    return { status: "expired", reason: "inactive", user };
+  }
+  if (touch) session.lastSeenAt = now;
+  if (!requireAuthenticatedMfa) {
+    return { status: "ok", token, session, user };
+  }
+  if (session.stage === "pending-mfa-setup") {
+    return { status: "mfa-setup-required", token, session, user };
+  }
+  if (session.stage !== "authenticated") {
+    return { status: "mfa-required", token, session, user };
+  }
+  return { status: "ok", token, session, user };
+}
+
+function currentUser(req, db) {
+  const state = sessionStatus(req, db);
+  return state.status === "ok" ? state.user : null;
 }
 
 function isMasterAdmin(user) {
@@ -1112,18 +1457,29 @@ function parseCookies(cookieHeader) {
   }, {});
 }
 
-function requireAuth(req, res, db) {
-  if (currentUser(req, db)) return true;
-  sendJson(res, 401, { errors: ["Not signed in."] });
+function requireAuth(req, res, db, state = null) {
+  state = state || sessionStatus(req, db);
+  if (state.status === "ok") return true;
+  if (state.status === "expired") {
+    authFailure(res, 401, state.reason === "inactive" ? "SESSION_TIMEOUT" : "SESSION_EXPIRED", "Session expired. Please sign in again.");
+    return false;
+  }
+  if (state.status === "mfa-setup-required") {
+    authFailure(res, 401, "MFA_SETUP_REQUIRED", "MFA setup is required before accessing clinical data.");
+    return false;
+  }
+  if (state.status === "mfa-required") {
+    authFailure(res, 401, "MFA_REQUIRED", "MFA verification is required before accessing clinical data.");
+    return false;
+  }
+  authFailure(res, 401, "AUTH_REQUIRED", "Not signed in.");
   return false;
 }
 
 function requireRole(req, res, db, roles) {
-  const user = currentUser(req, db);
-  if (!user) {
-    sendJson(res, 401, { errors: ["Not signed in."] });
-    return false;
-  }
+  const state = sessionStatus(req, db);
+  const user = state.status === "ok" ? state.user : null;
+  if (!user) return requireAuth(req, res, db);
   if (!roles.includes(user.role)) {
     sendJson(res, 403, { errors: ["Your role cannot perform this action."] });
     return false;
@@ -1174,9 +1530,13 @@ function publicUser(user) {
     agency: normalizeAgency(user.agency),
     isMasterAdmin: isMasterAdmin(user),
     active: user.active !== false,
+    mfaEnabled: Boolean(user.mfaEnabled),
+    mfaRequired: requiresMfa(user),
+    mfaEnrolledAt: user.mfaEnrolledAt || "",
     createdAt: user.createdAt || "",
     updatedAt: user.updatedAt || "",
-    passwordUpdatedAt: user.passwordUpdatedAt || ""
+    passwordUpdatedAt: user.passwordUpdatedAt || "",
+    lastLoginAt: user.lastLoginAt || ""
   };
 }
 
@@ -1244,9 +1604,23 @@ function logAudit(db, req, user, action, options = {}) {
 function cleanAuditDetails(details) {
   return Object.entries(details).reduce((clean, [key, value]) => {
     if (value === undefined || value === null) return clean;
-    clean[key] = value;
+    clean[key] = redactAuditValue(key, value);
     return clean;
   }, {});
+}
+
+function redactAuditValue(key, value) {
+  if (Array.isArray(value)) return value.map((item) => redactAuditValue(key, item));
+  if (value && typeof value === "object") {
+    return Object.entries(value).reduce((nested, [nestedKey, nestedValue]) => {
+      nested[nestedKey] = redactAuditValue(nestedKey, nestedValue);
+      return nested;
+    }, {});
+  }
+  if (/(note|soap|summary|recommendation|background|observation|medical)/i.test(String(key))) {
+    return typeof value === "string" ? `[REDACTED ${String(value).length} chars]` : "[REDACTED]";
+  }
+  return value;
 }
 
 function userAuditSnapshot(user) {
@@ -1326,8 +1700,7 @@ function auditScalar(value) {
 function soapNoteAuditSnapshot(session) {
   return {
     finalized: Boolean(session.finalized),
-    noteLength: String(session.soapNote || "").length,
-    notePreview: String(session.soapNote || "").slice(0, 180)
+    noteLength: String(session.soapNote || "").length
   };
 }
 
@@ -1495,6 +1868,7 @@ function sanitizeClientProfile(payload) {
       fileName: text(payload.assessmentFileName),
       notes: text(payload.assessmentNotes)
     },
+    funderReport: sanitizeFunderReport(payload.funderReport || {}),
     masteryCriteria: {
       thresholdPercent: sanitizeNumber(payload.masteryThresholdPercent, 90, 1, 100),
       consecutiveSessions: sanitizeNumber(payload.masteryConsecutiveSessions, 2, 1, 10),
@@ -1504,6 +1878,54 @@ function sanitizeClientProfile(payload) {
     parentTrainingGoals: sanitizeParentGoals(payload.parentTrainingGoals || []),
     intakeInterview: sanitizeIntakeInterview(payload.intakeInterview || {}),
     documents: Array.isArray(payload.documents) ? payload.documents : []
+  };
+}
+
+function sanitizeFunderReport(payload) {
+  const textField = (key) => text(payload[key]);
+  return {
+    startDate: textField("startDate"),
+    endDate: textField("endDate"),
+    preparedBy: textField("preparedBy"),
+    credential: textField("credential"),
+    background: textField("background"),
+    medicalConcerns: textField("medicalConcerns"),
+    reasonReferral: textField("reasonReferral"),
+    impactBehaviors: textField("impactBehaviors"),
+    familyStrengths: textField("familyStrengths"),
+    initialObservations: textField("initialObservations"),
+    indirectAssessmentType: textField("indirectAssessmentType"),
+    assessmentConductedBy: textField("assessmentConductedBy"),
+    assessmentDate: textField("assessmentDate"),
+    behaviorSupportPlan: textField("behaviorSupportPlan"),
+    standardizedAssessmentType: textField("standardizedAssessmentType"),
+    standardizedConductedBy: textField("standardizedConductedBy"),
+    standardizedAssessmentDate: textField("standardizedAssessmentDate"),
+    progressSummary: textField("progressSummary"),
+    instructionalGoalsInfo: textField("instructionalGoalsInfo"),
+    generalizationMaintenance: textField("generalizationMaintenance"),
+    barriersToTreatmentSummary: textField("barriersToTreatmentSummary"),
+    dischargeCriteria: textField("dischargeCriteria"),
+    dischargeCommunication: textField("dischargeCommunication"),
+    dischargeSocialization: textField("dischargeSocialization"),
+    dischargeAdaptive: textField("dischargeAdaptive"),
+    dischargeExecutive: textField("dischargeExecutive"),
+    recommendations: textField("recommendations"),
+    medicalNecessity: textField("medicalNecessity"),
+    fadePlanRows: Array.isArray(payload.fadePlanRows) ? payload.fadePlanRows.map((row) => ({
+      phase: text(row.phase),
+      actionStep: text(row.actionStep),
+      criteria: text(row.criteria),
+      timeFrame: text(row.timeFrame),
+      bcbaReduction: text(row.bcbaReduction),
+      rbtReduction: text(row.rbtReduction)
+    })) : [],
+    serviceHours: Array.isArray(payload.serviceHours) ? payload.serviceHours.map((row) => ({
+      serviceCode: text(row.serviceCode),
+      provider: text(row.provider),
+      hours: text(row.hours),
+      setting: text(row.setting)
+    })) : []
   };
 }
 

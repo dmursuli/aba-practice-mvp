@@ -7,9 +7,29 @@ export async function login(username, password) {
   return parseResponse(response);
 }
 
-export async function logout() {
+export async function verifyMfa(code, recoveryCode = "") {
+  const response = await fetch("/api/auth/mfa/verify", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code, recoveryCode })
+  });
+  return parseResponse(response);
+}
+
+export async function completeMfaSetup(code) {
+  const response = await fetch("/api/auth/mfa/setup/verify", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code })
+  });
+  return parseResponse(response);
+}
+
+export async function logout(reason = "") {
   const response = await fetch("/api/auth/logout", {
-    method: "POST"
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(reason ? { reason } : {})
   });
   return parseResponse(response);
 }
@@ -177,7 +197,18 @@ async function parseResponse(response) {
   const payload = await response.json();
   if (!response.ok) {
     const message = payload.errors?.join(" ") || "Request failed.";
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    error.code = payload.code || "";
+    error.details = payload;
+    if (
+      response.status === 401
+      && typeof window !== "undefined"
+      && ["AUTH_REQUIRED", "SESSION_TIMEOUT", "SESSION_EXPIRED", "MFA_REQUIRED", "MFA_SETUP_REQUIRED"].includes(payload.code || "")
+    ) {
+      window.dispatchEvent(new CustomEvent("aba-auth-error", { detail: payload }));
+    }
+    throw error;
   }
   return payload;
 }
