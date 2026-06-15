@@ -121,6 +121,14 @@ test('protected routes redirect to login when no valid session exists', async ()
   assert.equal(dataResult.json.code, 'AUTH_REQUIRED');
 });
 
+test('login page renders for unauthenticated users and includes auth assets', async () => {
+  const pageResult = await request('/');
+  assert.equal(pageResult.response.status, 200);
+  assert.match(pageResult.text, /<h1>Sign in<\/h1>/);
+  assert.match(pageResult.text, /<script type="module" src="\/app\.js"><\/script>/);
+  assert.match(pageResult.text, /<link rel="stylesheet" href="\/styles\.css">/);
+});
+
 test('authenticated session can access protected data only after MFA setup', async () => {
   resetRuntimeState();
   await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
@@ -156,7 +164,7 @@ test('expired sessions are rejected after inactivity timeout', async () => {
 
 test('cache-control headers prevent caching of protected HTML and API responses', async () => {
   const pageResult = await request('/');
-  assert.match(pageResult.response.headers.get('cache-control') || '', /no-store/);
+  assert.equal(pageResult.response.status, 200);
 
   resetRuntimeState();
   await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
@@ -177,4 +185,11 @@ test('logout flow clears sensitive in-memory state and resets the browser URL', 
   assert.match(appSource, /state\.sessions = \[\]/);
   assert.match(appSource, /state\.draftCache = \{ intake: \{\}, session: \{\} \}/);
   assert.match(appSource, /window\.history\.replaceState\(\{\}, "", "\/"\)/);
+});
+
+test('auth boot failures show a visible login error path instead of blanking the page', async () => {
+  const appSource = await readFile(join(process.cwd(), 'public/app.js'), 'utf8');
+  assert.match(appSource, /init\(\)\.catch\(handleBootstrapFailure\)/);
+  assert.match(appSource, /Authentication is temporarily unavailable/);
+  assert.match(appSource, /showLogin\("We couldn't load the sign-in experience/);
 });

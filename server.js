@@ -3,7 +3,6 @@ import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
-import * as OTPAuth from "otpauth";
 import {
   duplicateBehaviorIds,
   duplicateTargetIdsFromPrograms,
@@ -28,6 +27,7 @@ const SESSION_INACTIVITY_TIMEOUT_SECONDS = Number(process.env.SESSION_INACTIVITY
 const SESSION_MAX_AGE_SECONDS = SESSION_ABSOLUTE_TIMEOUT_SECONDS;
 const MFA_PENDING_TIMEOUT_SECONDS = Number(process.env.MFA_PENDING_TIMEOUT_SECONDS || (60 * 10));
 const MFA_ISSUER = process.env.MFA_ISSUER || "Triumph Workspace";
+let otpAuthModulePromise = null;
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -424,7 +424,13 @@ export function createAppServer() {
           });
           return;
         }
-        const pendingSecret = createPendingMfaSecret(user);
+        let pendingSecret;
+        try {
+          pendingSecret = await createPendingMfaSecret(user);
+        } catch {
+          authServiceUnavailable(res);
+          return;
+        }
         sessions.set(token, createSessionRecord(user.id, "pending-mfa-setup", {
           pendingMfaSecret: pendingSecret.base32
         }));
@@ -476,7 +482,14 @@ export function createAppServer() {
         return;
       }
       const payload = await readBody(req);
-      if (!verifyTotpCode(state.session.pendingMfaSecret, payload.code)) {
+      let setupCodeValid = false;
+      try {
+        setupCodeValid = await verifyTotpCode(state.session.pendingMfaSecret, payload.code);
+      } catch {
+        authServiceUnavailable(res);
+        return;
+      }
+      if (!setupCodeValid) {
         logAudit(db, req, state.user, "mfa-challenge-failed", {
           details: { stage: "setup" }
         });
@@ -513,7 +526,13 @@ export function createAppServer() {
         return;
       }
       const payload = await readBody(req);
-      const totpValid = verifyTotpCode(decryptMfaSecret(state.user.mfaSecretEncrypted), payload.code);
+      let totpValid = false;
+      try {
+        totpValid = await verifyTotpCode(decryptMfaSecret(state.user.mfaSecretEncrypted), payload.code);
+      } catch {
+        authServiceUnavailable(res);
+        return;
+      }
       const recoveryResult = totpValid
         ? { matched: false, hashes: state.user.mfaRecoveryCodeHashes || [] }
         : verifyRecoveryCode(payload.recoveryCode || payload.code, state.user.mfaRecoveryCodeHashes || []);
@@ -556,14 +575,21 @@ export function createAppServer() {
       }
       if (state.status === "mfa-setup-required") {
         const pendingSecret = state.session.pendingMfaSecret;
-        const pendingTotp = new OTPAuth.TOTP({
-          issuer: MFA_ISSUER,
-          label: `${MFA_ISSUER}:${state.user.username}`,
-          algorithm: "SHA1",
-          digits: 6,
-          period: 30,
-          secret: OTPAuth.Secret.fromBase32(pendingSecret)
-        });
+        let pendingTotp;
+        try {
+          const OTPAuth = await loadOtpAuth();
+          pendingTotp = new OTPAuth.TOTP({
+            issuer: MFA_ISSUER,
+            label: `${MFA_ISSUER}:${state.user.username}`,
+            algorithm: "SHA1",
+            digits: 6,
+            period: 30,
+            secret: OTPAuth.Secret.fromBase32(pendingSecret)
+          });
+        } catch {
+          authServiceUnavailable(res);
+          return;
+        }
         authFailure(res, 401, "MFA_SETUP_REQUIRED", "MFA setup is required before accessing clinical data.", {
           mfaRequired: true,
           setupRequired: true,
@@ -1327,7 +1353,8 @@ function verifyRecoveryCode(code, hashes = []) {
   };
 }
 
-function createPendingMfaSecret(user) {
+async function createPendingMfaSecret(user) {
+  const OTPAuth = await loadOtpAuth();
   const secret = new OTPAuth.Secret();
   const totp = new OTPAuth.TOTP({
     issuer: MFA_ISSUER,
@@ -1343,9 +1370,10 @@ function createPendingMfaSecret(user) {
   };
 }
 
-function verifyTotpCode(secretBase32, code) {
+async function verifyTotpCode(secretBase32, code) {
   const normalized = String(code || "").trim().replace(/\s+/g, "");
   if (!normalized) return false;
+  const OTPAuth = await loadOtpAuth();
   const totp = new OTPAuth.TOTP({
     issuer: MFA_ISSUER,
     algorithm: "SHA1",
@@ -1389,6 +1417,13 @@ function authFailure(res, status, code, message, extra = {}) {
   sendJson(res, status, { code, errors: [message], ...extra });
 }
 
+function authServiceUnavailable(res) {
+  sendJson(res, 503, {
+    code: "AUTH_UNAVAILABLE",
+    errors: ["Authentication is temporarily unavailable. Please try again shortly or contact support."]
+  });
+}
+
 function createSessionRecord(userId, stage, extra = {}) {
   const now = Date.now();
   return {
@@ -1398,6 +1433,17 @@ function createSessionRecord(userId, stage, extra = {}) {
     stage,
     ...extra
   };
+}
+
+async function loadOtpAuth() {
+  if (!otpAuthModulePromise) {
+    otpAuthModulePromise = import("otpauth").catch((error) => {
+      console.error("Auth dependency unavailable", { message: error?.message || String(error) });
+      otpAuthModulePromise = null;
+      throw error;
+    });
+  }
+  return otpAuthModulePromise;
 }
 
 function sessionStatus(req, db, { requireAuthenticatedMfa = true, touch = true } = {}) {

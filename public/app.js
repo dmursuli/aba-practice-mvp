@@ -304,7 +304,7 @@ const sessionPreloadLimits = {
 
 const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
 
-init();
+init().catch(handleBootstrapFailure);
 
 async function init() {
   setDefaultDate();
@@ -327,7 +327,12 @@ async function restoreSession() {
       }
       return;
     }
-    showLogin(error.code === "SESSION_TIMEOUT" ? "Session timed out due to inactivity." : "");
+    const message = error.code === "SESSION_TIMEOUT"
+      ? "Session timed out due to inactivity."
+      : error.code === "AUTH_UNAVAILABLE"
+        ? "Authentication is temporarily unavailable. Please try again shortly or contact support."
+        : "";
+    showLogin(message);
   }
 }
 
@@ -697,8 +702,16 @@ function handleAuthFailureEvent(detail = {}) {
     ? "Session timed out due to inactivity."
     : detail.code === "SESSION_EXPIRED"
       ? "Session expired. Please sign in again."
+      : detail.code === "AUTH_UNAVAILABLE"
+        ? "Authentication is temporarily unavailable. Please try again shortly or contact support."
       : detail.errors?.[0] || "";
   showLogin(message);
+}
+
+function handleBootstrapFailure(error) {
+  console.error("App bootstrap failed", { message: error?.message || String(error) });
+  resetSensitiveState();
+  showLogin("We couldn't load the sign-in experience. Please refresh or contact support if this continues.");
 }
 
 function clearSensitiveDom() {
