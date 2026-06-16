@@ -1,4 +1,4 @@
-import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, setupVerificationEmail, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
@@ -77,6 +77,8 @@ const loginForm = document.querySelector("#login-form");
 const loginMessage = document.querySelector("#login-message");
 const loginPanel = document.querySelector("#login-form");
 const mfaVerifyPanel = document.querySelector("#mfa-verify-panel");
+const verificationEmailForm = document.querySelector("#verification-email-form");
+const verificationEmailMessage = document.querySelector("#verification-email-message");
 const mfaVerifyForm = document.querySelector("#mfa-verify-form");
 const mfaMessage = document.querySelector("#mfa-message");
 const mfaCancelButtons = document.querySelectorAll("[data-auth-cancel]");
@@ -315,7 +317,7 @@ async function restoreSession() {
     state.currentUser = user;
     await startAuthenticatedApp();
   } catch (error) {
-    if (error.code === "VERIFICATION_REQUIRED" || error.code === "MFA_REQUIRED") {
+    if (["VERIFICATION_REQUIRED", "MFA_REQUIRED", "VERIFICATION_EMAIL_REQUIRED"].includes(error.code)) {
       state.authChallenge = error.details;
       showAuthStep("mfa-verify", error.details);
       return;
@@ -491,6 +493,7 @@ function ensureProgramGraphModalLegend() {
 
 function bindEvents() {
   loginForm.addEventListener("submit", handleLogin);
+  verificationEmailForm?.addEventListener("submit", handleSetupVerificationEmail);
   mfaVerifyForm?.addEventListener("submit", handleVerifyMfa);
   resendSignInCodeButton?.addEventListener("click", handleResendSignInCode);
   mfaCancelButtons.forEach((button) => button.addEventListener("click", handleCancelAuthFlow));
@@ -681,6 +684,20 @@ async function handleResendSignInCode() {
   }
 }
 
+async function handleSetupVerificationEmail(event) {
+  event.preventDefault();
+  if (!verificationEmailForm) return;
+  verificationEmailMessage.textContent = "";
+  const values = new FormData(verificationEmailForm);
+  try {
+    const payload = await setupVerificationEmail(values.get("email"));
+    state.authChallenge = payload;
+    showAuthStep("mfa-verify", payload);
+  } catch (error) {
+    verificationEmailMessage.textContent = error.message;
+  }
+}
+
 async function handleCancelAuthFlow() {
   await logout().catch(() => {});
   resetSensitiveState();
@@ -695,8 +712,20 @@ function showAuthStep(step, details = {}) {
   mfaVerifyPanel?.classList.toggle("hidden", step !== "mfa-verify");
   loginMessage.textContent = step === "password" ? "" : loginMessage.textContent;
   if (step === "mfa-verify") {
-    mfaMessage.textContent = details.message || "Enter the 6-digit verification code we emailed to you.";
-    mfaVerifyForm?.reset();
+    const requiresEmailSetup = Boolean(details.setupRequired);
+    verificationEmailForm?.classList.toggle("hidden", !requiresEmailSetup);
+    mfaVerifyForm?.classList.toggle("hidden", requiresEmailSetup);
+    resendSignInCodeButton?.classList.toggle("hidden", requiresEmailSetup);
+    if (requiresEmailSetup) {
+      verificationEmailMessage.textContent = details.message || "Enter the email address you want to use for sign-in verification.";
+      verificationEmailForm?.reset();
+      const emailInput = verificationEmailForm?.elements?.email;
+      if (emailInput && details.user?.email) emailInput.value = details.user.email;
+    } else {
+      verificationEmailMessage.textContent = "";
+      mfaMessage.textContent = details.message || "Enter the 6-digit verification code we emailed to you.";
+      mfaVerifyForm?.reset();
+    }
   }
 }
 
@@ -730,7 +759,7 @@ function resetSensitiveState() {
 }
 
 function handleAuthFailureEvent(detail = {}) {
-  if (detail.code === "VERIFICATION_REQUIRED") {
+  if (["VERIFICATION_REQUIRED", "VERIFICATION_EMAIL_REQUIRED"].includes(detail.code)) {
     state.authChallenge = detail;
     showAuthStep("mfa-verify", detail);
     return;
@@ -884,6 +913,13 @@ function showLogin(message = "") {
   appRoot.classList.add("hidden");
   loginPanel?.classList.remove("hidden");
   mfaVerifyPanel?.classList.add("hidden");
+  verificationEmailForm?.classList.add("hidden");
+  verificationEmailForm?.reset();
+  verificationEmailMessage.textContent = "";
+  mfaVerifyForm?.classList.remove("hidden");
+  mfaVerifyForm?.reset();
+  mfaMessage.textContent = "";
+  resendSignInCodeButton?.classList.remove("hidden");
   loginMessage.textContent = message;
 }
 

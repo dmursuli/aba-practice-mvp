@@ -450,6 +450,20 @@ export function createAppServer() {
       }
       const token = crypto.randomUUID();
       if (requiresMfa(user)) {
+        const verificationEmail = userVerificationEmail(user);
+        if (!verificationEmail) {
+          const session = createSessionRecord(user.id, "pending-email-setup");
+          sessions.set(token, session);
+          sendAuthCookie(res, token);
+          sendJson(res, 200, {
+            verificationRequired: true,
+            setupRequired: true,
+            deliveryMethod: "email",
+            user: publicUser(user),
+            message: "Enter the email address you want to use for sign-in verification."
+          });
+          return;
+        }
         try {
           const session = createSessionRecord(user.id, "pending-mfa-verify");
           const verification = await startVerificationChallenge(session, user);
@@ -496,6 +510,41 @@ export function createAppServer() {
       if (token) sessions.delete(token);
       clearAuthCookie(res);
       sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/verify/setup-email") {
+      const db = await readDbWithUsers();
+      const state = sessionStatus(req, db, { requireAuthenticatedMfa: false });
+      if (state.status !== "ok" || state.session.stage !== "pending-email-setup") {
+        authFailure(res, 401, "VERIFICATION_EMAIL_REQUIRED", "Sign in again to set a verification email.");
+        return;
+      }
+      const payload = await readBody(req);
+      const email = normalizeEmail(payload.email);
+      if (!email || !looksLikeEmail(email)) {
+        authFailure(res, 400, "VERIFICATION_EMAIL_INVALID", "Enter a valid verification email.");
+        return;
+      }
+      const duplicateEmail = (db.users || []).some((existing) => existing.id !== state.user.id && normalizeEmail(existing.email) === email);
+      if (duplicateEmail) {
+        authFailure(res, 400, "VERIFICATION_EMAIL_TAKEN", "That verification email is already assigned to another user.");
+        return;
+      }
+      state.user.email = email;
+      try {
+        const verification = await startVerificationChallenge(state.session, state.user);
+        logAudit(db, req, state.user, "verification-email-set", {
+          details: { deliveryMethod: "email" }
+        });
+        logAudit(db, req, state.user, "verification-code-issued", {
+          details: { deliveryMethod: "email" }
+        });
+        await writeDb(db);
+        sendJson(res, 200, verification);
+      } catch {
+        authServiceUnavailable(res);
+      }
       return;
     }
 
@@ -617,6 +666,15 @@ export function createAppServer() {
         });
         await writeDb(db);
         authFailure(res, 401, state.reason === "inactive" ? "SESSION_TIMEOUT" : "SESSION_EXPIRED", "Session expired. Please sign in again.");
+        return;
+      }
+      if (state.status === "mfa-setup-required") {
+        authFailure(res, 401, "VERIFICATION_EMAIL_REQUIRED", "A verification email is required before accessing clinical data.", {
+          verificationRequired: true,
+          setupRequired: true,
+          deliveryMethod: "email",
+          user: publicUser(state.user)
+        });
         return;
       }
       if (state.status === "mfa-required") {
@@ -1611,6 +1669,9 @@ function sessionStatus(req, db, { requireAuthenticatedMfa = true, touch = true }
   if (touch) session.lastSeenAt = now;
   if (!requireAuthenticatedMfa) {
     return { status: "ok", token, session, user };
+  }
+  if (session.stage === "pending-email-setup") {
+    return { status: "mfa-setup-required", token, session, user };
   }
   if (session.stage === "pending-mfa-setup") {
     return { status: "mfa-setup-required", token, session, user };

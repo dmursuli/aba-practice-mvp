@@ -82,6 +82,18 @@ async function loginAndVerify() {
   return { loginResult, verifyResult, cookie: verifyResult.cookie };
 }
 
+async function forceAdminWithoutVerificationEmail() {
+  await request('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'admin', password: 'admin123' }
+  });
+  resetRuntimeState();
+  const db = JSON.parse(await readFile(dbPath, 'utf8'));
+  const admin = db.users.find((user) => user.username === 'admin');
+  admin.email = '';
+  await writeFile(dbPath, `${JSON.stringify(db, null, 2)}\n`, 'utf8');
+}
+
 test('login page renders for unauthenticated users and includes auth assets', async () => {
   const pageResult = await request('/');
   assert.equal(pageResult.response.status, 200);
@@ -99,6 +111,66 @@ test('email verification is required after password login', async () => {
   const dataResult = await request('/api/data', { cookie: loginResult.cookie });
   assert.equal(dataResult.response.status, 401);
   assert.equal(dataResult.json.code, 'VERIFICATION_REQUIRED');
+});
+
+test('users without a verification email are prompted to set one after password login', async () => {
+  resetRuntimeState();
+  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+  await forceAdminWithoutVerificationEmail();
+  const loginResult = await request('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'admin', password: 'admin123' }
+  });
+  assert.equal(loginResult.response.status, 200);
+  assert.equal(loginResult.json.verificationRequired, true);
+  assert.equal(loginResult.json.setupRequired, true);
+  assert.equal(loginResult.json.deliveryMethod, 'email');
+  assert.match(loginResult.json.message, /sign-in verification/i);
+});
+
+test('users can set a verification email and continue the sign-in flow', async () => {
+  resetRuntimeState();
+  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+  await forceAdminWithoutVerificationEmail();
+  drainVerificationDebugDeliveries();
+  const loginResult = await request('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'admin', password: 'admin123' }
+  });
+  const setupResult = await request('/api/auth/verify/setup-email', {
+    method: 'POST',
+    cookie: loginResult.cookie,
+    body: { email: 'admin@example.com' }
+  });
+  assert.equal(setupResult.response.status, 200);
+  assert.equal(setupResult.json.verificationRequired, true);
+  const deliveries = drainVerificationDebugDeliveries();
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].email, 'admin@example.com');
+  const verifyResult = await request('/api/auth/verify', {
+    method: 'POST',
+    cookie: loginResult.cookie,
+    body: { code: deliveries[0].code }
+  });
+  assert.equal(verifyResult.response.status, 200);
+  assert.equal(verifyResult.json.user.email, 'admin@example.com');
+});
+
+test('verification email setup rejects addresses already assigned to another user', async () => {
+  resetRuntimeState();
+  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+  await forceAdminWithoutVerificationEmail();
+  const loginResult = await request('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'admin', password: 'admin123' }
+  });
+  const setupResult = await request('/api/auth/verify/setup-email', {
+    method: 'POST',
+    cookie: loginResult.cookie,
+    body: { email: 'bcba@local.test' }
+  });
+  assert.equal(setupResult.response.status, 400);
+  assert.equal(setupResult.json.code, 'VERIFICATION_EMAIL_TAKEN');
 });
 
 test('verification code expires', async () => {

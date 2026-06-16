@@ -26,6 +26,17 @@
         <p class="eyebrow">Security Check</p>
         <h1>Verify your sign-in</h1>
         <p class="muted">Enter the 6-digit verification code we emailed to you.</p>
+        <form id="verification-email-form" class="hidden">
+          <label>
+            Verification email
+            <input type="email" name="email" autocomplete="email" placeholder="name@example.com" required>
+          </label>
+          <div class="button-row">
+            <button type="submit" class="primary-button">Send code</button>
+            <button type="button" class="secondary-button" data-auth-cancel>Back to sign in</button>
+          </div>
+          <p class="form-message" id="verification-email-message" role="status"></p>
+        </form>
         <form id="mfa-verify-form">
           <label>
             Verification code
