@@ -15,7 +15,7 @@ process.env.ABA_DISABLE_AUTOSTART = '1';
 const dbPath = process.env.DB_PATH;
 await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
 
-const { createAppServer, drainVerificationDebugDeliveries, resetRuntimeState } = await import('../server.js');
+const { acceptedVerificationDelivery, createAppServer, drainVerificationDebugDeliveries, resetRuntimeState } = await import('../server.js');
 
 let server;
 let baseUrl = '';
@@ -334,6 +334,16 @@ test('local development falls back to debug verification codes when SMTP is not 
   const deliveries = drainVerificationDebugDeliveries();
   assert.equal(deliveries.length, 1);
   process.env.EMAIL_VERIFICATION_DEBUG_CODES = 'true';
+});
+
+test('verification delivery requires an accepted recipient', () => {
+  assert.equal(acceptedVerificationDelivery({ accepted: ['admin@example.com'], rejected: [] }, 'admin@example.com'), true);
+  assert.equal(acceptedVerificationDelivery({ accepted: [], rejected: ['admin@example.com'] }, 'admin@example.com'), false);
+  assert.equal(acceptedVerificationDelivery({ accepted: ['other@example.com'], rejected: ['admin@example.com'] }, 'admin@example.com'), false);
+});
+
+test('verification delivery treats accepted SMTP responses as deliverable', () => {
+  assert.equal(acceptedVerificationDelivery({ accepted: ['other@example.com'], rejected: [] }, 'admin@example.com'), true);
 });
 
 test('the browser app no longer stores clinical drafts in localStorage or sessionStorage', async () => {

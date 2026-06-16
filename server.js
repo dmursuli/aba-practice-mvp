@@ -476,7 +476,21 @@ export function createAppServer() {
           sendJson(res, 200, verification);
           return;
         } catch (error) {
-          if (error?.message?.includes("No verification email")) {
+          if (error?.message?.includes("No verification email") || error?.code === "VERIFICATION_DELIVERY_FAILED") {
+            console.error("Verification email delivery failed", {
+              code: error?.code || "UNKNOWN",
+              message: error?.message || "",
+              userId: user.id,
+              destinationMask: maskEmail(userVerificationEmail(user))
+            });
+            logAudit(db, req, user, "verification-delivery-failed", {
+              details: {
+                deliveryMethod: "email",
+                reason: error?.code || "UNKNOWN",
+                destinationMask: maskEmail(userVerificationEmail(user))
+              }
+            });
+            await writeDb(db);
             authFailure(res, 503, "VERIFICATION_UNAVAILABLE", error.message);
             return;
           }
@@ -542,7 +556,25 @@ export function createAppServer() {
         });
         await writeDb(db);
         sendJson(res, 200, verification);
-      } catch {
+      } catch (error) {
+        if (error?.message?.includes("No verification email") || error?.code === "VERIFICATION_DELIVERY_FAILED") {
+          console.error("Verification email delivery failed", {
+            code: error?.code || "UNKNOWN",
+            message: error?.message || "",
+            userId: state.user.id,
+            destinationMask: maskEmail(userVerificationEmail(state.user))
+          });
+          logAudit(db, req, state.user, "verification-delivery-failed", {
+            details: {
+              deliveryMethod: "email",
+              reason: error?.code || "UNKNOWN",
+              destinationMask: maskEmail(userVerificationEmail(state.user))
+            }
+          });
+          await writeDb(db);
+          authFailure(res, 503, "VERIFICATION_UNAVAILABLE", error.message);
+          return;
+        }
         authServiceUnavailable(res);
       }
       return;
@@ -648,7 +680,21 @@ export function createAppServer() {
           authFailure(res, 429, "VERIFICATION_RESEND_LIMIT", error.message);
           return;
         }
-        if (error?.message?.includes("No verification email")) {
+        if (error?.message?.includes("No verification email") || error?.code === "VERIFICATION_DELIVERY_FAILED") {
+          console.error("Verification email delivery failed", {
+            code: error?.code || "UNKNOWN",
+            message: error?.message || "",
+            userId: state.user.id,
+            destinationMask: maskEmail(userVerificationEmail(state.user))
+          });
+          logAudit(db, req, state.user, "verification-delivery-failed", {
+            details: {
+              deliveryMethod: "email",
+              reason: error?.code || "UNKNOWN",
+              destinationMask: maskEmail(userVerificationEmail(state.user))
+            }
+          });
+          await writeDb(db);
           authFailure(res, 503, "VERIFICATION_UNAVAILABLE", error.message);
           return;
         }
@@ -1516,6 +1562,20 @@ async function emailTransport() {
   return emailTransportPromise;
 }
 
+export function acceptedVerificationDelivery(info, email) {
+  const target = normalizeEmail(email);
+  const accepted = Array.isArray(info?.accepted)
+    ? info.accepted.map((entry) => normalizeEmail(entry)).filter(Boolean)
+    : [];
+  const rejected = Array.isArray(info?.rejected)
+    ? info.rejected.map((entry) => normalizeEmail(entry)).filter(Boolean)
+    : [];
+  if (!accepted.length) return false;
+  if (target && rejected.includes(target)) return false;
+  if (!target) return accepted.length > 0;
+  return accepted.includes(target) || accepted.length > 0;
+}
+
 export function drainVerificationDebugDeliveries() {
   const deliveries = [...verificationDebugDeliveries];
   verificationDebugDeliveries.length = 0;
@@ -1536,14 +1596,26 @@ async function deliverVerificationCode(user, email, code) {
     return { debugCode: code };
   }
   const transport = await emailTransport();
-  await transport.sendMail({
+  const info = await transport.sendMail({
     from: config.from,
     to: email,
     subject: "Your Triumph Workspace verification code",
     text: `Your verification code is ${code}. It expires in ${Math.round(VERIFICATION_CODE_TTL_SECONDS / 60)} minutes.`,
     html: `<p>Your verification code is <strong>${code}</strong>.</p><p>It expires in ${Math.round(VERIFICATION_CODE_TTL_SECONDS / 60)} minutes.</p>`
   });
-  return {};
+  if (!acceptedVerificationDelivery(info, email)) {
+    const error = new Error("We couldn't deliver a verification email to this address. Please check the email address or contact support.");
+    error.code = "VERIFICATION_DELIVERY_FAILED";
+    error.deliveryInfo = {
+      acceptedCount: Array.isArray(info?.accepted) ? info.accepted.length : 0,
+      rejectedCount: Array.isArray(info?.rejected) ? info.rejected.length : 0
+    };
+    throw error;
+  }
+  return {
+    messageId: info?.messageId || "",
+    acceptedCount: Array.isArray(info?.accepted) ? info.accepted.length : 0
+  };
 }
 
 function ensureUserSecurityDefaults(db) {
