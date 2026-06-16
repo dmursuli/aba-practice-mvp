@@ -24,8 +24,24 @@ const sessions = new Map();
 const preservedDrafts = new Map();
 const AGENCIES = ["Triumph ABA", "One Clinical Care"];
 const DEFAULT_AGENCY = AGENCIES[0];
-const SESSION_ABSOLUTE_TIMEOUT_SECONDS = Number(process.env.SESSION_ABSOLUTE_TIMEOUT_SECONDS || (60 * 60 * 12));
-const SESSION_INACTIVITY_TIMEOUT_SECONDS = Number(process.env.SESSION_INACTIVITY_TIMEOUT_SECONDS || (60 * 45));
+
+function envNumber(name, fallback) {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+function mfaFeatureEnabled() {
+  return String(process.env.MFA_ENABLED || "").trim().toLowerCase() === "true";
+}
+
+const SESSION_ABSOLUTE_TIMEOUT_SECONDS = envNumber(
+  "SESSION_ABSOLUTE_TIMEOUT_SECONDS",
+  envNumber("ABSOLUTE_SESSION_HOURS", 12) * 60 * 60
+);
+const SESSION_INACTIVITY_TIMEOUT_SECONDS = envNumber(
+  "SESSION_INACTIVITY_TIMEOUT_SECONDS",
+  envNumber("INACTIVITY_TIMEOUT_MINUTES", 45) * 60
+);
 const SESSION_MAX_AGE_SECONDS = SESSION_ABSOLUTE_TIMEOUT_SECONDS;
 const MFA_PENDING_TIMEOUT_SECONDS = Number(process.env.MFA_PENDING_TIMEOUT_SECONDS || (60 * 10));
 const VERIFICATION_CODE_TTL_SECONDS = Number(process.env.VERIFICATION_CODE_TTL_SECONDS || (60 * 10));
@@ -1478,7 +1494,7 @@ function verifyPassword(password, stored) {
 }
 
 function requiresMfa(user) {
-  return ["admin", "bcba", "rbt", "read-only"].includes(user?.role);
+  return mfaFeatureEnabled() && ["admin", "bcba", "rbt", "read-only"].includes(user?.role);
 }
 
 function userVerificationEmail(user) {
@@ -1743,6 +1759,10 @@ function sessionStatus(req, db, { requireAuthenticatedMfa = true, touch = true }
   if (session.stage === "authenticated" && now - Number(session.lastSeenAt || 0) > SESSION_INACTIVITY_TIMEOUT_SECONDS * 1000) {
     sessions.delete(token);
     return { status: "expired", reason: "inactive", user };
+  }
+  if (!mfaFeatureEnabled() && session.stage !== "authenticated") {
+    session.stage = "authenticated";
+    session.verifiedAt = session.verifiedAt || new Date().toISOString();
   }
   if (touch) session.lastSeenAt = now;
   if (!requireAuthenticatedMfa) {

@@ -9,6 +9,7 @@ process.env.SESSION_ABSOLUTE_TIMEOUT_SECONDS = '5';
 process.env.SESSION_INACTIVITY_TIMEOUT_SECONDS = '1';
 process.env.MFA_PENDING_TIMEOUT_SECONDS = '30';
 process.env.VERIFICATION_CODE_TTL_SECONDS = '2';
+process.env.MFA_ENABLED = 'false';
 process.env.EMAIL_VERIFICATION_DEBUG_CODES = 'true';
 process.env.ABA_DISABLE_AUTOSTART = '1';
 
@@ -58,6 +59,34 @@ async function request(path, { method = 'GET', body, cookie } = {}) {
   };
 }
 
+async function resetDb() {
+  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+}
+
+async function loginPasswordOnly(identifier = 'admin', password = 'admin123') {
+  const result = await request('/api/auth/login', {
+    method: 'POST',
+    body: { username: identifier, password }
+  });
+  assert.equal(result.response.status, 200);
+  assert.ok(result.json.user);
+  assert.equal(Boolean(result.json.verificationRequired), false);
+  return result;
+}
+
+async function withMfaEnabled(run) {
+  const previous = process.env.MFA_ENABLED;
+  process.env.MFA_ENABLED = 'true';
+  resetRuntimeState();
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env.MFA_ENABLED;
+    else process.env.MFA_ENABLED = previous;
+    resetRuntimeState();
+  }
+}
+
 async function loginForVerification(identifier = 'admin') {
   drainVerificationDebugDeliveries();
   const result = await request('/api/auth/login', {
@@ -102,141 +131,175 @@ test('login page renders for unauthenticated users and includes auth assets', as
   assert.match(pageResult.text, /<link rel="stylesheet" href="\/styles\.css">/);
 });
 
-test('email verification is required after password login', async () => {
+test('user can log in with email or username and password only when MFA is disabled', async () => {
   resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const loginResult = await loginForVerification();
-  assert.equal(loginResult.json.deliveryMethod, 'email');
-  assert.match(loginResult.json.destinationMask, /@/);
+  await resetDb();
+  const loginResult = await loginPasswordOnly();
   const dataResult = await request('/api/data', { cookie: loginResult.cookie });
-  assert.equal(dataResult.response.status, 401);
-  assert.equal(dataResult.json.code, 'VERIFICATION_REQUIRED');
+  assert.equal(dataResult.response.status, 200);
 });
 
-test('users without a verification email are prompted to set one after password login', async () => {
+test('accounts without a verification email can still log in when MFA is disabled', async () => {
   resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+  await resetDb();
   await forceAdminWithoutVerificationEmail();
-  const loginResult = await request('/api/auth/login', {
-    method: 'POST',
-    body: { username: 'admin', password: 'admin123' }
-  });
-  assert.equal(loginResult.response.status, 200);
-  assert.equal(loginResult.json.verificationRequired, true);
-  assert.equal(loginResult.json.setupRequired, true);
-  assert.equal(loginResult.json.deliveryMethod, 'email');
-  assert.match(loginResult.json.message, /sign-in verification/i);
+  const loginResult = await loginPasswordOnly();
+  assert.equal(loginResult.json.user.email, '');
+  const dataResult = await request('/api/data', { cookie: loginResult.cookie });
+  assert.equal(dataResult.response.status, 200);
 });
 
-test('users can set a verification email and continue the sign-in flow', async () => {
+test('password-only login does not enter a verification-code screen when MFA is disabled', async () => {
   resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  await forceAdminWithoutVerificationEmail();
-  drainVerificationDebugDeliveries();
-  const loginResult = await request('/api/auth/login', {
-    method: 'POST',
-    body: { username: 'admin', password: 'admin123' }
-  });
-  const setupResult = await request('/api/auth/verify/setup-email', {
-    method: 'POST',
-    cookie: loginResult.cookie,
-    body: { email: 'admin@example.com' }
-  });
-  assert.equal(setupResult.response.status, 200);
-  assert.equal(setupResult.json.verificationRequired, true);
-  const deliveries = drainVerificationDebugDeliveries();
-  assert.equal(deliveries.length, 1);
-  assert.equal(deliveries[0].email, 'admin@example.com');
-  const verifyResult = await request('/api/auth/verify', {
-    method: 'POST',
-    cookie: loginResult.cookie,
-    body: { code: deliveries[0].code }
-  });
-  assert.equal(verifyResult.response.status, 200);
-  assert.equal(verifyResult.json.user.email, 'admin@example.com');
+  await resetDb();
+  const loginResult = await loginPasswordOnly();
+  assert.equal(Boolean(loginResult.json.verificationRequired), false);
+  assert.equal(Boolean(loginResult.json.mfaRequired), false);
 });
 
-test('verification email setup rejects addresses already assigned to another user', async () => {
-  resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  await forceAdminWithoutVerificationEmail();
-  const loginResult = await request('/api/auth/login', {
-    method: 'POST',
-    body: { username: 'admin', password: 'admin123' }
+test('feature-flagged MFA still requires verification when enabled', async () => {
+  await withMfaEnabled(async () => {
+    await resetDb();
+    const loginResult = await loginForVerification();
+    assert.equal(loginResult.json.deliveryMethod, 'email');
+    assert.match(loginResult.json.destinationMask, /@/);
+    const dataResult = await request('/api/data', { cookie: loginResult.cookie });
+    assert.equal(dataResult.response.status, 401);
+    assert.equal(dataResult.json.code, 'VERIFICATION_REQUIRED');
   });
-  const setupResult = await request('/api/auth/verify/setup-email', {
-    method: 'POST',
-    cookie: loginResult.cookie,
-    body: { email: 'bcba@local.test' }
-  });
-  assert.equal(setupResult.response.status, 400);
-  assert.equal(setupResult.json.code, 'VERIFICATION_EMAIL_TAKEN');
 });
 
-test('verification code expires', async () => {
-  resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const loginResult = await loginForVerification();
-  await new Promise((resolve) => setTimeout(resolve, 2100));
-  const verifyResult = await request('/api/auth/verify', {
-    method: 'POST',
-    cookie: loginResult.cookie,
-    body: { code: loginResult.code }
+test('feature-flagged MFA prompts for a verification email if one is missing', async () => {
+  await withMfaEnabled(async () => {
+    await resetDb();
+    await forceAdminWithoutVerificationEmail();
+    const loginResult = await request('/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin', password: 'admin123' }
+    });
+    assert.equal(loginResult.response.status, 200);
+    assert.equal(loginResult.json.verificationRequired, true);
+    assert.equal(loginResult.json.setupRequired, true);
+    assert.equal(loginResult.json.deliveryMethod, 'email');
+    assert.match(loginResult.json.message, /sign-in verification/i);
   });
-  assert.equal(verifyResult.response.status, 401);
-  assert.equal(verifyResult.json.code, 'VERIFICATION_CODE_EXPIRED');
 });
 
-test('verification code is single-use', async () => {
-  resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const { loginResult, verifyResult } = await loginAndVerify();
-  const reused = await request('/api/auth/verify', {
-    method: 'POST',
-    cookie: loginResult.cookie,
-    body: { code: loginResult.code }
+test('feature-flagged MFA users can set a verification email and continue the sign-in flow', async () => {
+  await withMfaEnabled(async () => {
+    await resetDb();
+    await forceAdminWithoutVerificationEmail();
+    drainVerificationDebugDeliveries();
+    const loginResult = await request('/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin', password: 'admin123' }
+    });
+    const setupResult = await request('/api/auth/verify/setup-email', {
+      method: 'POST',
+      cookie: loginResult.cookie,
+      body: { email: 'admin@example.com' }
+    });
+    assert.equal(setupResult.response.status, 200);
+    assert.equal(setupResult.json.verificationRequired, true);
+    const deliveries = drainVerificationDebugDeliveries();
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0].email, 'admin@example.com');
+    const verifyResult = await request('/api/auth/verify', {
+      method: 'POST',
+      cookie: loginResult.cookie,
+      body: { code: deliveries[0].code }
+    });
+    assert.equal(verifyResult.response.status, 200);
+    assert.equal(verifyResult.json.user.email, 'admin@example.com');
   });
-  assert.equal(verifyResult.response.status, 200);
-  assert.equal(reused.response.status, 401);
 });
 
-test('incorrect verification code is rejected', async () => {
-  resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const loginResult = await loginForVerification();
-  const verifyResult = await request('/api/auth/verify', {
-    method: 'POST',
-    cookie: loginResult.cookie,
-    body: { code: '000000' }
+test('feature-flagged MFA email setup rejects addresses already assigned to another user', async () => {
+  await withMfaEnabled(async () => {
+    await resetDb();
+    await forceAdminWithoutVerificationEmail();
+    const loginResult = await request('/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin', password: 'admin123' }
+    });
+    const setupResult = await request('/api/auth/verify/setup-email', {
+      method: 'POST',
+      cookie: loginResult.cookie,
+      body: { email: 'bcba@local.test' }
+    });
+    assert.equal(setupResult.response.status, 400);
+    assert.equal(setupResult.json.code, 'VERIFICATION_EMAIL_TAKEN');
   });
-  assert.equal(verifyResult.response.status, 401);
-  assert.equal(verifyResult.json.code, 'VERIFICATION_CODE_INVALID');
 });
 
-test('too many verification attempts are rate-limited', async () => {
-  resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const loginResult = await loginForVerification();
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await request('/api/auth/verify', {
+test('feature-flagged MFA verification code expires', async () => {
+  await withMfaEnabled(async () => {
+    await resetDb();
+    const loginResult = await loginForVerification();
+    await new Promise((resolve) => setTimeout(resolve, 2100));
+    const verifyResult = await request('/api/auth/verify', {
+      method: 'POST',
+      cookie: loginResult.cookie,
+      body: { code: loginResult.code }
+    });
+    assert.equal(verifyResult.response.status, 401);
+    assert.equal(verifyResult.json.code, 'VERIFICATION_CODE_EXPIRED');
+  });
+});
+
+test('feature-flagged MFA verification code is single-use', async () => {
+  await withMfaEnabled(async () => {
+    await resetDb();
+    const { loginResult, verifyResult } = await loginAndVerify();
+    const reused = await request('/api/auth/verify', {
+      method: 'POST',
+      cookie: loginResult.cookie,
+      body: { code: loginResult.code }
+    });
+    assert.equal(verifyResult.response.status, 200);
+    assert.equal(reused.response.status, 401);
+  });
+});
+
+test('feature-flagged MFA incorrect verification code is rejected', async () => {
+  await withMfaEnabled(async () => {
+    await resetDb();
+    const loginResult = await loginForVerification();
+    const verifyResult = await request('/api/auth/verify', {
       method: 'POST',
       cookie: loginResult.cookie,
       body: { code: '000000' }
     });
-  }
-  const finalAttempt = await request('/api/auth/verify', {
-    method: 'POST',
-    cookie: loginResult.cookie,
-    body: { code: '000000' }
+    assert.equal(verifyResult.response.status, 401);
+    assert.equal(verifyResult.json.code, 'VERIFICATION_CODE_INVALID');
   });
-  assert.equal(finalAttempt.response.status, 429);
-  assert.equal(finalAttempt.json.code, 'VERIFICATION_RATE_LIMITED');
+});
+
+test('feature-flagged MFA verification attempts are rate-limited', async () => {
+  await withMfaEnabled(async () => {
+    await resetDb();
+    const loginResult = await loginForVerification();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await request('/api/auth/verify', {
+        method: 'POST',
+        cookie: loginResult.cookie,
+        body: { code: '000000' }
+      });
+    }
+    const finalAttempt = await request('/api/auth/verify', {
+      method: 'POST',
+      cookie: loginResult.cookie,
+      body: { code: '000000' }
+    });
+    assert.equal(finalAttempt.response.status, 429);
+    assert.equal(finalAttempt.json.code, 'VERIFICATION_RATE_LIMITED');
+  });
 });
 
 test('user is signed out after inactivity timeout', async () => {
   resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const { cookie } = await loginAndVerify();
+  await resetDb();
+  const { cookie } = await loginPasswordOnly();
   await new Promise((resolve) => setTimeout(resolve, 1100));
   const dataResult = await request('/api/data', { cookie });
   assert.equal(dataResult.response.status, 401);
@@ -245,8 +308,8 @@ test('user is signed out after inactivity timeout', async () => {
 
 test('activity resets the inactivity timer through the auth ping endpoint', async () => {
   resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const { cookie } = await loginAndVerify();
+  await resetDb();
+  const { cookie } = await loginPasswordOnly();
   await new Promise((resolve) => setTimeout(resolve, 600));
   const pingResult = await request('/api/auth/ping', { method: 'POST', cookie });
   assert.equal(pingResult.response.status, 200);
@@ -257,8 +320,8 @@ test('activity resets the inactivity timer through the auth ping endpoint', asyn
 
 test('recoverable drafts can be preserved server-side and restored after re-login', async () => {
   resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const { cookie } = await loginAndVerify();
+  await resetDb();
+  const { cookie } = await loginPasswordOnly();
   const preserveResult = await request('/api/auth/drafts', {
     method: 'POST',
     cookie,
@@ -279,8 +342,8 @@ test('recoverable drafts can be preserved server-side and restored after re-logi
 
 test('absolute session expiration requires re-login even with activity', async () => {
   resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const { cookie } = await loginAndVerify();
+  await resetDb();
+  const { cookie } = await loginPasswordOnly();
   for (let step = 0; step < 7; step += 1) {
     await new Promise((resolve) => setTimeout(resolve, 900));
     await request('/api/auth/ping', { method: 'POST', cookie });
@@ -301,38 +364,30 @@ test('cache-control headers prevent caching of protected HTML and API responses'
   assert.equal(pageResult.response.status, 200);
 
   resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const { cookie } = await loginAndVerify();
+  await resetDb();
+  const { cookie } = await loginPasswordOnly();
   const dataResult = await request('/api/data', { cookie });
   assert.match(dataResult.response.headers.get('cache-control') || '', /no-store/);
 });
 
-test('login page does not blank if verification provider config is missing', async () => {
+test('login page renders and password login works with no SMTP/MFA env vars', async () => {
   resetRuntimeState();
+  process.env.MFA_ENABLED = 'false';
   process.env.EMAIL_VERIFICATION_DEBUG_CODES = 'false';
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const loginResult = await request('/api/auth/login', {
-    method: 'POST',
-    body: { username: 'admin', password: 'admin123' }
-  });
-  assert.equal(loginResult.response.status, 503);
-  assert.ok(['AUTH_UNAVAILABLE', 'VERIFICATION_UNAVAILABLE'].includes(loginResult.json.code));
-  process.env.EMAIL_VERIFICATION_DEBUG_CODES = 'true';
-});
-
-test('local development falls back to debug verification codes when SMTP is not configured', async () => {
-  resetRuntimeState();
-  delete process.env.EMAIL_VERIFICATION_DEBUG_CODES;
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+  delete process.env.SMTP_HOST;
+  delete process.env.SMTP_PORT;
+  delete process.env.SMTP_USER;
+  delete process.env.SMTP_PASSWORD;
+  delete process.env.SMTP_FROM;
+  await resetDb();
+  const pageResult = await request('/');
+  assert.equal(pageResult.response.status, 200);
   const loginResult = await request('/api/auth/login', {
     method: 'POST',
     body: { username: 'admin', password: 'admin123' }
   });
   assert.equal(loginResult.response.status, 200);
-  assert.equal(loginResult.json.verificationRequired, true);
-  assert.match(loginResult.json.message, /development code/i);
-  const deliveries = drainVerificationDebugDeliveries();
-  assert.equal(deliveries.length, 1);
+  assert.ok(loginResult.json.user);
   process.env.EMAIL_VERIFICATION_DEBUG_CODES = 'true';
 });
 
