@@ -7,20 +7,27 @@ export async function login(username, password) {
   return parseResponse(response);
 }
 
-export async function verifyMfa(code, recoveryCode = "") {
-  const response = await fetch("/api/auth/mfa/verify", {
+export async function verifySignInCode(code) {
+  const response = await fetch("/api/auth/verify", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code, recoveryCode })
+    body: JSON.stringify({ code })
   });
   return parseResponse(response);
 }
 
-export async function completeMfaSetup(code) {
-  const response = await fetch("/api/auth/mfa/setup/verify", {
+export async function resendSignInCode() {
+  const response = await fetch("/api/auth/verify/resend", {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code })
+    headers: { "content-type": "application/json" }
+  });
+  return parseResponse(response);
+}
+
+export async function touchSession() {
+  const response = await fetch("/api/auth/ping", {
+    method: "POST",
+    headers: { "content-type": "application/json" }
   });
   return parseResponse(response);
 }
@@ -204,7 +211,7 @@ async function parseResponse(response) {
     if (
       response.status === 401
       && typeof window !== "undefined"
-      && ["AUTH_REQUIRED", "SESSION_TIMEOUT", "SESSION_EXPIRED", "MFA_REQUIRED", "MFA_SETUP_REQUIRED"].includes(payload.code || "")
+      && ["AUTH_REQUIRED", "SESSION_TIMEOUT", "SESSION_EXPIRED", "MFA_REQUIRED", "MFA_SETUP_REQUIRED", "VERIFICATION_REQUIRED"].includes(payload.code || "")
     ) {
       window.dispatchEvent(new CustomEvent("aba-auth-error", { detail: payload }));
     }

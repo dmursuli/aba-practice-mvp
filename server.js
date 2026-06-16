@@ -27,10 +27,15 @@ const SESSION_ABSOLUTE_TIMEOUT_SECONDS = Number(process.env.SESSION_ABSOLUTE_TIM
 const SESSION_INACTIVITY_TIMEOUT_SECONDS = Number(process.env.SESSION_INACTIVITY_TIMEOUT_SECONDS || (60 * 15));
 const SESSION_MAX_AGE_SECONDS = SESSION_ABSOLUTE_TIMEOUT_SECONDS;
 const MFA_PENDING_TIMEOUT_SECONDS = Number(process.env.MFA_PENDING_TIMEOUT_SECONDS || (60 * 10));
-const MFA_ISSUER = process.env.MFA_ISSUER || "Triumph Workspace";
-let otpAuthModulePromise = null;
+const VERIFICATION_CODE_TTL_SECONDS = Number(process.env.VERIFICATION_CODE_TTL_SECONDS || (60 * 10));
+const VERIFICATION_ATTEMPT_LIMIT = Number(process.env.VERIFICATION_ATTEMPT_LIMIT || 5);
+const VERIFICATION_RESEND_LIMIT = Number(process.env.VERIFICATION_RESEND_LIMIT || 3);
+const VERIFICATION_CODE_LENGTH = 6;
 let cachedDbCaCert = null;
 let cachedDbCaCertKey = null;
+let emailModulePromise = null;
+let emailTransportPromise = null;
+const verificationDebugDeliveries = [];
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -430,7 +435,10 @@ export function createAppServer() {
       const db = await readDbWithUsers();
       const payload = await readBody(req);
       const username = String(payload.username || "").trim().toLowerCase();
-      const user = (db.users || []).find((item) => item.username === username && item.active !== false);
+      const user = (db.users || []).find((item) => (
+        item.active !== false
+        && (item.username === username || normalizeEmail(item.email) === username)
+      ));
       if (!user || !verifyPassword(String(payload.password || ""), user.passwordHash)) {
         logAudit(db, req, user, "failed-login", {
           details: { usernameAttempt: username }
@@ -441,37 +449,25 @@ export function createAppServer() {
       }
       const token = crypto.randomUUID();
       if (requiresMfa(user)) {
-        if (user.mfaEnabled) {
-          sessions.set(token, createSessionRecord(user.id, "pending-mfa-verify"));
-          sendAuthCookie(res, token);
-          sendJson(res, 200, {
-            mfaRequired: true,
-            setupRequired: false,
-            user: publicUser(user),
-            message: "Enter the code from your authenticator app or a recovery code to continue."
-          });
-          return;
-        }
-        let pendingSecret;
         try {
-          pendingSecret = await createPendingMfaSecret(user);
-        } catch {
+          const session = createSessionRecord(user.id, "pending-mfa-verify");
+          const verification = await startVerificationChallenge(session, user);
+          sessions.set(token, session);
+          sendAuthCookie(res, token);
+          logAudit(db, req, user, "verification-code-issued", {
+            details: { deliveryMethod: "email" }
+          });
+          await writeDb(db);
+          sendJson(res, 200, verification);
+          return;
+        } catch (error) {
+          if (error?.message?.includes("No verification email")) {
+            authFailure(res, 503, "VERIFICATION_UNAVAILABLE", error.message);
+            return;
+          }
           authServiceUnavailable(res);
           return;
         }
-        sessions.set(token, createSessionRecord(user.id, "pending-mfa-setup", {
-          pendingMfaSecret: pendingSecret.base32
-        }));
-        sendAuthCookie(res, token);
-        sendJson(res, 200, {
-          mfaRequired: true,
-          setupRequired: true,
-          user: publicUser(user),
-          manualEntryKey: pendingSecret.base32,
-          otpauthUrl: pendingSecret.otpauthUrl,
-          message: "MFA setup is required before accessing clinical data."
-        });
-        return;
       }
       sessions.set(token, createSessionRecord(user.id, "authenticated", {
         mfaVerifiedAt: new Date().toISOString()
@@ -503,90 +499,85 @@ export function createAppServer() {
     }
 
     if (req.method === "POST" && url.pathname === "/api/auth/mfa/setup/verify") {
-      const db = await readDbWithUsers();
-      const state = sessionStatus(req, db, { requireAuthenticatedMfa: false });
-      if (state.status !== "ok" || state.session.stage !== "pending-mfa-setup") {
-        authFailure(res, 401, "MFA_SETUP_REQUIRED", "Sign in again to complete MFA setup.");
-        return;
-      }
-      const payload = await readBody(req);
-      let setupCodeValid = false;
-      try {
-        setupCodeValid = await verifyTotpCode(state.session.pendingMfaSecret, payload.code);
-      } catch {
-        authServiceUnavailable(res);
-        return;
-      }
-      if (!setupCodeValid) {
-        logAudit(db, req, state.user, "mfa-challenge-failed", {
-          details: { stage: "setup" }
-        });
-        await writeDb(db);
-        authFailure(res, 401, "MFA_CODE_INVALID", "The authenticator code is not valid.");
-        return;
-      }
-      const recoveryCodes = newRecoveryCodes();
-      state.user.mfaEnabled = true;
-      state.user.mfaSecretEncrypted = encryptMfaSecret(state.session.pendingMfaSecret);
-      state.user.mfaRecoveryCodeHashes = hashRecoveryCodes(recoveryCodes);
-      state.user.mfaEnrolledAt = new Date().toISOString();
-      state.user.lastLoginAt = new Date().toISOString();
-      const nextToken = crypto.randomUUID();
-      sessions.delete(state.token);
-      sessions.set(nextToken, createSessionRecord(state.user.id, "authenticated", {
-        mfaVerifiedAt: new Date().toISOString()
-      }));
-      sendAuthCookie(res, nextToken);
-      logAudit(db, req, state.user, "login", { details: { mfaEnabled: true, enrollmentCompleted: true } });
-      await writeDb(db);
-      sendJson(res, 200, {
-        user: publicUser(state.user),
-        recoveryCodes
-      });
+      authFailure(res, 410, "VERIFICATION_METHOD_CHANGED", "Authenticator setup is no longer used. Sign in again to receive an email verification code.");
       return;
     }
 
-    if (req.method === "POST" && url.pathname === "/api/auth/mfa/verify") {
+    if (req.method === "POST" && (url.pathname === "/api/auth/mfa/verify" || url.pathname === "/api/auth/verify")) {
       const db = await readDbWithUsers();
       const state = sessionStatus(req, db, { requireAuthenticatedMfa: false });
       if (state.status !== "ok" || state.session.stage !== "pending-mfa-verify") {
-        authFailure(res, 401, "MFA_REQUIRED", "Sign in again to complete MFA verification.");
+        authFailure(res, 401, "VERIFICATION_REQUIRED", "Sign in again to complete verification.");
         return;
       }
       const payload = await readBody(req);
-      let totpValid = false;
-      try {
-        totpValid = await verifyTotpCode(decryptMfaSecret(state.user.mfaSecretEncrypted), payload.code);
-      } catch {
-        authServiceUnavailable(res);
-        return;
-      }
-      const recoveryResult = totpValid
-        ? { matched: false, hashes: state.user.mfaRecoveryCodeHashes || [] }
-        : verifyRecoveryCode(payload.recoveryCode || payload.code, state.user.mfaRecoveryCodeHashes || []);
-      if (!totpValid && !recoveryResult.matched) {
-        logAudit(db, req, state.user, "mfa-challenge-failed", {
-          details: { stage: "verify" }
+      if (Date.now() > Number(state.session.verificationCodeExpiresAt || 0)) {
+        logAudit(db, req, state.user, "verification-code-expired", {
+          details: { deliveryMethod: "email" }
         });
         await writeDb(db);
-        authFailure(res, 401, "MFA_CODE_INVALID", "The authenticator or recovery code is not valid.");
+        authFailure(res, 401, "VERIFICATION_CODE_EXPIRED", "That verification code has expired. Request a new one.");
         return;
       }
-      if (recoveryResult.matched) {
-        state.user.mfaRecoveryCodeHashes = recoveryResult.hashes;
+      if (Number(state.session.verificationAttemptCount || 0) >= VERIFICATION_ATTEMPT_LIMIT) {
+        logAudit(db, req, state.user, "verification-code-rate-limited", {
+          details: { deliveryMethod: "email" }
+        });
+        await writeDb(db);
+        authFailure(res, 429, "VERIFICATION_RATE_LIMITED", "Too many incorrect verification attempts. Sign in again to request a new code.");
+        return;
+      }
+      const code = String(payload.code || "").trim();
+      const valid = code && verifyPassword(code, state.session.verificationCodeHash || "");
+      if (!valid) {
+        state.session.verificationAttemptCount = Number(state.session.verificationAttemptCount || 0) + 1;
+        logAudit(db, req, state.user, "verification-challenge-failed", {
+          details: { deliveryMethod: "email", attempts: state.session.verificationAttemptCount }
+        });
+        await writeDb(db);
+        authFailure(res, 401, "VERIFICATION_CODE_INVALID", "That verification code is not valid.");
+        return;
       }
       state.user.lastLoginAt = new Date().toISOString();
       const nextToken = crypto.randomUUID();
       sessions.delete(state.token);
       sessions.set(nextToken, createSessionRecord(state.user.id, "authenticated", {
-        mfaVerifiedAt: new Date().toISOString()
+        verifiedAt: new Date().toISOString()
       }));
       sendAuthCookie(res, nextToken);
       logAudit(db, req, state.user, "login", {
-        details: { mfaEnabled: true, recoveryCodeUsed: recoveryResult.matched }
+        details: { verificationMethod: "email" }
       });
       await writeDb(db);
       sendJson(res, 200, { user: publicUser(state.user) });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/verify/resend") {
+      const db = await readDbWithUsers();
+      const state = sessionStatus(req, db, { requireAuthenticatedMfa: false });
+      if (state.status !== "ok" || state.session.stage !== "pending-mfa-verify") {
+        authFailure(res, 401, "VERIFICATION_REQUIRED", "Sign in again to request a new verification code.");
+        return;
+      }
+      try {
+        const payload = await startVerificationChallenge(state.session, state.user, { isResend: true });
+        logAudit(db, req, state.user, "verification-code-resent", {
+          details: { deliveryMethod: "email", resendCount: state.session.verificationResendCount }
+        });
+        await writeDb(db);
+        sendJson(res, 200, payload);
+      } catch (error) {
+        if (error.code === "VERIFICATION_RESEND_LIMIT") {
+          authFailure(res, 429, "VERIFICATION_RESEND_LIMIT", error.message);
+          return;
+        }
+        if (error?.message?.includes("No verification email")) {
+          authFailure(res, 503, "VERIFICATION_UNAVAILABLE", error.message);
+          return;
+        }
+        authServiceUnavailable(res);
+      }
       return;
     }
 
@@ -601,36 +592,14 @@ export function createAppServer() {
         authFailure(res, 401, state.reason === "inactive" ? "SESSION_TIMEOUT" : "SESSION_EXPIRED", "Session expired. Please sign in again.");
         return;
       }
-      if (state.status === "mfa-setup-required") {
-        const pendingSecret = state.session.pendingMfaSecret;
-        let pendingTotp;
-        try {
-          const OTPAuth = await loadOtpAuth();
-          pendingTotp = new OTPAuth.TOTP({
-            issuer: MFA_ISSUER,
-            label: `${MFA_ISSUER}:${state.user.username}`,
-            algorithm: "SHA1",
-            digits: 6,
-            period: 30,
-            secret: OTPAuth.Secret.fromBase32(pendingSecret)
-          });
-        } catch {
-          authServiceUnavailable(res);
-          return;
-        }
-        authFailure(res, 401, "MFA_SETUP_REQUIRED", "MFA setup is required before accessing clinical data.", {
-          mfaRequired: true,
-          setupRequired: true,
-          user: publicUser(state.user),
-          manualEntryKey: pendingSecret,
-          otpauthUrl: pendingTotp.toString()
-        });
-        return;
-      }
       if (state.status === "mfa-required") {
-        authFailure(res, 401, "MFA_REQUIRED", "MFA verification is required before accessing clinical data.", {
+        authFailure(res, 401, "VERIFICATION_REQUIRED", "Email verification is required before accessing clinical data.", {
           mfaRequired: true,
           setupRequired: false,
+          verificationRequired: true,
+          deliveryMethod: "email",
+          destinationMask: state.session.verificationEmailMasked || maskEmail(userVerificationEmail(state.user)),
+          expiresInSeconds: Math.max(0, Math.ceil((Number(state.session.verificationCodeExpiresAt || 0) - Date.now()) / 1000)),
           user: publicUser(state.user)
         });
         return;
@@ -640,6 +609,21 @@ export function createAppServer() {
         return;
       }
       sendJson(res, 200, { user: publicUser(state.user) });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/ping") {
+      const db = await readDbWithUsers();
+      const state = sessionStatus(req, db);
+      if (state.status !== "ok") {
+        requireAuth(req, res, db, state);
+        return;
+      }
+      sendJson(res, 200, {
+        ok: true,
+        inactivityTimeoutSeconds: SESSION_INACTIVITY_TIMEOUT_SECONDS,
+        absoluteTimeoutSeconds: SESSION_ABSOLUTE_TIMEOUT_SECONDS
+      });
       return;
     }
 
@@ -1242,9 +1226,11 @@ function ensureDefaultUsers(db) {
 }
 
 function defaultUser(username, name, role, password) {
+  const email = looksLikeEmail(username) ? normalizeEmail(username) : `${username}@local.test`;
   return {
     id: `user-${username}`,
     username,
+    email,
     name,
     role,
     agency: DEFAULT_AGENCY,
@@ -1262,6 +1248,7 @@ function defaultUser(username, name, role, password) {
 
 function createUserRecord(payload, existingUsers, actor = null) {
   const username = String(payload.username || "").trim().toLowerCase();
+  const email = normalizeEmail(payload.email);
   const name = text(payload.name);
   const password = String(payload.password || "");
   const role = validRole(payload.role);
@@ -1271,13 +1258,19 @@ function createUserRecord(payload, existingUsers, actor = null) {
   const allowMasterAdmin = isMasterAdmin(actor) && role === "admin" && Boolean(payload.isMasterAdmin);
   if (!username) throw new Error("Username is required.");
   if (!name) throw new Error("Name is required.");
+  if (!email) throw new Error("Verification email is required.");
+  if (!looksLikeEmail(email)) throw new Error("Verification email must be a valid email address.");
   if (password.length < 6) throw new Error("Password must be at least 6 characters.");
   if (existingUsers.some((user) => user.username === username)) {
     throw new Error("That username already exists.");
   }
+  if (existingUsers.some((existing) => normalizeEmail(existing.email) === email)) {
+    throw new Error("That verification email is already assigned to another user.");
+  }
   return {
     id: `user-${uniqueSlug(username, "user", existingUsers.map((user) => user.id))}`,
     username,
+    email,
     name,
     role,
     agency,
@@ -1295,8 +1288,15 @@ function createUserRecord(payload, existingUsers, actor = null) {
 
 function updateUserRecord(user, payload, actor, existingUsers = []) {
   const name = text(payload.name);
+  const email = normalizeEmail(payload.email);
   if (!name) throw new Error("Name is required.");
+  if (!email) throw new Error("Verification email is required.");
+  if (!looksLikeEmail(email)) throw new Error("Verification email must be a valid email address.");
+  if (existingUsers.some((existing) => existing.id !== user.id && normalizeEmail(existing.email) === email)) {
+    throw new Error("That verification email is already assigned to another user.");
+  }
   user.name = name;
+  user.email = email;
   user.role = validRole(payload.role);
   user.agency = isMasterAdmin(actor)
     ? normalizeAgency(payload.agency, user.agency)
@@ -1314,6 +1314,14 @@ function updateUserRecord(user, payload, actor, existingUsers = []) {
     user.passwordUpdatedAt = new Date().toISOString();
   }
   user.updatedAt = new Date().toISOString();
+}
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function looksLikeEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
 }
 
 function validRole(role) {
@@ -1342,88 +1350,119 @@ function requiresMfa(user) {
   return ["admin", "bcba", "rbt", "read-only"].includes(user?.role);
 }
 
-function encryptionSecret() {
-  const configured = process.env.MFA_ENCRYPTION_KEY || "";
-  if (!configured && process.env.NODE_ENV === "production") {
-    throw new Error("MFA_ENCRYPTION_KEY must be set in production.");
+function userVerificationEmail(user) {
+  const directEmail = normalizeEmail(user?.email);
+  if (directEmail) return directEmail;
+  return looksLikeEmail(user?.username) ? normalizeEmail(user.username) : "";
+}
+
+function maskEmail(email) {
+  const normalized = normalizeEmail(email);
+  const [localPart, domain = ""] = normalized.split("@");
+  if (!localPart || !domain) return "";
+  const prefix = localPart.length <= 2 ? localPart[0] || "*" : localPart.slice(0, 2);
+  return `${prefix}${"*".repeat(Math.max(localPart.length - prefix.length, 1))}@${domain}`;
+}
+
+function newVerificationCode() {
+  const min = 10 ** (VERIFICATION_CODE_LENGTH - 1);
+  const max = (10 ** VERIFICATION_CODE_LENGTH) - 1;
+  return String(crypto.randomInt(min, max + 1));
+}
+
+function verificationEmailConfig() {
+  if (isVerificationDebugEnabled()) {
+    return { mode: "debug", from: "debug@local.test" };
   }
-  return configured || "local-dev-mfa-encryption-key";
-}
-
-function encryptionKey() {
-  return crypto.createHash("sha256").update(encryptionSecret()).digest();
-}
-
-function encryptMfaSecret(secret) {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(String(secret), "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `${iv.toString("hex")}:${tag.toString("hex")}:${encrypted.toString("hex")}`;
-}
-
-function decryptMfaSecret(payload) {
-  const [ivHex, tagHex, dataHex] = String(payload || "").split(":");
-  if (!ivHex || !tagHex || !dataHex) return "";
-  const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey(), Buffer.from(ivHex, "hex"));
-  decipher.setAuthTag(Buffer.from(tagHex, "hex"));
-  return Buffer.concat([decipher.update(Buffer.from(dataHex, "hex")), decipher.final()]).toString("utf8");
-}
-
-function newRecoveryCodes(count = 8) {
-  return Array.from({ length: count }, () => crypto.randomBytes(4).toString("hex").toUpperCase());
-}
-
-function hashRecoveryCodes(codes = []) {
-  return codes.map((code) => hashPassword(code));
-}
-
-function verifyRecoveryCode(code, hashes = []) {
-  const normalized = String(code || "").trim().toUpperCase();
-  if (!normalized) return { matched: false, hashes };
-  const index = hashes.findIndex((hash) => verifyPassword(normalized, hash));
-  if (index < 0) return { matched: false, hashes };
+  const host = String(process.env.SMTP_HOST || "").trim();
+  const port = Number(process.env.SMTP_PORT || 587);
+  const user = String(process.env.SMTP_USER || "").trim();
+  const pass = String(process.env.SMTP_PASSWORD || "").trim();
+  const from = String(process.env.SMTP_FROM || "").trim();
+  if (!host || !port || !user || !pass || !from) return null;
   return {
-    matched: true,
-    hashes: hashes.filter((_, hashIndex) => hashIndex !== index)
+    mode: "smtp",
+    host,
+    port,
+    secure: String(process.env.SMTP_SECURE || "").trim() === "true" || port === 465,
+    user,
+    pass,
+    from
   };
 }
 
-async function createPendingMfaSecret(user) {
-  const OTPAuth = await loadOtpAuth();
-  const secret = new OTPAuth.Secret();
-  const totp = new OTPAuth.TOTP({
-    issuer: MFA_ISSUER,
-    label: `${MFA_ISSUER}:${user.username}`,
-    algorithm: "SHA1",
-    digits: 6,
-    period: 30,
-    secret
-  });
-  return {
-    base32: secret.base32,
-    otpauthUrl: totp.toString()
-  };
+function isVerificationDebugEnabled() {
+  return process.env.EMAIL_VERIFICATION_DEBUG_CODES === "true" && process.env.NODE_ENV !== "production";
 }
 
-async function verifyTotpCode(secretBase32, code) {
-  const normalized = String(code || "").trim().replace(/\s+/g, "");
-  if (!normalized) return false;
-  const OTPAuth = await loadOtpAuth();
-  const totp = new OTPAuth.TOTP({
-    issuer: MFA_ISSUER,
-    algorithm: "SHA1",
-    digits: 6,
-    period: 30,
-    secret: OTPAuth.Secret.fromBase32(secretBase32)
+async function loadEmailModule() {
+  if (!emailModulePromise) {
+    emailModulePromise = import("nodemailer").catch((error) => {
+      console.error("Email dependency unavailable", { message: error?.message || String(error) });
+      emailModulePromise = null;
+      throw error;
+    });
+  }
+  return emailModulePromise;
+}
+
+async function emailTransport() {
+  const config = verificationEmailConfig();
+  if (!config || config.mode !== "smtp") {
+    throw new Error("Verification email is not configured.");
+  }
+  if (!emailTransportPromise) {
+    emailTransportPromise = loadEmailModule().then((module) => module.default.createTransport({
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      auth: {
+        user: config.user,
+        pass: config.pass
+      }
+    }));
+  }
+  return emailTransportPromise;
+}
+
+export function drainVerificationDebugDeliveries() {
+  const deliveries = [...verificationDebugDeliveries];
+  verificationDebugDeliveries.length = 0;
+  return deliveries;
+}
+
+async function deliverVerificationCode(user, email, code) {
+  const config = verificationEmailConfig();
+  if (!config) {
+    throw new Error("Verification email is not configured.");
+  }
+  if (config.mode === "debug") {
+    verificationDebugDeliveries.push({
+      username: user.username,
+      email,
+      code
+    });
+    return { debugCode: code };
+  }
+  const transport = await emailTransport();
+  await transport.sendMail({
+    from: config.from,
+    to: email,
+    subject: "Your Triumph Workspace verification code",
+    text: `Your verification code is ${code}. It expires in ${Math.round(VERIFICATION_CODE_TTL_SECONDS / 60)} minutes.`,
+    html: `<p>Your verification code is <strong>${code}</strong>.</p><p>It expires in ${Math.round(VERIFICATION_CODE_TTL_SECONDS / 60)} minutes.</p>`
   });
-  return totp.validate({ token: normalized, window: 1 }) !== null;
+  return {};
 }
 
 function ensureUserSecurityDefaults(db) {
   let changed = false;
   db.users = Array.isArray(db.users) ? db.users : [];
   db.users.forEach((user) => {
+    if (typeof user.email !== "string") {
+      user.email = looksLikeEmail(user.username) ? normalizeEmail(user.username) : "";
+      changed = true;
+    }
     if (typeof user.mfaEnabled !== "boolean") {
       user.mfaEnabled = false;
       changed = true;
@@ -1460,6 +1499,40 @@ function authServiceUnavailable(res) {
   });
 }
 
+async function startVerificationChallenge(session, user, { isResend = false } = {}) {
+  const email = userVerificationEmail(user);
+  if (!email) {
+    throw new Error("No verification email is configured for this account. Please contact your administrator.");
+  }
+  if (isResend && Number(session.verificationResendCount || 0) >= VERIFICATION_RESEND_LIMIT) {
+    const error = new Error("Too many verification code requests. Please sign in again.");
+    error.code = "VERIFICATION_RESEND_LIMIT";
+    throw error;
+  }
+  const code = newVerificationCode();
+  session.stage = "pending-mfa-verify";
+  session.verificationEmail = email;
+  session.verificationEmailMasked = maskEmail(email);
+  session.verificationCodeHash = hashPassword(code);
+  session.verificationCodeExpiresAt = Date.now() + (VERIFICATION_CODE_TTL_SECONDS * 1000);
+  session.verificationAttemptCount = 0;
+  session.verificationResendCount = isResend
+    ? Number(session.verificationResendCount || 0) + 1
+    : 0;
+  const delivery = await deliverVerificationCode(user, email, code);
+  return {
+    mfaRequired: true,
+    verificationRequired: true,
+    setupRequired: false,
+    deliveryMethod: "email",
+    destinationMask: session.verificationEmailMasked,
+    expiresInSeconds: VERIFICATION_CODE_TTL_SECONDS,
+    user: publicUser(user),
+    message: `We sent a verification code to ${session.verificationEmailMasked}.`
+      + (isVerificationDebugEnabled() && delivery.debugCode ? ` Development code: ${delivery.debugCode}` : "")
+  };
+}
+
 function isDatabaseTlsError(error) {
   const message = String(error?.message || "").toLowerCase();
   return message.includes("self-signed certificate in certificate chain")
@@ -1477,17 +1550,6 @@ function createSessionRecord(userId, stage, extra = {}) {
     stage,
     ...extra
   };
-}
-
-async function loadOtpAuth() {
-  if (!otpAuthModulePromise) {
-    otpAuthModulePromise = import("otpauth").catch((error) => {
-      console.error("Auth dependency unavailable", { message: error?.message || String(error) });
-      otpAuthModulePromise = null;
-      throw error;
-    });
-  }
-  return otpAuthModulePromise;
 }
 
 function sessionStatus(req, db, { requireAuthenticatedMfa = true, touch = true } = {}) {
@@ -1555,11 +1617,11 @@ function requireAuth(req, res, db, state = null) {
     return false;
   }
   if (state.status === "mfa-setup-required") {
-    authFailure(res, 401, "MFA_SETUP_REQUIRED", "MFA setup is required before accessing clinical data.");
+    authFailure(res, 401, "VERIFICATION_REQUIRED", "Email verification is required before accessing clinical data.");
     return false;
   }
   if (state.status === "mfa-required") {
-    authFailure(res, 401, "MFA_REQUIRED", "MFA verification is required before accessing clinical data.");
+    authFailure(res, 401, "VERIFICATION_REQUIRED", "Email verification is required before accessing clinical data.");
     return false;
   }
   authFailure(res, 401, "AUTH_REQUIRED", "Not signed in.");
@@ -1615,14 +1677,14 @@ function publicUser(user) {
   return {
     id: user.id,
     username: user.username,
+    email: userVerificationEmail(user),
     name: user.name,
     role: user.role,
     agency: normalizeAgency(user.agency),
     isMasterAdmin: isMasterAdmin(user),
     active: user.active !== false,
-    mfaEnabled: Boolean(user.mfaEnabled),
-    mfaRequired: requiresMfa(user),
-    mfaEnrolledAt: user.mfaEnrolledAt || "",
+    verificationMethod: "email",
+    verificationRequired: requiresMfa(user),
     createdAt: user.createdAt || "",
     updatedAt: user.updatedAt || "",
     passwordUpdatedAt: user.passwordUpdatedAt || "",

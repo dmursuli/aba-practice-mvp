@@ -1,4 +1,4 @@
-import { completeMfaSetup, createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getUsers, login, logout, restorePracticeBackup, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifyMfa } from "./api.js";
+import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getUsers, login, logout, resendSignInCode, restorePracticeBackup, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
@@ -34,7 +34,9 @@ const state = {
     intake: {},
     session: {}
   },
-  inactivityTimerId: null
+  inactivityTimerId: null,
+  inactivityWarningTimerId: null,
+  lastSessionTouchAt: 0
 };
 
 const roleViews = {
@@ -75,17 +77,10 @@ const loginForm = document.querySelector("#login-form");
 const loginMessage = document.querySelector("#login-message");
 const loginPanel = document.querySelector("#login-form");
 const mfaVerifyPanel = document.querySelector("#mfa-verify-panel");
-const mfaSetupPanel = document.querySelector("#mfa-setup-panel");
-const mfaRecoveryPanel = document.querySelector("#mfa-recovery-panel");
 const mfaVerifyForm = document.querySelector("#mfa-verify-form");
-const mfaSetupForm = document.querySelector("#mfa-setup-form");
 const mfaMessage = document.querySelector("#mfa-message");
-const mfaSetupMessage = document.querySelector("#mfa-setup-message");
-const mfaManualEntryKey = document.querySelector("#mfa-manual-entry-key");
-const mfaOtpAuthUri = document.querySelector("#mfa-otpauth-uri");
-const mfaRecoveryCodesList = document.querySelector("#mfa-recovery-codes");
-const mfaRecoveryContinueButton = document.querySelector("#mfa-recovery-continue");
 const mfaCancelButtons = document.querySelectorAll("[data-auth-cancel]");
+const resendSignInCodeButton = document.querySelector("#resend-sign-in-code");
 const appRoot = document.querySelector("#app-root");
 const currentUserLabel = document.querySelector("#current-user-label");
 const logoutButton = document.querySelector("#logout-button");
@@ -303,6 +298,8 @@ const sessionPreloadLimits = {
 };
 
 const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
+const INACTIVITY_WARNING_MS = 14 * 60 * 1000;
+const SESSION_TOUCH_DEBOUNCE_MS = 60 * 1000;
 
 init().catch(handleBootstrapFailure);
 
@@ -318,17 +315,15 @@ async function restoreSession() {
     state.currentUser = user;
     await startAuthenticatedApp();
   } catch (error) {
-    if (error.code === "MFA_REQUIRED" || error.code === "MFA_SETUP_REQUIRED") {
+    if (error.code === "VERIFICATION_REQUIRED" || error.code === "MFA_REQUIRED") {
       state.authChallenge = error.details;
-      if (error.code === "MFA_SETUP_REQUIRED") {
-        showAuthStep("mfa-setup", error.details);
-      } else {
-        showAuthStep("mfa-verify", error.details);
-      }
+      showAuthStep("mfa-verify", error.details);
       return;
     }
     const message = error.code === "SESSION_TIMEOUT"
       ? "Session timed out due to inactivity."
+      : error.code === "VERIFICATION_UNAVAILABLE"
+        ? error.message
       : error.code === "AUTH_UNAVAILABLE"
         ? "Authentication is temporarily unavailable. Please try again shortly or contact support."
         : "";
@@ -338,6 +333,7 @@ async function restoreSession() {
 
 async function startAuthenticatedApp() {
   showApp();
+  state.lastSessionTouchAt = Date.now();
   startInactivityTimer();
   await refreshData();
   const requested = requestedWorkspaceState();
@@ -360,11 +356,29 @@ async function startAuthenticatedApp() {
 function startInactivityTimer() {
   clearInactivityTimer();
   if (!state.currentUser) return;
+  state.inactivityWarningTimerId = window.setTimeout(async () => {
+    const staySignedIn = window.confirm("Your session will expire soon due to inactivity. Stay signed in?");
+    if (!staySignedIn) {
+      try {
+        await logout("timeout");
+      } catch {}
+      handleAuthFailureEvent({ code: "SESSION_TIMEOUT", errors: ["You were signed out due to inactivity."] });
+      return;
+    }
+    try {
+      await touchSession();
+      state.lastSessionTouchAt = Date.now();
+    } catch {
+      handleAuthFailureEvent({ code: "SESSION_TIMEOUT", errors: ["You were signed out due to inactivity."] });
+      return;
+    }
+    startInactivityTimer();
+  }, INACTIVITY_WARNING_MS);
   state.inactivityTimerId = window.setTimeout(async () => {
     try {
       await logout("timeout");
     } catch {}
-    handleAuthFailureEvent({ code: "SESSION_TIMEOUT", errors: ["Session timed out due to inactivity."] });
+    handleAuthFailureEvent({ code: "SESSION_TIMEOUT", errors: ["You were signed out due to inactivity."] });
   }, INACTIVITY_TIMEOUT_MS);
 }
 
@@ -373,11 +387,25 @@ function clearInactivityTimer() {
     window.clearTimeout(state.inactivityTimerId);
     state.inactivityTimerId = null;
   }
+  if (state.inactivityWarningTimerId) {
+    window.clearTimeout(state.inactivityWarningTimerId);
+    state.inactivityWarningTimerId = null;
+  }
 }
 
 function resetInactivityTimer() {
   if (!state.currentUser) return;
+  maybeTouchAuthenticatedSession();
   startInactivityTimer();
+}
+
+function maybeTouchAuthenticatedSession() {
+  const now = Date.now();
+  if (now - Number(state.lastSessionTouchAt || 0) < SESSION_TOUCH_DEBOUNCE_MS) return;
+  state.lastSessionTouchAt = now;
+  touchSession().catch(() => {
+    handleAuthFailureEvent({ code: "SESSION_TIMEOUT", errors: ["You were signed out due to inactivity."] });
+  });
 }
 
 async function refreshData() {
@@ -430,8 +458,7 @@ function ensureProgramGraphModalLegend() {
 function bindEvents() {
   loginForm.addEventListener("submit", handleLogin);
   mfaVerifyForm?.addEventListener("submit", handleVerifyMfa);
-  mfaSetupForm?.addEventListener("submit", handleCompleteMfaSetup);
-  mfaRecoveryContinueButton?.addEventListener("click", handleRecoveryContinue);
+  resendSignInCodeButton?.addEventListener("click", handleResendSignInCode);
   mfaCancelButtons.forEach((button) => button.addEventListener("click", handleCancelAuthFlow));
   logoutButton.addEventListener("click", handleLogout);
   newUserForm.addEventListener("submit", handleCreateUser);
@@ -573,18 +600,14 @@ async function handleLogin(event) {
   try {
     const payload = await login(values.get("username"), values.get("password"));
     loginForm.reset();
-    if (payload.user && !payload.mfaRequired) {
+    if (payload.user && !payload.verificationRequired && !payload.mfaRequired) {
       state.currentUser = payload.user;
       state.authChallenge = null;
       await startAuthenticatedApp();
       return;
     }
     state.authChallenge = payload;
-    if (payload.setupRequired) {
-      showAuthStep("mfa-setup", payload);
-    } else {
-      showAuthStep("mfa-verify", payload);
-    }
+    showAuthStep("mfa-verify", payload);
   } catch (error) {
     loginMessage.textContent = error.message;
   }
@@ -602,7 +625,7 @@ async function handleVerifyMfa(event) {
   mfaMessage.textContent = "";
   const values = new FormData(mfaVerifyForm);
   try {
-    const payload = await verifyMfa(values.get("code"), values.get("recoveryCode"));
+    const payload = await verifySignInCode(values.get("code"));
     state.currentUser = payload.user;
     state.authChallenge = null;
     mfaVerifyForm.reset();
@@ -612,27 +635,16 @@ async function handleVerifyMfa(event) {
   }
 }
 
-async function handleCompleteMfaSetup(event) {
-  event.preventDefault();
-  if (!mfaSetupForm) return;
-  mfaSetupMessage.textContent = "";
-  const values = new FormData(mfaSetupForm);
+async function handleResendSignInCode() {
+  if (!state.authChallenge) return;
+  mfaMessage.textContent = "";
   try {
-    const payload = await completeMfaSetup(values.get("code"));
-    state.currentUser = payload.user;
-    state.authChallenge = null;
-    mfaSetupForm.reset();
-    showAuthStep("mfa-recovery", { recoveryCodes: payload.recoveryCodes || [] });
+    const payload = await resendSignInCode();
+    state.authChallenge = payload;
+    showAuthStep("mfa-verify", payload);
   } catch (error) {
-    mfaSetupMessage.textContent = error.message;
+    mfaMessage.textContent = error.message;
   }
-}
-
-function handleRecoveryContinue() {
-  state.authChallenge = null;
-  startAuthenticatedApp().catch((error) => {
-    showLogin(error?.message || "Unable to restore your session.");
-  });
 }
 
 async function handleCancelAuthFlow() {
@@ -647,24 +659,10 @@ function showAuthStep(step, details = {}) {
   appRoot.classList.add("hidden");
   loginPanel?.classList.toggle("hidden", step !== "password");
   mfaVerifyPanel?.classList.toggle("hidden", step !== "mfa-verify");
-  mfaSetupPanel?.classList.toggle("hidden", step !== "mfa-setup");
-  mfaRecoveryPanel?.classList.toggle("hidden", step !== "mfa-recovery");
   loginMessage.textContent = step === "password" ? "" : loginMessage.textContent;
   if (step === "mfa-verify") {
-    mfaMessage.textContent = details.message || "Enter the code from your authenticator app or a recovery code.";
+    mfaMessage.textContent = details.message || "Enter the 6-digit verification code we emailed to you.";
     mfaVerifyForm?.reset();
-  }
-  if (step === "mfa-setup") {
-    if (mfaManualEntryKey) mfaManualEntryKey.value = details.manualEntryKey || "";
-    if (mfaOtpAuthUri) mfaOtpAuthUri.value = details.otpauthUrl || "";
-    mfaSetupMessage.textContent = details.message || "Add this secret to your authenticator app, then enter the 6-digit code.";
-    mfaSetupForm?.reset();
-  }
-  if (step === "mfa-recovery") {
-    const codes = details.recoveryCodes || [];
-    if (mfaRecoveryCodesList) {
-      mfaRecoveryCodesList.innerHTML = codes.map((code) => `<li><code>${escapeHtml(code)}</code></li>`).join("");
-    }
   }
 }
 
@@ -688,6 +686,7 @@ function resetSensitiveState() {
   state.authChallenge = null;
   state.authFlow = "password";
   state.draftCache = { intake: {}, session: {} };
+  state.lastSessionTouchAt = 0;
   currentUserLabel.textContent = "";
   clearSensitiveDom();
   appRoot.classList.add("hidden");
@@ -697,11 +696,18 @@ function resetSensitiveState() {
 }
 
 function handleAuthFailureEvent(detail = {}) {
+  if (detail.code === "VERIFICATION_REQUIRED") {
+    state.authChallenge = detail;
+    showAuthStep("mfa-verify", detail);
+    return;
+  }
   resetSensitiveState();
   const message = detail.code === "SESSION_TIMEOUT"
-    ? "Session timed out due to inactivity."
+    ? "You were signed out due to inactivity."
     : detail.code === "SESSION_EXPIRED"
       ? "Session expired. Please sign in again."
+      : detail.code === "VERIFICATION_UNAVAILABLE"
+        ? detail.errors?.[0] || "Verification email is not configured for this account."
       : detail.code === "AUTH_UNAVAILABLE"
         ? "Authentication is temporarily unavailable. Please try again shortly or contact support."
       : detail.errors?.[0] || "";
@@ -780,6 +786,7 @@ async function handleCreateUser(event) {
     await createUser({
       name: values.get("name"),
       username: values.get("username"),
+      email: values.get("email"),
       role: values.get("role"),
       password: values.get("password"),
       agency: values.get("agency"),
@@ -822,6 +829,7 @@ async function saveUserRow(row, resetPassword, password = "") {
   try {
     await updateUser(row.dataset.userRow, {
       name: row.querySelector('[data-user-field="name"]').value,
+      email: row.querySelector('[data-user-field="email"]').value,
       role: row.querySelector('[data-user-field="role"]').value,
       agency: row.querySelector('[data-user-field="agency"]')?.value,
       isMasterAdmin: row.querySelector('[data-user-field="isMasterAdmin"]')?.checked || false,
@@ -842,8 +850,6 @@ function showLogin(message = "") {
   appRoot.classList.add("hidden");
   loginPanel?.classList.remove("hidden");
   mfaVerifyPanel?.classList.add("hidden");
-  mfaSetupPanel?.classList.add("hidden");
-  mfaRecoveryPanel?.classList.add("hidden");
   loginMessage.textContent = message;
 }
 
@@ -2768,6 +2774,10 @@ function renderUsers() {
       <label>
         Username
         <input type="text" value="${escapeHtml(user.username)}" disabled>
+      </label>
+      <label>
+        Verification email
+        <input type="email" value="${escapeHtml(user.email || "")}" data-user-field="email">
       </label>
       <label>
         Role

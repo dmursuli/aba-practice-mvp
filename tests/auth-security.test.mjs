@@ -3,19 +3,19 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import * as OTPAuth from 'otpauth';
 
 process.env.DB_PATH = process.env.DB_PATH || join(await mkdtemp(join(tmpdir(), 'aba-auth-test-')), 'db.json');
 process.env.SESSION_ABSOLUTE_TIMEOUT_SECONDS = '5';
 process.env.SESSION_INACTIVITY_TIMEOUT_SECONDS = '1';
 process.env.MFA_PENDING_TIMEOUT_SECONDS = '30';
-process.env.MFA_ENCRYPTION_KEY = 'test-mfa-encryption-key';
+process.env.VERIFICATION_CODE_TTL_SECONDS = '2';
+process.env.EMAIL_VERIFICATION_DEBUG_CODES = 'true';
 process.env.ABA_DISABLE_AUTOSTART = '1';
 
 const dbPath = process.env.DB_PATH;
 await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
 
-const { createAppServer, resetRuntimeState } = await import('../server.js');
+const { createAppServer, drainVerificationDebugDeliveries, resetRuntimeState } = await import('../server.js');
 
 let server;
 let baseUrl = '';
@@ -58,69 +58,29 @@ async function request(path, { method = 'GET', body, cookie } = {}) {
   };
 }
 
-async function loginAndCompleteMfa() {
-  const loginResult = await request('/api/auth/login', {
+async function loginForVerification(identifier = 'admin') {
+  drainVerificationDebugDeliveries();
+  const result = await request('/api/auth/login', {
     method: 'POST',
-    body: { username: 'admin', password: 'admin123' }
+    body: { username: identifier, password: 'admin123' }
   });
-  assert.equal(loginResult.response.status, 200);
-  assert.equal(loginResult.json.mfaRequired, true);
-  assert.equal(loginResult.json.setupRequired, true);
-  const totp = new OTPAuth.TOTP({
-    issuer: 'Triumph Workspace',
-    algorithm: 'SHA1',
-    digits: 6,
-    period: 30,
-    secret: OTPAuth.Secret.fromBase32(loginResult.json.manualEntryKey)
-  });
-  const code = totp.generate();
-  const mfaResult = await request('/api/auth/mfa/setup/verify', {
-    method: 'POST',
-    cookie: loginResult.cookie,
-    body: { code }
-  });
-  assert.equal(mfaResult.response.status, 200);
-  assert.ok(Array.isArray(mfaResult.json.recoveryCodes));
-  return mfaResult.cookie;
+  assert.equal(result.response.status, 200);
+  assert.equal(result.json.verificationRequired, true);
+  const deliveries = drainVerificationDebugDeliveries();
+  assert.equal(deliveries.length, 1);
+  return { ...result, code: deliveries[0].code };
 }
 
-test('user must complete MFA before protected API access is allowed', async () => {
-  resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const loginResult = await request('/api/auth/login', {
+async function loginAndVerify() {
+  const loginResult = await loginForVerification();
+  const verifyResult = await request('/api/auth/verify', {
     method: 'POST',
-    body: { username: 'admin', password: 'admin123' }
+    cookie: loginResult.cookie,
+    body: { code: loginResult.code }
   });
-
-  assert.equal(loginResult.response.status, 200);
-  assert.equal(loginResult.json.mfaRequired, true);
-  assert.equal(loginResult.json.setupRequired, true);
-
-  const dataResult = await request('/api/data', { cookie: loginResult.cookie });
-  assert.equal(dataResult.response.status, 401);
-  assert.equal(dataResult.json.code, 'MFA_SETUP_REQUIRED');
-});
-
-test('direct session restoration still requires MFA completion before protected access', async () => {
-  resetRuntimeState();
-  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const loginResult = await request('/api/auth/login', {
-    method: 'POST',
-    body: { username: 'admin', password: 'admin123' }
-  });
-
-  const meResult = await request('/api/auth/me', { cookie: loginResult.cookie });
-  assert.equal(meResult.response.status, 401);
-  assert.equal(meResult.json.code, 'MFA_SETUP_REQUIRED');
-  assert.equal(meResult.json.mfaRequired, true);
-  assert.equal(meResult.json.setupRequired, true);
-});
-
-test('protected routes redirect to login when no valid session exists', async () => {
-  const dataResult = await request('/api/data');
-  assert.equal(dataResult.response.status, 401);
-  assert.equal(dataResult.json.code, 'AUTH_REQUIRED');
-});
+  assert.equal(verifyResult.response.status, 200);
+  return { loginResult, verifyResult, cookie: verifyResult.cookie };
+}
 
 test('login page renders for unauthenticated users and includes auth assets', async () => {
   const pageResult = await request('/');
@@ -130,37 +90,116 @@ test('login page renders for unauthenticated users and includes auth assets', as
   assert.match(pageResult.text, /<link rel="stylesheet" href="\/styles\.css">/);
 });
 
-test('authenticated session can access protected data only after MFA setup', async () => {
+test('email verification is required after password login', async () => {
   resetRuntimeState();
   await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const cookie = await loginAndCompleteMfa();
-  const meResult = await request('/api/auth/me', { cookie });
-  assert.equal(meResult.response.status, 200);
-  assert.equal(meResult.json.user.mfaEnabled, true);
-  const dataResult = await request('/api/data', { cookie });
-  assert.equal(dataResult.response.status, 200);
+  const loginResult = await loginForVerification();
+  assert.equal(loginResult.json.deliveryMethod, 'email');
+  assert.match(loginResult.json.destinationMask, /@/);
+  const dataResult = await request('/api/data', { cookie: loginResult.cookie });
+  assert.equal(dataResult.response.status, 401);
+  assert.equal(dataResult.json.code, 'VERIFICATION_REQUIRED');
 });
 
-test('logout clears the auth cookie', async () => {
+test('verification code expires', async () => {
   resetRuntimeState();
   await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const cookie = await loginAndCompleteMfa();
-  const logoutResult = await request('/api/auth/logout', {
+  const loginResult = await loginForVerification();
+  await new Promise((resolve) => setTimeout(resolve, 2100));
+  const verifyResult = await request('/api/auth/verify', {
     method: 'POST',
-    cookie
+    cookie: loginResult.cookie,
+    body: { code: loginResult.code }
   });
-  assert.equal(logoutResult.response.status, 200);
-  assert.match(logoutResult.response.headers.get('set-cookie') || '', /Max-Age=0/);
+  assert.equal(verifyResult.response.status, 401);
+  assert.equal(verifyResult.json.code, 'VERIFICATION_CODE_EXPIRED');
 });
 
-test('expired sessions are rejected after inactivity timeout', async () => {
+test('verification code is single-use', async () => {
   resetRuntimeState();
   await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const cookie = await loginAndCompleteMfa();
+  const { loginResult, verifyResult } = await loginAndVerify();
+  const reused = await request('/api/auth/verify', {
+    method: 'POST',
+    cookie: loginResult.cookie,
+    body: { code: loginResult.code }
+  });
+  assert.equal(verifyResult.response.status, 200);
+  assert.equal(reused.response.status, 401);
+});
+
+test('incorrect verification code is rejected', async () => {
+  resetRuntimeState();
+  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+  const loginResult = await loginForVerification();
+  const verifyResult = await request('/api/auth/verify', {
+    method: 'POST',
+    cookie: loginResult.cookie,
+    body: { code: '000000' }
+  });
+  assert.equal(verifyResult.response.status, 401);
+  assert.equal(verifyResult.json.code, 'VERIFICATION_CODE_INVALID');
+});
+
+test('too many verification attempts are rate-limited', async () => {
+  resetRuntimeState();
+  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+  const loginResult = await loginForVerification();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await request('/api/auth/verify', {
+      method: 'POST',
+      cookie: loginResult.cookie,
+      body: { code: '000000' }
+    });
+  }
+  const finalAttempt = await request('/api/auth/verify', {
+    method: 'POST',
+    cookie: loginResult.cookie,
+    body: { code: '000000' }
+  });
+  assert.equal(finalAttempt.response.status, 429);
+  assert.equal(finalAttempt.json.code, 'VERIFICATION_RATE_LIMITED');
+});
+
+test('user is signed out after inactivity timeout', async () => {
+  resetRuntimeState();
+  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+  const { cookie } = await loginAndVerify();
   await new Promise((resolve) => setTimeout(resolve, 1100));
   const dataResult = await request('/api/data', { cookie });
   assert.equal(dataResult.response.status, 401);
   assert.equal(dataResult.json.code, 'SESSION_TIMEOUT');
+});
+
+test('activity resets the inactivity timer through the auth ping endpoint', async () => {
+  resetRuntimeState();
+  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+  const { cookie } = await loginAndVerify();
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const pingResult = await request('/api/auth/ping', { method: 'POST', cookie });
+  assert.equal(pingResult.response.status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const dataResult = await request('/api/data', { cookie });
+  assert.equal(dataResult.response.status, 200);
+});
+
+test('absolute session expiration requires re-login even with activity', async () => {
+  resetRuntimeState();
+  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+  const { cookie } = await loginAndVerify();
+  for (let step = 0; step < 7; step += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    await request('/api/auth/ping', { method: 'POST', cookie });
+  }
+  const dataResult = await request('/api/data', { cookie });
+  assert.equal(dataResult.response.status, 401);
+  assert.ok(['SESSION_EXPIRED', 'AUTH_REQUIRED'].includes(dataResult.json.code));
+});
+
+test('protected routes redirect to login when no valid session exists', async () => {
+  const dataResult = await request('/api/data');
+  assert.equal(dataResult.response.status, 401);
+  assert.equal(dataResult.json.code, 'AUTH_REQUIRED');
 });
 
 test('cache-control headers prevent caching of protected HTML and API responses', async () => {
@@ -169,9 +208,22 @@ test('cache-control headers prevent caching of protected HTML and API responses'
 
   resetRuntimeState();
   await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
-  const cookie = await loginAndCompleteMfa();
+  const { cookie } = await loginAndVerify();
   const dataResult = await request('/api/data', { cookie });
   assert.match(dataResult.response.headers.get('cache-control') || '', /no-store/);
+});
+
+test('login page does not blank if verification provider config is missing', async () => {
+  resetRuntimeState();
+  process.env.EMAIL_VERIFICATION_DEBUG_CODES = 'false';
+  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+  const loginResult = await request('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'admin', password: 'admin123' }
+  });
+  assert.equal(loginResult.response.status, 503);
+  assert.ok(['AUTH_UNAVAILABLE', 'VERIFICATION_UNAVAILABLE'].includes(loginResult.json.code));
+  process.env.EMAIL_VERIFICATION_DEBUG_CODES = 'true';
 });
 
 test('the browser app no longer stores clinical drafts in localStorage or sessionStorage', async () => {
@@ -180,12 +232,19 @@ test('the browser app no longer stores clinical drafts in localStorage or sessio
   assert.equal(appSource.includes('sessionStorage'), false);
 });
 
-test('logout flow clears sensitive in-memory state and resets the browser URL', async () => {
+test('logout or timeout clears sensitive in-memory state and resets the browser URL', async () => {
   const appSource = await readFile(join(process.cwd(), 'public/app.js'), 'utf8');
   assert.match(appSource, /state\.clients = \[\]/);
   assert.match(appSource, /state\.sessions = \[\]/);
   assert.match(appSource, /state\.draftCache = \{ intake: \{\}, session: \{\} \}/);
   assert.match(appSource, /window\.history\.replaceState\(\{\}, "", "\/"\)/);
+});
+
+test('warning appears shortly before inactivity timeout and activity listeners reset the timer', async () => {
+  const appSource = await readFile(join(process.cwd(), 'public/app.js'), 'utf8');
+  assert.match(appSource, /Your session will expire soon due to inactivity\. Stay signed in\?/);
+  assert.match(appSource, /\[\"click\", \"keydown\", \"mousemove\", \"touchstart\", \"scroll\"\]/);
+  assert.match(appSource, /touchSession\(\)/);
 });
 
 test('auth boot failures show a visible login error path instead of blanking the page', async () => {

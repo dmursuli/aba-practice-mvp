@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.922.0",
-    "otpauth": "^9.5.1",
+    "nodemailer": "^7.0.10",
     "pg": "^8.16.3",
     "playwright": "^1.60.0"
   },
