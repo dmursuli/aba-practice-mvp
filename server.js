@@ -21,10 +21,11 @@ const host = process.env.HOST || "127.0.0.1";
 const dataStore = process.env.DATA_STORE || (process.env.DB_HOST || process.env.DATABASE_URL ? "postgres" : "json");
 const documentStore = process.env.DOCUMENT_STORE || (process.env.S3_BUCKET ? "s3" : "local");
 const sessions = new Map();
+const preservedDrafts = new Map();
 const AGENCIES = ["Triumph ABA", "One Clinical Care"];
 const DEFAULT_AGENCY = AGENCIES[0];
-const SESSION_ABSOLUTE_TIMEOUT_SECONDS = Number(process.env.SESSION_ABSOLUTE_TIMEOUT_SECONDS || (60 * 60 * 8));
-const SESSION_INACTIVITY_TIMEOUT_SECONDS = Number(process.env.SESSION_INACTIVITY_TIMEOUT_SECONDS || (60 * 15));
+const SESSION_ABSOLUTE_TIMEOUT_SECONDS = Number(process.env.SESSION_ABSOLUTE_TIMEOUT_SECONDS || (60 * 60 * 12));
+const SESSION_INACTIVITY_TIMEOUT_SECONDS = Number(process.env.SESSION_INACTIVITY_TIMEOUT_SECONDS || (60 * 45));
 const SESSION_MAX_AGE_SECONDS = SESSION_ABSOLUTE_TIMEOUT_SECONDS;
 const MFA_PENDING_TIMEOUT_SECONDS = Number(process.env.MFA_PENDING_TIMEOUT_SECONDS || (60 * 10));
 const VERIFICATION_CODE_TTL_SECONDS = Number(process.env.VERIFICATION_CODE_TTL_SECONDS || (60 * 10));
@@ -495,6 +496,32 @@ export function createAppServer() {
       if (token) sessions.delete(token);
       clearAuthCookie(res);
       sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/drafts") {
+      const db = await readDbWithUsers();
+      const state = sessionStatus(req, db);
+      if (state.status !== "ok") {
+        requireAuth(req, res, db, state);
+        return;
+      }
+      const payload = await readBody(req);
+      preservedDrafts.set(state.user.id, sanitizeRecoverableDrafts(payload));
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/auth/drafts") {
+      const db = await readDbWithUsers();
+      const state = sessionStatus(req, db);
+      if (state.status !== "ok") {
+        requireAuth(req, res, db, state);
+        return;
+      }
+      const drafts = preservedDrafts.get(state.user.id) || { intake: {}, session: {}, preservedAt: "" };
+      preservedDrafts.delete(state.user.id);
+      sendJson(res, 200, drafts);
       return;
     }
 
@@ -1549,6 +1576,16 @@ function createSessionRecord(userId, stage, extra = {}) {
     lastSeenAt: now,
     stage,
     ...extra
+  };
+}
+
+function sanitizeRecoverableDrafts(payload = {}) {
+  const intake = typeof payload.intake === "object" && payload.intake ? payload.intake : {};
+  const session = typeof payload.session === "object" && payload.session ? payload.session : {};
+  return {
+    intake: structuredClone(intake),
+    session: structuredClone(session),
+    preservedAt: new Date().toISOString()
   };
 }
 

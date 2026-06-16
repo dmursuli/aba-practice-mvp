@@ -183,6 +183,28 @@ test('activity resets the inactivity timer through the auth ping endpoint', asyn
   assert.equal(dataResult.response.status, 200);
 });
 
+test('recoverable drafts can be preserved server-side and restored after re-login', async () => {
+  resetRuntimeState();
+  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+  const { cookie } = await loginAndVerify();
+  const preserveResult = await request('/api/auth/drafts', {
+    method: 'POST',
+    cookie,
+    body: {
+      intake: { 'client-1': { interviewDate: '2026-06-16' } },
+      session: { 'client-1': { fields: { therapist: 'Tester' }, programs: [], behaviors: [] } }
+    }
+  });
+  assert.equal(preserveResult.response.status, 200);
+  const restoreResult = await request('/api/auth/drafts', { cookie });
+  assert.equal(restoreResult.response.status, 200);
+  assert.equal(restoreResult.json.intake['client-1'].interviewDate, '2026-06-16');
+  assert.equal(restoreResult.json.session['client-1'].fields.therapist, 'Tester');
+  const emptyResult = await request('/api/auth/drafts', { cookie });
+  assert.deepEqual(emptyResult.json.intake, {});
+  assert.deepEqual(emptyResult.json.session, {});
+});
+
 test('absolute session expiration requires re-login even with activity', async () => {
   resetRuntimeState();
   await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
@@ -243,8 +265,11 @@ test('logout or timeout clears sensitive in-memory state and resets the browser 
 test('warning appears shortly before inactivity timeout and activity listeners reset the timer', async () => {
   const appSource = await readFile(join(process.cwd(), 'public/app.js'), 'utf8');
   assert.match(appSource, /Your session will expire soon due to inactivity\. Stay signed in\?/);
+  assert.match(appSource, /const INACTIVITY_TIMEOUT_MS = 45 \* 60 \* 1000/);
+  assert.match(appSource, /const INACTIVITY_WARNING_MS = 40 \* 60 \* 1000/);
   assert.match(appSource, /\[\"click\", \"keydown\", \"mousemove\", \"touchstart\", \"scroll\"\]/);
   assert.match(appSource, /touchSession\(\)/);
+  assert.match(appSource, /preserveRecoverableDrafts\(\)/);
 });
 
 test('auth boot failures show a visible login error path instead of blanking the page', async () => {

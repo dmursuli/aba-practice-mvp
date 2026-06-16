@@ -1,4 +1,4 @@
-import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getUsers, login, logout, resendSignInCode, restorePracticeBackup, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
@@ -297,8 +297,8 @@ const sessionPreloadLimits = {
   behaviors: 2
 };
 
-const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
-const INACTIVITY_WARNING_MS = 14 * 60 * 1000;
+const INACTIVITY_TIMEOUT_MS = 45 * 60 * 1000;
+const INACTIVITY_WARNING_MS = 40 * 60 * 1000;
 const SESSION_TOUCH_DEBOUNCE_MS = 60 * 1000;
 
 init().catch(handleBootstrapFailure);
@@ -336,6 +336,7 @@ async function startAuthenticatedApp() {
   state.lastSessionTouchAt = Date.now();
   startInactivityTimer();
   await refreshData();
+  await restoreRecoverableDrafts();
   const requested = requestedWorkspaceState();
   if (requested.clientId && state.clients.some((client) => client.id === requested.clientId)) {
     state.activeClientId = requested.clientId;
@@ -353,13 +354,45 @@ async function startAuthenticatedApp() {
   }
 }
 
+async function restoreRecoverableDrafts() {
+  try {
+    const drafts = await getRecoverableDrafts();
+    if (drafts?.intake && Object.keys(drafts.intake).length) {
+      state.draftCache.intake = { ...state.draftCache.intake, ...drafts.intake };
+    }
+    if (drafts?.session && Object.keys(drafts.session).length) {
+      state.draftCache.session = { ...state.draftCache.session, ...drafts.session };
+    }
+    const restoredIntake = drafts?.intake && Object.keys(drafts.intake).length;
+    const restoredSession = drafts?.session && Object.keys(drafts.session).length;
+    if (restoredIntake || restoredSession) {
+      const parts = [];
+      if (restoredSession) parts.push("session drafts");
+      if (restoredIntake) parts.push("intake drafts");
+      formMessage.textContent = `Recovered ${parts.join(" and ")} from your last timed-out session.`;
+      intakeMessage.textContent = formMessage.textContent;
+    }
+  } catch {}
+}
+
+async function preserveRecoverableDrafts() {
+  try {
+    const clientId = currentClient()?.id || clientSelect.value || intakeClientSelect.value;
+    if (clientId && form) saveSessionDraft();
+    if (clientId && intakeForm) saveIntakeDraft();
+    await preserveDrafts(state.draftCache);
+  } catch {}
+}
+
 function startInactivityTimer() {
   clearInactivityTimer();
   if (!state.currentUser) return;
   state.inactivityWarningTimerId = window.setTimeout(async () => {
+    await preserveRecoverableDrafts();
     const staySignedIn = window.confirm("Your session will expire soon due to inactivity. Stay signed in?");
     if (!staySignedIn) {
       try {
+        await preserveRecoverableDrafts();
         await logout("timeout");
       } catch {}
       handleAuthFailureEvent({ code: "SESSION_TIMEOUT", errors: ["You were signed out due to inactivity."] });
@@ -376,6 +409,7 @@ function startInactivityTimer() {
   }, INACTIVITY_WARNING_MS);
   state.inactivityTimerId = window.setTimeout(async () => {
     try {
+      await preserveRecoverableDrafts();
       await logout("timeout");
     } catch {}
     handleAuthFailureEvent({ code: "SESSION_TIMEOUT", errors: ["You were signed out due to inactivity."] });

@@ -32,6 +32,20 @@ export async function touchSession() {
   return parseResponse(response);
 }
 
+export async function preserveDrafts(draftCache) {
+  const response = await fetch("/api/auth/drafts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(draftCache)
+  });
+  return parseResponse(response);
+}
+
+export async function getRecoverableDrafts() {
+  const response = await fetch("/api/auth/drafts");
+  return parseResponse(response);
+}
+
 export async function logout(reason = "") {
   const response = await fetch("/api/auth/logout", {
     method: "POST",
