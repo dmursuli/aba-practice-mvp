@@ -320,6 +320,22 @@ test('login page does not blank if verification provider config is missing', asy
   process.env.EMAIL_VERIFICATION_DEBUG_CODES = 'true';
 });
 
+test('local development falls back to debug verification codes when SMTP is not configured', async () => {
+  resetRuntimeState();
+  delete process.env.EMAIL_VERIFICATION_DEBUG_CODES;
+  await writeFile(dbPath, `${JSON.stringify({ clients: [], sessions: [], auditLog: [], users: [] }, null, 2)}\n`, 'utf8');
+  const loginResult = await request('/api/auth/login', {
+    method: 'POST',
+    body: { username: 'admin', password: 'admin123' }
+  });
+  assert.equal(loginResult.response.status, 200);
+  assert.equal(loginResult.json.verificationRequired, true);
+  assert.match(loginResult.json.message, /development code/i);
+  const deliveries = drainVerificationDebugDeliveries();
+  assert.equal(deliveries.length, 1);
+  process.env.EMAIL_VERIFICATION_DEBUG_CODES = 'true';
+});
+
 test('the browser app no longer stores clinical drafts in localStorage or sessionStorage', async () => {
   const appSource = await readFile(join(process.cwd(), 'public/app.js'), 'utf8');
   assert.equal(appSource.includes('localStorage'), false);

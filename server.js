@@ -1456,28 +1456,34 @@ function newVerificationCode() {
 }
 
 function verificationEmailConfig() {
-  if (isVerificationDebugEnabled()) {
-    return { mode: "debug", from: "debug@local.test" };
-  }
   const host = String(process.env.SMTP_HOST || "").trim();
   const port = Number(process.env.SMTP_PORT || 587);
   const user = String(process.env.SMTP_USER || "").trim();
   const pass = String(process.env.SMTP_PASSWORD || "").trim();
   const from = String(process.env.SMTP_FROM || "").trim();
-  if (!host || !port || !user || !pass || !from) return null;
-  return {
-    mode: "smtp",
-    host,
-    port,
-    secure: String(process.env.SMTP_SECURE || "").trim() === "true" || port === 465,
-    user,
-    pass,
-    from
-  };
+  if (host && port && user && pass && from) {
+    return {
+      mode: "smtp",
+      host,
+      port,
+      secure: String(process.env.SMTP_SECURE || "").trim() === "true" || port === 465,
+      user,
+      pass,
+      from
+    };
+  }
+  if (isVerificationDebugEnabled()) {
+    return { mode: "debug", from: "debug@local.test" };
+  }
+  return null;
 }
 
 function isVerificationDebugEnabled() {
-  return process.env.EMAIL_VERIFICATION_DEBUG_CODES === "true" && process.env.NODE_ENV !== "production";
+  if (process.env.NODE_ENV === "production") return false;
+  const explicitSetting = String(process.env.EMAIL_VERIFICATION_DEBUG_CODES || "").trim().toLowerCase();
+  if (explicitSetting === "true") return true;
+  if (explicitSetting === "false") return false;
+  return true;
 }
 
 async function loadEmailModule() {
