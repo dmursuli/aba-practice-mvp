@@ -1,5 +1,5 @@
 import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, setupVerificationEmail, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
-import { buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
+import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
 import { generateSoapNote } from "./soap.js";
@@ -30,6 +30,7 @@ const state = {
   loadedSessionDomainKeys: [],
   authFlow: "password",
   authChallenge: null,
+  graphTrendVisibility: {},
   draftCache: {
     intake: {},
     session: {}
@@ -215,6 +216,7 @@ const exportHealthJsonButton = document.querySelector("#export-health-json");
 
 const graphsMessage = ensureGraphsMessage();
 const programGraphModalLegend = ensureProgramGraphModalLegend();
+const programGraphModalAnalysis = ensureProgramGraphModalAnalysis();
 const intakeVbMappLevelSelect = document.querySelector("#intake-vbmapp-level");
 const intakeDraftFields = [
   "interviewDate",
@@ -491,6 +493,17 @@ function ensureProgramGraphModalLegend() {
   return node;
 }
 
+function ensureProgramGraphModalAnalysis() {
+  const existing = document.querySelector("#program-graph-modal-analysis");
+  if (existing) return existing;
+  const legend = ensureProgramGraphModalLegend();
+  if (!legend?.parentElement) return null;
+  const node = document.createElement("div");
+  node.id = "program-graph-modal-analysis";
+  legend.insertAdjacentElement("afterend", node);
+  return node;
+}
+
 function bindEvents() {
   loginForm.addEventListener("submit", handleLogin);
   verificationEmailForm?.addEventListener("submit", handleSetupVerificationEmail);
@@ -580,7 +593,13 @@ function bindEvents() {
   addDomainButton.addEventListener("click", handleAddDomain);
   deleteDomainButton.addEventListener("click", handleDeleteDomain);
   skillCharts.addEventListener("click", handleGraphDataDeleteClick);
+  skillCharts.addEventListener("change", handleGraphAnalysisControlChange);
   behaviorCharts.addEventListener("click", handleGraphDataDeleteClick);
+  behaviorCharts.addEventListener("change", handleGraphAnalysisControlChange);
+  behaviorCharts.addEventListener("click", handleGraphAnalysisClick);
+  skillCharts.addEventListener("click", handleGraphAnalysisClick);
+  programGraphModal?.addEventListener("change", handleGraphAnalysisControlChange);
+  programGraphModal?.addEventListener("click", handleGraphAnalysisClick);
   reportForm.addEventListener("submit", handleGenerateFunderReport);
   reportForm.addEventListener("change", renderReportSummary);
   reportSectionNav?.addEventListener("click", handleReportSectionNavClick);
@@ -4130,6 +4149,8 @@ function openProgramGraphModal(programId) {
   const program = clientPrograms().find((item) => item.id === programId);
   if (!program) return;
   const chart = buildProgramSkillChart(program, currentSessions().slice().reverse());
+  const graphKey = graphTrendKey("skill", programId);
+  const phaseMarkers = masteryMarkersForProgram(program.id);
   programGraphModalTitle.textContent = program.name;
   programGraphModalSubtitle.textContent = `${program.domain || "General"}${chart.series.length ? ` - ${chart.series.length} target graph${chart.series.length === 1 ? "" : "s"}` : ""}`;
   programGraphModal.classList.remove("hidden");
@@ -4140,9 +4161,25 @@ function openProgramGraphModal(programId) {
       yStep: 10,
       yLabel: "% independence",
       emptyMessage: "No target data for this program",
-      phaseMarkers: masteryMarkersForProgram(program.id)
+      phaseMarkers,
+      graphType: "skill",
+      showTrendLine: trendLineEnabled(graphKey)
     });
-    if (programGraphModalLegend) programGraphModalLegend.innerHTML = renderGraphLegendMarkup(chart.series);
+    if (programGraphModalLegend) {
+      programGraphModalLegend.innerHTML = renderGraphLegendMarkup(chart.series, {
+        showTrendLine: trendLineEnabled(graphKey)
+      });
+    }
+    if (programGraphModalAnalysis) {
+      programGraphModalAnalysis.innerHTML = renderGraphAnalysisMarkup(
+        buildGraphAnalysis(chart.series, {
+          graphType: "skill",
+          phaseMarkers
+        }),
+        graphKey,
+        { reportField: "progressSummary" }
+      );
+    }
   });
 }
 
@@ -4155,13 +4192,21 @@ function buildBehaviorChart(behaviorId, sessions) {
   });
   return {
     behavior,
-    series: [{ name: behavior.name, points }]
+    series: [{
+      name: behavior.name,
+      meta: {
+        behaviorId: behavior.id,
+        status: behavior.status || "active"
+      },
+      points
+    }]
   };
 }
 
 function openBehaviorGraphModal(behaviorId) {
   const chart = buildBehaviorChart(behaviorId, currentSessions().slice().reverse());
   if (!chart) return;
+  const graphKey = graphTrendKey("behavior", behaviorId);
   programGraphModalTitle.textContent = chart.behavior.name;
   programGraphModalSubtitle.textContent = "Behavior reduction - frequency";
   programGraphModal.classList.remove("hidden");
@@ -4170,9 +4215,22 @@ function openBehaviorGraphModal(behaviorId) {
     drawLineChart(programGraphModalCanvas, chart.series, {
       yStep: 1,
       yLabel: "frequency",
-      emptyMessage: "No behavior data for this behavior"
+      emptyMessage: "No behavior data for this behavior",
+      graphType: "behavior",
+      showTrendLine: trendLineEnabled(graphKey)
     });
-    if (programGraphModalLegend) programGraphModalLegend.innerHTML = renderGraphLegendMarkup(chart.series);
+    if (programGraphModalLegend) {
+      programGraphModalLegend.innerHTML = renderGraphLegendMarkup(chart.series, {
+        showTrendLine: trendLineEnabled(graphKey)
+      });
+    }
+    if (programGraphModalAnalysis) {
+      programGraphModalAnalysis.innerHTML = renderGraphAnalysisMarkup(
+        buildGraphAnalysis(chart.series, { graphType: "behavior" }),
+        graphKey,
+        { reportField: "progressSummary" }
+      );
+    }
   });
 }
 
@@ -4180,6 +4238,7 @@ function closeProgramGraphModal() {
   programGraphModal.classList.add("hidden");
   programGraphModal.setAttribute("aria-hidden", "true");
   if (programGraphModalLegend) programGraphModalLegend.innerHTML = "";
+  if (programGraphModalAnalysis) programGraphModalAnalysis.innerHTML = "";
 }
 
 async function handlePlanTextEdit(event) {
@@ -5032,6 +5091,31 @@ async function handleGraphDataDeleteClick(event) {
   }
 }
 
+function handleGraphAnalysisControlChange(event) {
+  const toggle = event.target.closest("[data-graph-trend-toggle]");
+  if (!toggle) return;
+  state.graphTrendVisibility[toggle.dataset.graphTrendToggle] = toggle.checked;
+  renderCharts();
+  if (reportPreview.innerHTML) drawFunderReportCharts(filteredReportSessions());
+}
+
+function handleGraphAnalysisClick(event) {
+  const insert = event.target.closest("[data-insert-graph-analysis]");
+  if (!insert) return;
+  const graphKey = insert.dataset.insertGraphAnalysis;
+  const chartAnalysis = event.target.closest("[data-graph-analysis]");
+  const label = insert.dataset.seriesLabel || "";
+  if (!graphKey || !chartAnalysis || !reportForm?.elements?.progressSummary) return;
+  const analysisPayload = chartAnalysis.dataset.graphAnalysisPayload
+    ? JSON.parse(decodeURIComponent(chartAnalysis.dataset.graphAnalysisPayload))
+    : null;
+  if (!analysisPayload) return;
+  const existing = reportForm.elements.progressSummary.value.trim();
+  const addition = graphInterpretationText(analysisPayload, graphKey, label);
+  reportForm.elements.progressSummary.value = existing ? `${existing}\n\n${addition}` : addition;
+  funderExportStatus.textContent = "Graph interpretation inserted into the progress summary.";
+}
+
 function handleGenerateFunderReport(event) {
   event.preventDefault();
   renderReportSummary();
@@ -5457,10 +5541,13 @@ function drawFunderReportCharts(sessions) {
   const behaviorCanvas = reportPreview.querySelector("#report-behavior-chart");
   if (!behaviorCanvas) return;
   const behaviorSeries = behaviorChartSeries(sessions);
+  const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
   drawLineChart(behaviorCanvas, behaviorSeries, {
     yStep: 1,
     yLabel: "frequency",
-    emptyMessage: "No behavior data in this report range"
+    emptyMessage: "No behavior data in this report range",
+    graphType: "behavior",
+    showTrendLine: trendLineEnabled(behaviorOverviewGraphKey)
   });
 
   const behaviorContainer = reportPreview.querySelector("#report-behavior-charts");
@@ -5485,12 +5572,27 @@ function renderCharts() {
 
   skillCharts.innerHTML = "";
   const behaviorSeries = behaviorChartSeries(sessions);
+  const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
+  const behaviorOverviewAnalysis = buildGraphAnalysis(behaviorSeries, { graphType: "behavior" });
   drawLineChart(document.querySelector("#behavior-chart"), behaviorSeries, {
     yStep: 1,
     yLabel: "frequency",
-    emptyMessage: "Save a session to graph behavior frequency"
+    emptyMessage: "Save a session to graph behavior frequency",
+    graphType: "behavior",
+    showTrendLine: trendLineEnabled(behaviorOverviewGraphKey)
   });
-  renderGraphLegend(document.querySelector("#behavior-chart")?.closest(".chart-panel"), behaviorSeries);
+  const behaviorChartContainer = document.querySelector("#behavior-chart")?.closest(".chart-panel");
+  renderGraphLegend(behaviorChartContainer, behaviorSeries, {
+    showTrendLine: trendLineEnabled(behaviorOverviewGraphKey)
+  });
+  if (behaviorChartContainer) {
+    behaviorChartContainer.querySelector(".graph-analysis-panel")?.remove();
+    behaviorChartContainer.insertAdjacentHTML("beforeend", renderGraphAnalysisMarkup(
+      behaviorOverviewAnalysis,
+      behaviorOverviewGraphKey,
+      { reportField: "progressSummary" }
+    ));
+  }
   drawBehaviorChartSet(sessions, behaviorCharts, "behavior-single-chart");
 }
 
@@ -5541,7 +5643,8 @@ function renderSkillCharts(sessions) {
           <article class="chart-panel">
             <h3>${chart.program.name}</h3>
             <canvas data-program-chart="${chart.program.id}" width="760" height="320"></canvas>
-            ${renderGraphLegendMarkup(chart.series)}
+            ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("skill", chart.program.id)) })}
+            <div data-program-analysis="${chart.program.id}"></div>
             ${renderSkillDataManagerMarkup(chart)}
           </article>
         `).join("")}
@@ -5550,13 +5653,27 @@ function renderSkillCharts(sessions) {
   `).join("");
 
   visibleGroups.flatMap((group) => group.charts).forEach((chart) => {
+    const graphKey = graphTrendKey("skill", chart.program.id);
+    const phaseMarkers = masteryMarkersForProgram(chart.program.id);
     drawLineChart(skillCharts.querySelector(`[data-program-chart="${chart.program.id}"]`), chart.series, {
       maxY: 100,
       yStep: 10,
       yLabel: "% independence",
       emptyMessage: "No target data for this program",
-      phaseMarkers: masteryMarkersForProgram(chart.program.id)
+      phaseMarkers,
+      graphType: "skill",
+      showTrendLine: trendLineEnabled(graphKey)
     });
+    const analysisMount = skillCharts.querySelector(`[data-program-analysis="${chart.program.id}"]`);
+    if (analysisMount) {
+      const analysis = buildGraphAnalysis(chart.series, {
+        graphType: "skill",
+        phaseMarkers
+      });
+      analysisMount.innerHTML = renderGraphAnalysisMarkup(analysis, graphKey, {
+        reportField: "progressSummary"
+      });
+    }
   });
 }
 
@@ -5573,6 +5690,10 @@ function buildProgramSkillChart(program, sessions) {
   const targets = configuredTargetsForProgram(program);
   const series = targets.map((target) => ({
     name: target.name,
+    meta: {
+      targetId: target.id,
+      status: target.status || "active"
+    },
     points: sessions.flatMap((session) => {
       const entry = targetEntries(session)
         .filter(isActualTargetEntry)
@@ -5612,15 +5733,21 @@ function masteryMarkersForProgram(programId) {
       date,
       label: "Target mastered",
       detail: targetNames.join(", "),
+      targetIds: targetNames.map((targetName) => (
+        clientPrograms()
+          .find((program) => program.id === programId)
+          ?.targets?.find((target) => target.name === targetName)?.id
+      )).filter(Boolean),
       phaseType: "targetMastered",
       lineStyle: "dashed",
       position: "after-date"
     }));
 }
 
-function renderGraphLegendMarkup(series) {
+function renderGraphLegendMarkup(series, options = {}) {
   const items = buildLegendItems(series || []);
-  if (!items.length) return "";
+  const showTrendLine = Boolean(options.showTrendLine);
+  if (!items.length && !showTrendLine) return "";
   return `
     <div class="graph-legend" aria-label="Graph target legend">
       ${items.map((item) => `
@@ -5629,16 +5756,112 @@ function renderGraphLegendMarkup(series) {
           <span>${escapeHtml(item.label)}</span>
         </span>
       `).join("")}
+      ${showTrendLine ? `
+        <span class="graph-legend-item graph-legend-item-trend">
+          <span class="graph-legend-line graph-legend-line-trend" aria-hidden="true"></span>
+          <span>5-session moving average</span>
+        </span>
+      ` : ""}
     </div>
   `;
 }
 
-function renderGraphLegend(container, series) {
+function renderGraphLegend(container, series, options = {}) {
   if (!container) return;
   const existing = container.querySelector(".graph-legend");
-  const markup = renderGraphLegendMarkup(series);
+  const markup = renderGraphLegendMarkup(series, options);
   if (existing) existing.remove();
   if (markup) container.insertAdjacentHTML("beforeend", markup);
+}
+
+function graphTrendKey(prefix, id) {
+  return `${prefix}:${id}`;
+}
+
+function trendLineEnabled(graphKey) {
+  return Boolean(state.graphTrendVisibility[graphKey]);
+}
+
+function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
+  if (!analysis?.analyses?.length) return "";
+  const insertLabel = options.reportField === "progressSummary"
+    ? "Insert interpretation into report"
+    : "Insert interpretation";
+  const showTrendLine = trendLineEnabled(graphKey);
+  const payload = escapeHtml(encodeURIComponent(JSON.stringify(analysis)));
+  return `
+    <section class="graph-analysis-panel" data-graph-analysis="${escapeHtml(graphKey)}" data-graph-analysis-payload="${payload}">
+      <div class="graph-analysis-toolbar">
+        <strong>Graph Analysis</strong>
+        <label class="trend-line-toggle">
+          <input type="checkbox" data-graph-trend-toggle="${escapeHtml(graphKey)}" ${showTrendLine ? "checked" : ""}>
+          <span>Show trend line</span>
+        </label>
+      </div>
+      ${showTrendLine && analysis.trendLineMessage ? `<p class="graph-analysis-note">${escapeHtml(analysis.trendLineMessage)}</p>` : ""}
+      ${analysis.analyses.map((entry) => `
+        <article class="graph-analysis-series">
+          <div class="graph-analysis-series-heading">
+            <h4>${escapeHtml(entry.label)}</h4>
+            <button type="button" class="secondary-button" data-insert-graph-analysis="${escapeHtml(graphKey)}" data-series-label="${escapeHtml(entry.label)}">${insertLabel}</button>
+          </div>
+          <p class="graph-analysis-interpretation">${escapeHtml(entry.interpretation)}</p>
+          <div class="graph-analysis-grid">
+            ${renderGraphMetricCell("Baseline level", formatAnalysisMetric(entry.baselineLevel, analysis.graphType))}
+            ${renderGraphMetricCell("Treatment average", formatAnalysisMetric(entry.treatmentAverage, analysis.graphType))}
+            ${renderGraphMetricCell("Current level", formatAnalysisMetric(entry.currentLevel, analysis.graphType))}
+            ${renderGraphMetricCell("Trend", entry.trendDirection)}
+            ${analysis.graphType === "skill"
+              ? renderGraphMetricCell("Mastery status", entry.masteryStatus || "in progress")
+              : renderGraphMetricCell("Percent reduction", entry.percentReduction || "Unavailable")}
+          </div>
+          <details class="graph-analysis-details">
+            <summary>Advanced analysis</summary>
+            <div class="graph-analysis-grid graph-analysis-grid-advanced">
+              ${renderGraphMetricCell("Baseline average", formatAnalysisMetric(entry.baselineAverage, analysis.graphType))}
+              ${renderGraphMetricCell("Variability", entry.variability)}
+              ${renderGraphMetricCell("Stability", entry.stability)}
+              ${analysis.graphType === "skill"
+                ? renderGraphMetricCell("Magnitude of improvement", entry.magnitudeOfImprovement || "Unavailable")
+                : renderGraphMetricCell("Overlap", entry.overlap || "Unavailable")}
+              ${analysis.graphType === "skill"
+                ? renderGraphMetricCell("Sessions to mastery", entry.sessionsToMastery ?? "Not mastered")
+                : renderGraphMetricCell("Immediacy of effect", entry.immediacy || "Unavailable")}
+            </div>
+            ${entry.trendConfidence ? `<p class="graph-analysis-note">${escapeHtml(entry.trendConfidence)}</p>` : ""}
+          </details>
+        </article>
+      `).join("")}
+    </section>
+  `;
+}
+
+function renderGraphMetricCell(label, value) {
+  return `
+    <div class="graph-analysis-metric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(String(value ?? "Unavailable"))}</strong>
+    </div>
+  `;
+}
+
+function formatAnalysisMetric(value, graphType) {
+  if (value === null || value === undefined || value === "") return "Unavailable";
+  if (typeof value === "number") {
+    return graphType === "behavior" ? `${value}` : `${value}%`;
+  }
+  return value;
+}
+
+function graphInterpretationText(analysis, graphKey, seriesLabel = "") {
+  const matching = seriesLabel
+    ? analysis.analyses.filter((entry) => entry.label === seriesLabel)
+    : analysis.analyses;
+  const interpretation = matching.map((entry) => entry.interpretation).join(" ");
+  if (trendLineEnabled(graphKey) && analysis.trendLineEligible) {
+    return `${interpretation} A 5-session moving average trend line was enabled for visual review.`;
+  }
+  return interpretation;
 }
 
 function renderSkillDataManagerMarkup(chart) {
@@ -5742,19 +5965,7 @@ function renderGraphDomainTabs(groups) {
 
 function drawSkillChartSet(sessions, container, chartAttribute, includeProgramInfo = false) {
   const charts = clientPrograms()
-    .map((program) => {
-      const targets = configuredTargetsForProgram(program);
-      const series = targets.map((target) => ({
-        name: target.name,
-        points: sessions.flatMap((session) => {
-          const entry = targetEntries(session)
-            .filter(isActualTargetEntry)
-            .find((item) => item.programId === program.id && item.targetId === target.id);
-          return entry ? [{ x: session.date, y: entry.independence, phase: entry.phase || "intervention" }] : [];
-        })
-      })).filter((item) => item.points.length);
-      return { program, series };
-    })
+    .map((program) => buildProgramSkillChart(program, sessions))
     .filter((chart) => chart.series.length);
 
   if (!charts.length) {
@@ -5778,16 +5989,20 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
       <h3>${chart.program.name}</h3>
       ${includeProgramInfo ? renderReportProgramInfo(chart.program) : ""}
       <canvas data-${chartAttribute}="${chart.program.id}" width="760" height="320"></canvas>
-      ${renderGraphLegendMarkup(chart.series)}
+      ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("skill", chart.program.id)) })}
     </article>
   `).join("");
 
   charts.forEach((chart) => {
+    const graphKey = graphTrendKey("skill", chart.program.id);
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${chart.program.id}"]`), chart.series, {
       maxY: 100,
       yStep: 10,
       yLabel: "% independence",
-      emptyMessage: "No target data for this program"
+      emptyMessage: "No target data for this program",
+      phaseMarkers: masteryMarkersForProgram(chart.program.id),
+      graphType: "skill",
+      showTrendLine: trendLineEnabled(graphKey)
     });
   });
 }
@@ -5795,6 +6010,10 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
 function behaviorChartSeries(sessions) {
   return clientBehaviors().map((behavior) => ({
     name: behavior.name,
+    meta: {
+      behaviorId: behavior.id,
+      status: behavior.status || "active"
+    },
     points: sessions.flatMap((session) => {
       const target = behaviorEntriesForSession(session).find((item) => item.behaviorId === behavior.id);
       return target ? [{
@@ -5809,7 +6028,9 @@ function behaviorChartSeries(sessions) {
 }
 
 function drawBehaviorChartSet(sessions, container, chartAttribute) {
+  const isReportChart = String(chartAttribute || "").startsWith("report-");
   const charts = behaviorChartSeries(sessions).map((series) => ({
+    behaviorId: series.meta?.behaviorId || series.name,
     behavior: series.name,
     series: [series]
   }));
@@ -5823,17 +6044,28 @@ function drawBehaviorChartSet(sessions, container, chartAttribute) {
     <article class="chart-panel">
       <h3>${escapeHtml(chart.behavior)}</h3>
       <canvas data-${chartAttribute}="${index}" width="760" height="320"></canvas>
-      ${renderGraphLegendMarkup(chart.series)}
-      ${renderBehaviorDataManagerMarkup(chart)}
+      ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("behavior", chart.behaviorId)) })}
+      ${isReportChart ? "" : `<div data-behavior-analysis="${escapeHtml(String(chart.behaviorId))}"></div>`}
+      ${isReportChart ? "" : renderBehaviorDataManagerMarkup(chart)}
     </article>
   `).join("");
 
   charts.forEach((chart, index) => {
+    const graphKey = graphTrendKey("behavior", chart.behaviorId);
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${index}"]`), chart.series, {
       yStep: 1,
       yLabel: "frequency",
-      emptyMessage: "No behavior data for this behavior"
+      emptyMessage: "No behavior data for this behavior",
+      graphType: "behavior",
+      showTrendLine: trendLineEnabled(graphKey)
     });
+    const analysisMount = isReportChart ? null : container.querySelector(`[data-behavior-analysis="${escapeHtml(String(chart.behaviorId))}"]`);
+    if (analysisMount) {
+      const analysis = buildGraphAnalysis(chart.series, { graphType: "behavior" });
+      analysisMount.innerHTML = renderGraphAnalysisMarkup(analysis, graphKey, {
+        reportField: "progressSummary"
+      });
+    }
   });
 }
 

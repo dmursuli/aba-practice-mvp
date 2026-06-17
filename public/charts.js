@@ -1,4 +1,5 @@
 const palette = ["#167c80", "#d1495b", "#edae49", "#4b7bec", "#6a994e", "#9d4edd"];
+const MOVING_AVERAGE_WINDOW = 5;
 
 export function drawLineChart(canvas, series, options = {}) {
   const ctx = canvas.getContext("2d");
@@ -61,6 +62,39 @@ export function drawLineChart(canvas, series, options = {}) {
   });
 
   const interactivePoints = [];
+  const movingAverageSeries = options.showTrendLine
+    ? buildMovingAverageSeriesSet(series, {
+        dates,
+        phaseBoundary,
+        windowSize: options.trendLineWindow || MOVING_AVERAGE_WINDOW
+      })
+    : [];
+  movingAverageSeries.forEach((item, seriesIndex) => {
+    const color = palette[seriesIndex % palette.length];
+    const points = item.points
+      .slice()
+      .sort((a, b) => a.x.localeCompare(b.x))
+      .map((point) => {
+        const dateIndex = dates.indexOf(point.x);
+        const baseX = xPositions[dateIndex];
+        return {
+          x: baseX,
+          y: margin.top + plotHeight - (point.y / yTop) * plotHeight,
+          value: point.y,
+          dateIndex,
+          phase: point.phase || derivedPointPhase(dateIndex, phaseBoundary),
+          label: item.name,
+          date: point.x,
+          source: point
+        };
+      });
+    ctx.save();
+    ctx.strokeStyle = `${color}99`;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 6]);
+    drawPhaseSegments(ctx, points, phaseBoundary, breakLines);
+    ctx.restore();
+  });
   series.forEach((item, seriesIndex) => {
     const color = palette[seriesIndex % palette.length];
     const points = item.points
@@ -115,6 +149,162 @@ export function buildLegendItems(series) {
     label: item.name,
     color: palette[index % palette.length]
   }));
+}
+
+export function buildGraphAnalysis(series, options = {}) {
+  const graphType = options.graphType === "behavior" ? "behavior" : "skill";
+  const model = buildClinicalGraphModel(series, options);
+  const movingAverageSeries = buildMovingAverageSeriesSet(series, {
+    dates: model.dates,
+    phaseBoundary: model.phaseBoundary,
+    windowSize: options.trendLineWindow || MOVING_AVERAGE_WINDOW
+  });
+  const analyses = series.map((item, index) => analyzeSingleSeries(item, {
+    graphType,
+    dates: model.dates,
+    phaseBoundary: model.phaseBoundary,
+    phaseMarkers: model.phaseMarkers,
+    movingAveragePoints: movingAverageSeries[index]?.points || []
+  }));
+  return {
+    graphType,
+    phaseBoundary: model.phaseBoundary,
+    dates: model.dates,
+    trendLineEligible: analyses.some((entry) => entry.trendLineEligible),
+    trendLineMessage: analyses.some((entry) => !entry.trendLineEligible)
+      ? "Trend line requires at least 5 data points."
+      : "",
+    analyses
+  };
+}
+
+export function buildMovingAverageSeriesSet(series, options = {}) {
+  const dates = options.dates || [...new Set(series.flatMap((item) => (item.points || []).map((point) => point.x)))].sort();
+  const phaseBoundary = options.phaseBoundary || buildBaselineToTreatmentBoundary(dates);
+  const windowSize = options.windowSize || MOVING_AVERAGE_WINDOW;
+  return (series || []).map((item) => ({
+    name: item.name,
+    points: buildMovingAveragePoints(item.points || [], { dates, phaseBoundary, windowSize }),
+    meta: item.meta || {}
+  }));
+}
+
+export function buildMovingAveragePoints(points, options = {}) {
+  const dates = options.dates || [...new Set((points || []).map((point) => point.x))].sort();
+  const phaseBoundary = options.phaseBoundary || buildBaselineToTreatmentBoundary(dates);
+  const windowSize = options.windowSize || MOVING_AVERAGE_WINDOW;
+  const normalized = (points || [])
+    .slice()
+    .sort((a, b) => a.x.localeCompare(b.x))
+    .map((point) => {
+      const dateIndex = dates.indexOf(point.x);
+      return {
+        ...point,
+        dateIndex,
+        phase: point.phase || derivedPointPhase(dateIndex, phaseBoundary)
+      };
+    });
+  const grouped = normalized.reduce((map, point) => {
+    if (!map.has(point.phase)) map.set(point.phase, []);
+    map.get(point.phase).push(point);
+    return map;
+  }, new Map());
+  return [...grouped.entries()].flatMap(([, phasePoints]) => {
+    if (phasePoints.length < windowSize) return [];
+    return phasePoints.map((point, index) => {
+      if (index + 1 < windowSize) return null;
+      const windowPoints = phasePoints.slice(index + 1 - windowSize, index + 1);
+      const average = mean(windowPoints.map((entry) => Number(entry.y || 0)));
+      return {
+        x: point.x,
+        y: roundMetric(average, 1),
+        phase: point.phase
+      };
+    }).filter(Boolean);
+  });
+}
+
+function analyzeSingleSeries(series, options) {
+  const graphType = options.graphType;
+  const baselinePoints = [];
+  const treatmentPoints = [];
+  const normalized = (series.points || [])
+    .slice()
+    .sort((a, b) => a.x.localeCompare(b.x))
+    .map((point) => {
+      const dateIndex = options.dates.indexOf(point.x);
+      const phase = point.phase || derivedPointPhase(dateIndex, options.phaseBoundary);
+      const normalizedPoint = { ...point, dateIndex, phase };
+      if (phase === "baseline") baselinePoints.push(normalizedPoint);
+      else treatmentPoints.push(normalizedPoint);
+      return normalizedPoint;
+    });
+  const baselineValues = baselinePoints.map((point) => Number(point.y || 0));
+  const treatmentValues = treatmentPoints.map((point) => Number(point.y || 0));
+  const evaluationValues = treatmentValues.length ? treatmentValues : baselineValues;
+  const baselineAverage = baselineValues.length ? mean(baselineValues) : null;
+  const treatmentAverage = treatmentValues.length ? mean(treatmentValues) : null;
+  const baselineCurrent = baselineValues.length ? baselineValues[baselineValues.length - 1] : null;
+  const treatmentCurrent = treatmentValues.length ? treatmentValues[treatmentValues.length - 1] : null;
+  const trend = classifyTrend(treatmentValues, graphType);
+  const variability = classifyVariability(evaluationValues);
+  const stability = classifyStability(evaluationValues);
+  const sessionsToMastery = graphType === "skill"
+    ? calculateSessionsToMastery(series, treatmentPoints, options.phaseMarkers)
+    : null;
+  const masteryStatus = graphType === "skill"
+    ? skillMasteryStatus(series, sessionsToMastery)
+    : null;
+  const magnitudeOfImprovement = graphType === "skill"
+    ? magnitudeImprovement(baselineAverage, treatmentAverage, treatmentCurrent)
+    : null;
+  const percentReduction = graphType === "behavior"
+    ? percentReductionMetric(baselineAverage, treatmentAverage, treatmentCurrent)
+    : null;
+  const overlap = baselineValues.length && treatmentValues.length
+    ? overlapMetric(graphType, baselineValues, treatmentValues)
+    : null;
+  const immediacy = graphType === "behavior"
+    ? immediacyMetric(baselineValues, treatmentValues)
+    : null;
+  const interpretation = buildInterpretation({
+    graphType,
+    label: series.name,
+    baselineValues,
+    treatmentValues,
+    trend,
+    variability,
+    stability,
+    magnitudeOfImprovement,
+    percentReduction,
+    overlap,
+    immediacy,
+    masteryStatus,
+    sessionsToMastery
+  });
+  return {
+    label: series.name,
+    graphType,
+    baselineAverage: roundMetric(baselineAverage),
+    baselineLevel: baselineValues.length ? roundMetric(baselineCurrent) : null,
+    treatmentAverage: roundMetric(treatmentAverage),
+    currentLevel: roundMetric(treatmentCurrent ?? baselineCurrent),
+    trendDirection: trend.direction,
+    trendConfidence: trend.confidence,
+    variability,
+    stability,
+    magnitudeOfImprovement,
+    sessionsToMastery,
+    masteryStatus,
+    percentReduction,
+    overlap,
+    immediacy,
+    interpretation,
+    baselineAvailable: baselineValues.length > 0,
+    treatmentAvailable: treatmentValues.length > 0,
+    trendLineEligible: normalized.length >= MOVING_AVERAGE_WINDOW,
+    movingAveragePoints: options.movingAveragePoints || []
+  };
 }
 
 export function buildBaselineToTreatmentBoundary(dates) {
@@ -423,6 +613,177 @@ function buildCenteredSegmentPositions(count, start, end, maxStep) {
 export function formatGraphDate(value) {
   const date = new Date(`${value}T00:00:00`);
   return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+}
+
+function classifyTrend(values, graphType) {
+  if (!Array.isArray(values) || values.length < 3) {
+    return {
+      direction: graphType === "behavior" ? "flat" : "flat",
+      slope: 0,
+      confidence: "Insufficient data for stable trend interpretation."
+    };
+  }
+  const slope = linearRegressionSlope(values);
+  const range = Math.max(...values) - Math.min(...values);
+  const threshold = Math.max(range * 0.1, graphType === "skill" ? 1 : 0.25);
+  if (Math.abs(slope) <= threshold) {
+    return { direction: "flat", slope, confidence: "" };
+  }
+  if (graphType === "behavior") {
+    return { direction: slope < 0 ? "decreasing" : "increasing", slope, confidence: "" };
+  }
+  return { direction: slope > 0 ? "ascending" : "descending", slope, confidence: "" };
+}
+
+function classifyVariability(values) {
+  if (!Array.isArray(values) || values.length < 2) return "limited";
+  const average = mean(values);
+  if (!average) return "low";
+  const cv = standardDeviation(values) / Math.abs(average);
+  if (cv < 0.15) return "low";
+  if (cv <= 0.35) return "moderate";
+  return "high";
+}
+
+function classifyStability(values) {
+  if (!Array.isArray(values) || values.length < 3) return "unstable";
+  const median = med(values);
+  if (!median) return "stable";
+  const lower = median * 0.75;
+  const upper = median * 1.25;
+  const withinBand = values.filter((value) => value >= lower && value <= upper).length;
+  return withinBand / values.length >= 0.8 ? "stable" : "unstable";
+}
+
+function magnitudeImprovement(baselineAverage, treatmentAverage, currentLevel) {
+  if (baselineAverage === null) return "Baseline unavailable.";
+  const comparison = treatmentAverage ?? currentLevel;
+  if (comparison === null) return "Treatment data unavailable.";
+  const delta = comparison - baselineAverage;
+  const direction = delta > 0 ? "increase" : delta < 0 ? "decrease" : "no change";
+  return `${direction === "no change" ? "No change" : `${Math.abs(roundMetric(delta, 1))} point ${direction}`}${direction === "no change" ? "" : " from baseline"}`;
+}
+
+function percentReductionMetric(baselineAverage, treatmentAverage, currentLevel) {
+  if (baselineAverage === null || baselineAverage === 0) return "Baseline unavailable.";
+  const comparison = treatmentAverage ?? currentLevel;
+  if (comparison === null) return "Treatment data unavailable.";
+  const reduction = ((baselineAverage - comparison) / baselineAverage) * 100;
+  return `${roundMetric(reduction, 1)}%`;
+}
+
+function overlapMetric(graphType, baselineValues, treatmentValues) {
+  if (!baselineValues.length || !treatmentValues.length) return "Unavailable";
+  const threshold = graphType === "skill"
+    ? Math.max(...baselineValues)
+    : Math.min(...baselineValues);
+  const overlapping = treatmentValues.filter((value) => (
+    graphType === "skill" ? value <= threshold : value >= threshold
+  )).length;
+  return `${roundMetric((overlapping / treatmentValues.length) * 100, 1)}%`;
+}
+
+function immediacyMetric(baselineValues, treatmentValues) {
+  if (!baselineValues.length || !treatmentValues.length) return "Unavailable";
+  const baselineWindow = baselineValues.slice(-3);
+  const treatmentWindow = treatmentValues.slice(0, 3);
+  const baselineLevel = mean(baselineWindow);
+  const treatmentLevel = mean(treatmentWindow);
+  const direction = treatmentLevel < baselineLevel ? "Immediate decrease" : treatmentLevel > baselineLevel ? "Immediate increase" : "No immediate change";
+  const confidence = baselineWindow.length < 3 || treatmentWindow.length < 3 ? " (limited confidence)" : "";
+  return `${direction}${confidence}`;
+}
+
+function calculateSessionsToMastery(series, treatmentPoints, markers) {
+  const targetId = series.meta?.targetId;
+  const masteryMarker = (markers || []).find((marker) => (
+    marker.phaseType === "targetMastered"
+    && (!targetId || !Array.isArray(marker.targetIds) || marker.targetIds.includes(targetId))
+  ));
+  if (!masteryMarker) return null;
+  const masteredDate = masteryMarker.date;
+  const count = treatmentPoints.filter((point) => point.x <= masteredDate).length;
+  return count || null;
+}
+
+function skillMasteryStatus(series, sessionsToMastery) {
+  const status = series.meta?.status || "";
+  if (status === "mastered" || sessionsToMastery) return "mastered";
+  if (status === "maintenance") return "maintenance";
+  return "in progress";
+}
+
+function buildInterpretation(context) {
+  const {
+    graphType,
+    label,
+    baselineValues,
+    treatmentValues,
+    trend,
+    variability,
+    stability,
+    magnitudeOfImprovement,
+    percentReduction,
+    overlap,
+    immediacy,
+    masteryStatus,
+    sessionsToMastery
+  } = context;
+  if (!baselineValues.length) {
+    return `${label}: Baseline unavailable. ${treatmentValues.length < 3 ? "Insufficient data for stable trend interpretation." : "Treatment data can be reviewed, but baseline comparison is limited."}`;
+  }
+  if (treatmentValues.length < 3) {
+    return `${label}: Insufficient data for stable trend interpretation. Baseline level is ${roundMetric(mean(baselineValues), 1)}.`;
+  }
+  if (graphType === "behavior") {
+    return `${label}: Treatment data show a ${trend.direction} pattern with ${variability} variability and ${stability} responding. Estimated reduction from baseline is ${percentReduction || "unavailable"}, overlap is ${overlap || "unavailable"}, and ${String(immediacy || "immediacy is unavailable").toLowerCase()}.`;
+  }
+  const masterySentence = masteryStatus === "mastered" && sessionsToMastery
+    ? ` Mastery was reached after ${sessionsToMastery} treatment session${sessionsToMastery === 1 ? "" : "s"}.`
+    : ` Current mastery status is ${masteryStatus || "in progress"}.`;
+  return `${label}: Treatment data show a ${trend.direction} pattern with ${variability} variability and ${stability} responding. Magnitude of improvement is ${magnitudeOfImprovement || "unavailable"}.${masterySentence}`;
+}
+
+function linearRegressionSlope(values) {
+  if (!Array.isArray(values) || values.length < 2) return 0;
+  const n = values.length;
+  const xMean = (n - 1) / 2;
+  const yMean = mean(values);
+  let numerator = 0;
+  let denominator = 0;
+  values.forEach((value, index) => {
+    numerator += (index - xMean) * (value - yMean);
+    denominator += (index - xMean) ** 2;
+  });
+  return denominator ? numerator / denominator : 0;
+}
+
+function mean(values) {
+  if (!Array.isArray(values) || !values.length) return null;
+  return values.reduce((sum, value) => sum + Number(value || 0), 0) / values.length;
+}
+
+function med(values) {
+  if (!Array.isArray(values) || !values.length) return null;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const midpoint = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return (sorted[midpoint - 1] + sorted[midpoint]) / 2;
+  }
+  return sorted[midpoint];
+}
+
+function standardDeviation(values) {
+  if (!Array.isArray(values) || values.length < 2) return 0;
+  const average = mean(values);
+  const variance = mean(values.map((value) => (value - average) ** 2));
+  return Math.sqrt(variance);
+}
+
+function roundMetric(value, digits = 1) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return null;
+  const factor = 10 ** digits;
+  return Math.round(Number(value) * factor) / factor;
 }
 
 function bindCanvasTooltip(canvas, points) {
