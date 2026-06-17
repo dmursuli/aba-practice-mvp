@@ -255,9 +255,13 @@ test('graph analysis uses insufficient-data messaging when treatment data are to
     ]
   }], { graphType: 'skill' });
 
-  assert.equal(analysis.analyses[0].trendDirection, 'flat');
-  assert.match(analysis.analyses[0].interpretation, /Insufficient data for stable trend interpretation/);
-  assert.equal(analysis.analyses[0].stability, 'unstable');
+  assert.equal(analysis.analyses[0].baselineLevel, 30);
+  assert.equal(analysis.analyses[0].treatmentLevel, 50);
+  assert.equal(analysis.analyses[0].difference, 20);
+  assert.equal(analysis.analyses[0].trendDirection, 'Unavailable');
+  assert.match(analysis.analyses[0].interpretation, /representing a 20-percentage-point improvement/i);
+  assert.match(analysis.analyses[0].interpretation, /Interpretation is limited by the small number of data points/i);
+  assert.match(analysis.analyses[0].stability, /requires at least 3 treatment data points/i);
 });
 
 test('five-session moving average requires at least five points in a phase segment', () => {
@@ -366,4 +370,56 @@ test('graph UI exposes a trend-line toggle and report insertion action', () => {
   assert.match(appSource, /data-graph-trend-toggle/);
   assert.match(appSource, /data-insert-graph-analysis/);
   assert.match(appSource, /progressSummary/);
+  assert.match(appSource, /syncProgressSummaryField/);
+  assert.match(appSource, /data-report-program-analysis/);
+  assert.match(appSource, /renderReportGraphAnalysisMarkup/);
+  assert.match(appSource, /data-behavior-analysis/);
+  assert.doesNotMatch(appSource, /Skill acquisition graph analysis:/);
+  assert.doesNotMatch(appSource, /Behavior reduction graph analysis:/);
+});
+
+test('baseline and treatment comparison calculate with one point in each phase for behavior graphs', () => {
+  const analysis = buildGraphAnalysis([{
+    name: 'Self-injury',
+    points: [
+      { x: '2026-06-01', y: 8 },
+      { x: '2026-06-03', y: 3 }
+    ]
+  }], { graphType: 'behavior' });
+
+  assert.equal(analysis.analyses[0].baselineLevel, 8);
+  assert.equal(analysis.analyses[0].treatmentLevel, 3);
+  assert.equal(analysis.analyses[0].difference, 5);
+  assert.equal(analysis.analyses[0].percentReduction, '62.5%');
+  assert.equal(analysis.analyses[0].trendDirection, 'Unavailable');
+});
+
+test('baseline mean of zero does not cause divide-by-zero errors', () => {
+  const analysis = buildGraphAnalysis([{
+    name: 'Manding',
+    points: [
+      { x: '2026-06-01', y: 0 },
+      { x: '2026-06-03', y: 20 }
+    ]
+  }], { graphType: 'skill' });
+
+  assert.equal(analysis.analyses[0].baselineLevel, 0);
+  assert.equal(analysis.analyses[0].difference, 20);
+  assert.match(String(analysis.analyses[0].percentChange), /Baseline mean is 0/i);
+  assert.match(analysis.analyses[0].interpretation, /20-percentage-point increase/i);
+});
+
+test('graph analysis panel data remains available when some metrics are unavailable', () => {
+  const analysis = buildGraphAnalysis([{
+    name: 'Task completion',
+    points: [
+      { x: '2026-06-01', y: 45 },
+      { x: '2026-06-03', y: 50 }
+    ]
+  }], { graphType: 'skill' });
+
+  assert.equal(analysis.analyses.length, 1);
+  assert.equal(analysis.analyses[0].baselineLevel, 45);
+  assert.match(analysis.analyses[0].variability, /requires at least 2 data points|low|moderate|high/i);
+  assert.match(String(analysis.analyses[0].stability), /requires at least 3 treatment data points/i);
 });

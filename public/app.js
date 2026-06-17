@@ -3425,6 +3425,7 @@ function renderReportSummary() {
   const sessions = filteredReportSessions();
   applyIntakeInterviewToReport();
   syncParentTrainingReportFields();
+  syncProgressSummaryField();
   reportClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
@@ -3432,6 +3433,18 @@ function renderReportSummary() {
       <div><strong>${sessions.length}</strong><span>Sessions in range</span></div>
     `
     : "";
+}
+
+function syncProgressSummaryField(force = false) {
+  if (!reportForm) return;
+  setGeneratedReportField("progressSummary", buildReportProgressSummary(), force);
+}
+
+function buildReportProgressSummary() {
+  const client = currentClient();
+  const sessions = filteredReportSessions();
+  const metrics = funderReportMetrics(sessions);
+  return `Across the reporting period, ${client?.name || "client"} completed ${sessions.length} documented sessions. Average skill independence was ${metrics.averageIndependence}%. Behavior data were reviewed across tracked behaviors for treatment planning.`;
 }
 
 function applyIntakeInterviewToReport(force = false) {
@@ -5808,11 +5821,13 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
           <p class="graph-analysis-interpretation">${escapeHtml(entry.interpretation)}</p>
           <div class="graph-analysis-grid">
             ${renderGraphMetricCell("Baseline level", formatAnalysisMetric(entry.baselineLevel, analysis.graphType))}
-            ${renderGraphMetricCell("Treatment average", formatAnalysisMetric(entry.treatmentAverage, analysis.graphType))}
+            ${renderGraphMetricCell("Treatment level", formatAnalysisMetric(entry.treatmentLevel ?? entry.treatmentAverage, analysis.graphType))}
             ${renderGraphMetricCell("Current level", formatAnalysisMetric(entry.currentLevel, analysis.graphType))}
             ${renderGraphMetricCell("Trend", entry.trendDirection)}
             ${analysis.graphType === "skill"
-              ? renderGraphMetricCell("Mastery status", entry.masteryStatus || "in progress")
+              ? renderGraphMetricCell("Change from baseline", entry.percentChange && !String(entry.percentChange).includes("unavailable")
+                ? `${formatAnalysisMetric(entry.difference, analysis.graphType)} (${entry.percentChange})`
+                : formatAnalysisMetric(entry.difference, analysis.graphType))
               : renderGraphMetricCell("Percent reduction", entry.percentReduction || "Unavailable")}
           </div>
           <details class="graph-analysis-details">
@@ -5822,7 +5837,7 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
               ${renderGraphMetricCell("Variability", entry.variability)}
               ${renderGraphMetricCell("Stability", entry.stability)}
               ${analysis.graphType === "skill"
-                ? renderGraphMetricCell("Magnitude of improvement", entry.magnitudeOfImprovement || "Unavailable")
+                ? renderGraphMetricCell("Mastery status", entry.masteryStatus || "in progress")
                 : renderGraphMetricCell("Overlap", entry.overlap || "Unavailable")}
               ${analysis.graphType === "skill"
                 ? renderGraphMetricCell("Sessions to mastery", entry.sessionsToMastery ?? "Not mastered")
@@ -5830,6 +5845,21 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
             </div>
             ${entry.trendConfidence ? `<p class="graph-analysis-note">${escapeHtml(entry.trendConfidence)}</p>` : ""}
           </details>
+        </article>
+      `).join("")}
+    </section>
+  `;
+}
+
+function renderReportGraphAnalysisMarkup(analysis) {
+  if (!analysis?.analyses?.length) return "";
+  return `
+    <section class="graph-analysis-panel report-graph-analysis">
+      <strong>Graph Analysis</strong>
+      ${analysis.analyses.map((entry) => `
+        <article class="graph-analysis-series">
+          <h4>${escapeHtml(entry.label)}</h4>
+          <p class="graph-analysis-interpretation">${escapeHtml(entry.interpretation)}</p>
         </article>
       `).join("")}
     </section>
@@ -5990,20 +6020,32 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
       ${includeProgramInfo ? renderReportProgramInfo(chart.program) : ""}
       <canvas data-${chartAttribute}="${chart.program.id}" width="760" height="320"></canvas>
       ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("skill", chart.program.id)) })}
+      ${includeProgramInfo ? `<div data-report-program-analysis="${chart.program.id}"></div>` : ""}
     </article>
   `).join("");
 
   charts.forEach((chart) => {
     const graphKey = graphTrendKey("skill", chart.program.id);
+    const phaseMarkers = masteryMarkersForProgram(chart.program.id);
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${chart.program.id}"]`), chart.series, {
       maxY: 100,
       yStep: 10,
       yLabel: "% independence",
       emptyMessage: "No target data for this program",
-      phaseMarkers: masteryMarkersForProgram(chart.program.id),
+      phaseMarkers,
       graphType: "skill",
       showTrendLine: trendLineEnabled(graphKey)
     });
+    if (includeProgramInfo) {
+      const analysisMount = container.querySelector(`[data-report-program-analysis="${chart.program.id}"]`);
+      if (analysisMount) {
+        const analysis = buildGraphAnalysis(chart.series, {
+          graphType: "skill",
+          phaseMarkers
+        });
+        analysisMount.innerHTML = renderReportGraphAnalysisMarkup(analysis);
+      }
+    }
   });
 }
 
@@ -6045,7 +6087,7 @@ function drawBehaviorChartSet(sessions, container, chartAttribute) {
       <h3>${escapeHtml(chart.behavior)}</h3>
       <canvas data-${chartAttribute}="${index}" width="760" height="320"></canvas>
       ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("behavior", chart.behaviorId)) })}
-      ${isReportChart ? "" : `<div data-behavior-analysis="${escapeHtml(String(chart.behaviorId))}"></div>`}
+      <div data-behavior-analysis="${escapeHtml(String(chart.behaviorId))}"></div>
       ${isReportChart ? "" : renderBehaviorDataManagerMarkup(chart)}
     </article>
   `).join("");
@@ -6059,12 +6101,14 @@ function drawBehaviorChartSet(sessions, container, chartAttribute) {
       graphType: "behavior",
       showTrendLine: trendLineEnabled(graphKey)
     });
-    const analysisMount = isReportChart ? null : container.querySelector(`[data-behavior-analysis="${escapeHtml(String(chart.behaviorId))}"]`);
+    const analysisMount = container.querySelector(`[data-behavior-analysis="${escapeHtml(String(chart.behaviorId))}"]`);
     if (analysisMount) {
       const analysis = buildGraphAnalysis(chart.series, { graphType: "behavior" });
-      analysisMount.innerHTML = renderGraphAnalysisMarkup(analysis, graphKey, {
-        reportField: "progressSummary"
-      });
+      analysisMount.innerHTML = isReportChart
+        ? renderReportGraphAnalysisMarkup(analysis)
+        : renderGraphAnalysisMarkup(analysis, graphKey, {
+            reportField: "progressSummary"
+          });
     }
   });
 }
