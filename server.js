@@ -2250,6 +2250,8 @@ function sanitizeFunderReport(payload) {
     standardizedConductedBy: textField("standardizedConductedBy"),
     standardizedAssessmentDate: textField("standardizedAssessmentDate"),
     progressSummary: textField("progressSummary"),
+    parentTrainingSummary: textField("parentTrainingSummary"),
+    parentTrainingRecommendations: textField("parentTrainingRecommendations"),
     instructionalGoalsInfo: textField("instructionalGoalsInfo"),
     generalizationMaintenance: textField("generalizationMaintenance"),
     barriersToTreatmentSummary: textField("barriersToTreatmentSummary"),

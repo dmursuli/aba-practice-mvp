@@ -198,10 +198,11 @@ export function buildMovingAveragePoints(points, options = {}) {
     .sort((a, b) => a.x.localeCompare(b.x))
     .map((point) => {
       const dateIndex = dates.indexOf(point.x);
+      const derivedPhase = derivedPointPhase(dateIndex, phaseBoundary);
       return {
         ...point,
         dateIndex,
-        phase: point.phase || derivedPointPhase(dateIndex, phaseBoundary)
+        phase: point.phase === "baseline" ? "baseline" : derivedPhase
       };
     });
   const grouped = normalized.reduce((map, point) => {
@@ -233,7 +234,8 @@ function analyzeSingleSeries(series, options) {
     .sort((a, b) => a.x.localeCompare(b.x))
     .map((point) => {
       const dateIndex = options.dates.indexOf(point.x);
-      const phase = point.phase || derivedPointPhase(dateIndex, options.phaseBoundary);
+      const derivedPhase = derivedPointPhase(dateIndex, options.phaseBoundary);
+      const phase = point.phase === "baseline" ? "baseline" : derivedPhase;
       const normalizedPoint = { ...point, dateIndex, phase };
       if (phase === "baseline") baselinePoints.push(normalizedPoint);
       else treatmentPoints.push(normalizedPoint);
@@ -249,6 +251,14 @@ function analyzeSingleSeries(series, options) {
   const trend = classifyTrend(treatmentValues, graphType);
   const variability = classifyVariability(evaluationValues);
   const stability = classifyStability(evaluationValues);
+  const difference = baselineAverage !== null && treatmentAverage !== null
+    ? graphType === "behavior"
+      ? baselineAverage - treatmentAverage
+      : treatmentAverage - baselineAverage
+    : null;
+  const percentChange = graphType === "skill"
+    ? percentChangeMetric(baselineAverage, treatmentAverage)
+    : null;
   const sessionsToMastery = graphType === "skill"
     ? calculateSessionsToMastery(series, treatmentPoints, options.phaseMarkers)
     : null;
@@ -272,10 +282,14 @@ function analyzeSingleSeries(series, options) {
     label: series.name,
     baselineValues,
     treatmentValues,
+    baselineAverage,
+    treatmentAverage,
     trend,
     variability,
     stability,
     magnitudeOfImprovement,
+    difference,
+    percentChange,
     percentReduction,
     overlap,
     immediacy,
@@ -286,14 +300,17 @@ function analyzeSingleSeries(series, options) {
     label: series.name,
     graphType,
     baselineAverage: roundMetric(baselineAverage),
-    baselineLevel: baselineValues.length ? roundMetric(baselineCurrent) : null,
+    baselineLevel: roundMetric(baselineAverage),
     treatmentAverage: roundMetric(treatmentAverage),
+    treatmentLevel: roundMetric(treatmentAverage),
     currentLevel: roundMetric(treatmentCurrent ?? baselineCurrent),
     trendDirection: trend.direction,
     trendConfidence: trend.confidence,
     variability,
     stability,
     magnitudeOfImprovement,
+    difference: roundMetric(difference),
+    percentChange,
     sessionsToMastery,
     masteryStatus,
     percentReduction,
@@ -618,9 +635,9 @@ export function formatGraphDate(value) {
 function classifyTrend(values, graphType) {
   if (!Array.isArray(values) || values.length < 3) {
     return {
-      direction: graphType === "behavior" ? "flat" : "flat",
+      direction: "Unavailable",
       slope: 0,
-      confidence: "Insufficient data for stable trend interpretation."
+      confidence: "Insufficient data for trend interpretation."
     };
   }
   const slope = linearRegressionSlope(values);
@@ -636,7 +653,7 @@ function classifyTrend(values, graphType) {
 }
 
 function classifyVariability(values) {
-  if (!Array.isArray(values) || values.length < 2) return "limited";
+  if (!Array.isArray(values) || values.length < 2) return "Variability requires at least 2 data points.";
   const average = mean(values);
   if (!average) return "low";
   const cv = standardDeviation(values) / Math.abs(average);
@@ -646,7 +663,7 @@ function classifyVariability(values) {
 }
 
 function classifyStability(values) {
-  if (!Array.isArray(values) || values.length < 3) return "unstable";
+  if (!Array.isArray(values) || values.length < 3) return "Stability requires at least 3 treatment data points.";
   const median = med(values);
   if (!median) return "stable";
   const lower = median * 0.75;
@@ -662,6 +679,13 @@ function magnitudeImprovement(baselineAverage, treatmentAverage, currentLevel) {
   const delta = comparison - baselineAverage;
   const direction = delta > 0 ? "increase" : delta < 0 ? "decrease" : "no change";
   return `${direction === "no change" ? "No change" : `${Math.abs(roundMetric(delta, 1))} point ${direction}`}${direction === "no change" ? "" : " from baseline"}`;
+}
+
+function percentChangeMetric(baselineAverage, treatmentAverage) {
+  if (baselineAverage === null || treatmentAverage === null) return "Unavailable";
+  if (baselineAverage === 0) return "Baseline mean is 0; percent change unavailable.";
+  const change = ((treatmentAverage - baselineAverage) / baselineAverage) * 100;
+  return `${roundMetric(change, 1)}%`;
 }
 
 function percentReductionMetric(baselineAverage, treatmentAverage, currentLevel) {
@@ -719,10 +743,14 @@ function buildInterpretation(context) {
     label,
     baselineValues,
     treatmentValues,
+    baselineAverage,
+    treatmentAverage,
     trend,
     variability,
     stability,
     magnitudeOfImprovement,
+    difference,
+    percentChange,
     percentReduction,
     overlap,
     immediacy,
@@ -730,18 +758,42 @@ function buildInterpretation(context) {
     sessionsToMastery
   } = context;
   if (!baselineValues.length) {
-    return `${label}: Baseline unavailable. ${treatmentValues.length < 3 ? "Insufficient data for stable trend interpretation." : "Treatment data can be reviewed, but baseline comparison is limited."}`;
+    return `${label}: Baseline unavailable. ${treatmentValues.length ? `Treatment level is currently ${roundMetric(treatmentAverage ?? mean(treatmentValues), 1)}${graphType === "skill" ? "%" : ""}.` : "Treatment data are unavailable."} ${trend.confidence || ""}`.trim();
   }
-  if (treatmentValues.length < 3) {
-    return `${label}: Insufficient data for stable trend interpretation. Baseline level is ${roundMetric(mean(baselineValues), 1)}.`;
+  if (!treatmentValues.length) {
+    return `${label}: Baseline level was ${roundMetric(baselineAverage, 1)}${graphType === "skill" ? "%" : ""}. Treatment data are unavailable.`;
   }
   if (graphType === "behavior") {
-    return `${label}: Treatment data show a ${trend.direction} pattern with ${variability} variability and ${stability} responding. Estimated reduction from baseline is ${percentReduction || "unavailable"}, overlap is ${overlap || "unavailable"}, and ${String(immediacy || "immediacy is unavailable").toLowerCase()}.`;
+    const limitedConfidence = baselineValues.length < 3 || treatmentValues.length < 3;
+    const reductionClause = baselineAverage === 0
+      ? `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${roundMetric(difference, 1)}-point absolute decrease from baseline.`
+      : `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${percentReduction} reduction from baseline.`;
+    const trendClause = trend.direction === "Unavailable"
+      ? "Additional data are needed to establish a stable trend."
+      : `Data show a ${trend.direction} trend.`;
+    const supportClauses = [
+      variability && !String(variability).includes("requires") ? `${variability} variability` : "",
+      stability && !String(stability).includes("requires") ? `${stability} stability` : "",
+      overlap && overlap !== "Unavailable" ? `overlap was ${overlap}` : "",
+      immediacy && immediacy !== "Unavailable" ? String(immediacy).toLowerCase() : ""
+    ].filter(Boolean);
+    return `${label}: Baseline frequency averaged ${roundMetric(baselineAverage, 1)} based on ${baselineValues.length} baseline data point${baselineValues.length === 1 ? "" : "s"}. ${reductionClause} ${trendClause}${supportClauses.length ? ` Observed response showed ${supportClauses.join(", ")}.` : ""}${limitedConfidence ? " Interpretation is limited by the small number of data points." : ""}`.trim();
   }
+  const limitedConfidence = baselineValues.length < 3 || treatmentValues.length < 3;
+  const changeClause = baselineAverage === 0
+    ? `Treatment level averaged ${roundMetric(treatmentAverage, 1)}%, representing a ${roundMetric(difference, 1)}-percentage-point increase from baseline.`
+    : `Treatment performance averaged ${roundMetric(treatmentAverage, 1)}%, representing a ${roundMetric(difference, 1)}-percentage-point improvement${percentChange && !String(percentChange).includes("unavailable") ? ` (${percentChange})` : ""}.`;
+  const trendClause = trend.direction === "Unavailable"
+    ? "Additional treatment data are needed to establish a stable trend."
+    : `Data demonstrate a ${trend.direction} trend.`;
+  const supportClauses = [
+    variability && !String(variability).includes("requires") ? `${variability} variability` : "",
+    stability && !String(stability).includes("requires") ? `${stability} stability` : ""
+  ].filter(Boolean);
   const masterySentence = masteryStatus === "mastered" && sessionsToMastery
     ? ` Mastery was reached after ${sessionsToMastery} treatment session${sessionsToMastery === 1 ? "" : "s"}.`
     : ` Current mastery status is ${masteryStatus || "in progress"}.`;
-  return `${label}: Treatment data show a ${trend.direction} pattern with ${variability} variability and ${stability} responding. Magnitude of improvement is ${magnitudeOfImprovement || "unavailable"}.${masterySentence}`;
+  return `${label}: Baseline level was ${roundMetric(baselineAverage, 1)}% based on ${baselineValues.length} baseline data point${baselineValues.length === 1 ? "" : "s"}. ${changeClause} ${trendClause}${supportClauses.length ? ` Observed response showed ${supportClauses.join(" and ")}.` : ""}${limitedConfidence ? " Interpretation is limited by the small number of data points." : ""}${masterySentence}`.trim();
 }
 
 function linearRegressionSlope(values) {

@@ -423,3 +423,31 @@ test('graph analysis panel data remains available when some metrics are unavaila
   assert.match(analysis.analyses[0].variability, /requires at least 2 data points|low|moderate|high/i);
   assert.match(String(analysis.analyses[0].stability), /requires at least 3 treatment data points/i);
 });
+
+test('skill analysis still calculates baseline level when stored phase labels mark the first point as intervention', () => {
+  const analysis = buildGraphAnalysis([{
+    name: 'Answer WH questions',
+    points: [
+      { x: '2026-06-01', y: 25, phase: 'intervention' },
+      { x: '2026-06-03', y: 55, phase: 'intervention' }
+    ]
+  }], { graphType: 'skill' });
+
+  assert.equal(analysis.analyses[0].baselineLevel, 25);
+  assert.equal(analysis.analyses[0].treatmentLevel, 55);
+  assert.match(analysis.analyses[0].interpretation, /Baseline level was 25% based on 1 baseline data point/i);
+});
+
+test('behavior analysis still calculates baseline level when stored phase labels mark the first point as intervention', () => {
+  const analysis = buildGraphAnalysis([{
+    name: 'Aggression',
+    points: [
+      { x: '2026-06-01', y: 7, phase: 'intervention' },
+      { x: '2026-06-03', y: 4, phase: 'intervention' }
+    ]
+  }], { graphType: 'behavior' });
+
+  assert.equal(analysis.analyses[0].baselineLevel, 7);
+  assert.equal(analysis.analyses[0].treatmentLevel, 4);
+  assert.match(analysis.analyses[0].interpretation, /Baseline frequency averaged 7 based on 1 baseline data point/i);
+});

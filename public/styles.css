@@ -1191,6 +1191,24 @@ button:focus-visible {
   margin-top: 10px;
 }
 
+.report-graph-analysis {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.report-graph-analysis-line {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.report-graph-analysis-line strong {
+  color: var(--ink);
+}
+
 .graph-data-manager {
   margin-top: 12px;
   border-top: 1px solid var(--line);

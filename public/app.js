@@ -2,6 +2,7 @@ import { createAuditEvent, createClient, createSession, createUser, deleteClient
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
+import { buildCompactGraphAnalysisSentence, hasMeaningfulFunderReportDraft } from "./report-utils.js";
 import { generateSoapNote } from "./soap.js";
 import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms } from "./session-utils.js";
 
@@ -35,6 +36,9 @@ const state = {
     intake: {},
     session: {}
   },
+  reportDraftClientId: "",
+  reportDraftSavedSnapshot: "",
+  reportDraftDirty: false,
   inactivityTimerId: null,
   inactivityWarningTimerId: null,
   lastSessionTouchAt: 0
@@ -138,6 +142,7 @@ const addServiceHourRowButton = document.querySelector("#add-service-hour-row");
 const printFunderReportButton = document.querySelector("#print-funder-report");
 const downloadFunderTextButton = document.querySelector("#download-funder-text");
 const downloadFunderHtmlButton = document.querySelector("#download-funder-html");
+const saveFunderReportButton = document.querySelector("#save-funder-report");
 const funderExportStatus = document.querySelector("#funder-export-status");
 const note97151Editor = document.querySelector("#note-97151");
 const note97151Status = document.querySelector("#note-97151-status");
@@ -601,13 +606,21 @@ function bindEvents() {
   programGraphModal?.addEventListener("change", handleGraphAnalysisControlChange);
   programGraphModal?.addEventListener("click", handleGraphAnalysisClick);
   reportForm.addEventListener("submit", handleGenerateFunderReport);
-  reportForm.addEventListener("change", renderReportSummary);
+  reportForm.addEventListener("input", handleReportDraftInput);
+  reportForm.addEventListener("change", handleReportFormChange);
   reportSectionNav?.addEventListener("click", handleReportSectionNavClick);
-  addFadeRowButton.addEventListener("click", () => addFadePlanRow());
-  addServiceHourRowButton.addEventListener("click", () => addServiceHourRow());
+  addFadeRowButton.addEventListener("click", () => {
+    addFadePlanRow();
+    markReportDraftDirty();
+  });
+  addServiceHourRowButton.addEventListener("click", () => {
+    addServiceHourRow();
+    markReportDraftDirty();
+  });
   printFunderReportButton.addEventListener("click", () => window.print());
   downloadFunderTextButton.addEventListener("click", () => handleDownloadFunderReport("txt"));
   downloadFunderHtmlButton.addEventListener("click", () => handleDownloadFunderReport("html"));
+  saveFunderReportButton?.addEventListener("click", handleSaveFunderReportDraft);
   generate97151Button.addEventListener("click", handleGenerate97151Note);
   note97151Editor.addEventListener("blur", handleSave97151Note);
   generatePlan97151Button.addEventListener("click", handleGenerate97151Note);
@@ -951,16 +964,36 @@ function showApp() {
   applyRoleAccess();
 }
 
+function defaultReportDateRange() {
+  const today = new Date();
+  const endDate = today.toISOString().slice(0, 10);
+  const sixMonthsAgo = new Date(today);
+  sixMonthsAgo.setMonth(today.getMonth() - 6);
+  return {
+    startDate: sixMonthsAgo.toISOString().slice(0, 10),
+    endDate
+  };
+}
+
+function resetFunderReportForm() {
+  if (!reportForm) return;
+  reportForm.reset();
+  const range = defaultReportDateRange();
+  reportForm.elements.startDate.value = range.startDate;
+  reportForm.elements.endDate.value = range.endDate;
+  preloadFadePlanRows();
+  preloadServiceHourRows();
+}
+
 function setDefaultDate() {
   const today = new Date();
   const todayValue = today.toISOString().slice(0, 10);
-  const sixMonthsAgo = new Date(today);
-  sixMonthsAgo.setMonth(today.getMonth() - 6);
   form.elements.date.value = todayValue;
   bcbaSessionForm.elements.date.value = todayValue;
   parentTrainingForm.elements.date.value = todayValue;
-  reportForm.elements.endDate.value = todayValue;
-  reportForm.elements.startDate.value = sixMonthsAgo.toISOString().slice(0, 10);
+  const reportRange = defaultReportDateRange();
+  reportForm.elements.endDate.value = reportRange.endDate;
+  reportForm.elements.startDate.value = reportRange.startDate;
   toggleRbtFeedbackSection();
 }
 
@@ -1162,7 +1195,10 @@ function addFadePlanRow(rowData = {}) {
   }).forEach(([field, value]) => {
     row.querySelector(`[data-field="${field}"]`).value = value;
   });
-  row.querySelector("[data-remove]").addEventListener("click", () => row.remove());
+  row.querySelector("[data-remove]").addEventListener("click", () => {
+    row.remove();
+    markReportDraftDirty();
+  });
   fadePlanRows.append(row);
 }
 
@@ -1182,7 +1218,10 @@ function addServiceHourRow(rowData = {}) {
   }).forEach(([field, value]) => {
     row.querySelector(`[data-field="${field}"]`).value = value;
   });
-  row.querySelector("[data-remove]").addEventListener("click", () => row.remove());
+  row.querySelector("[data-remove]").addEventListener("click", () => {
+    row.remove();
+    markReportDraftDirty();
+  });
   serviceHourRows.append(row);
 }
 
@@ -1577,8 +1616,10 @@ function readClientProfileForm() {
     assessmentConductedBy: values.get("assessmentConductedBy"),
     assessmentFileName: clientProfileForm.elements.assessmentFile.files[0]?.name || currentClient()?.profile?.assessment?.fileName || "",
     assessmentNotes: values.get("assessmentNotes"),
+    funderReport: structuredClone(currentClient()?.profile?.funderReport || {}),
     intakeInterview: structuredClone(currentClient()?.profile?.intakeInterview || {}),
-    parentTrainingGoals: structuredClone(currentClient()?.profile?.parentTrainingGoals || [])
+    parentTrainingGoals: structuredClone(currentClient()?.profile?.parentTrainingGoals || []),
+    documents: structuredClone(currentClient()?.profile?.documents || [])
   };
 }
 
@@ -2111,6 +2152,7 @@ function render() {
   syncParentTrainingDefaults();
   syncClientProfileForm();
   syncIntakeInterviewForm();
+  syncFunderReportDraftForClient();
   renderClientManagementSummary();
   renderClientDocuments();
   renderSummary();
@@ -2131,6 +2173,7 @@ function render() {
   renderAuditLog();
   renderDataHealth();
   renderUsers();
+  if (currentView() === "report") renderFunderReportPreview();
 }
 
 function syncBcbaSessionDefaults() {
@@ -2312,7 +2355,7 @@ function switchView(view) {
     panel.classList.toggle("hidden", panel.dataset.viewPanel !== view);
   });
   if (view === "graphs") renderCharts();
-  if (view === "report" && reportPreview.innerHTML) drawFunderReportCharts(filteredReportSessions());
+  if (view === "report") renderFunderReportPreview();
   if (view === "billing") renderBillingExport();
   if (view === "audit") refreshAuditLog(false);
   if (view === "health") runDataHealthCheck();
@@ -3420,6 +3463,81 @@ function documentTypeLabel(type) {
   }[type] || "Document";
 }
 
+function handleReportDraftInput() {
+  markReportDraftDirty();
+}
+
+function handleReportFormChange() {
+  markReportDraftDirty();
+  renderReportSummary();
+  if (currentView() === "report") renderFunderReportPreview();
+}
+
+function currentFunderReportDraft() {
+  if (!reportForm) return {};
+  const values = new FormData(reportForm);
+  const draft = {};
+  values.forEach((value, key) => {
+    if (key === "assessmentGrid" || key === "standardizedAssessmentGrid") return;
+    draft[key] = String(value || "");
+  });
+  draft.fadePlanRows = readFadePlanRows();
+  draft.serviceHours = readServiceHourRows();
+  return draft;
+}
+
+function applyFunderReportDraft(draft = {}) {
+  if (!reportForm) return;
+  const rows = Array.isArray(draft.fadePlanRows) ? draft.fadePlanRows : [];
+  const serviceRows = Array.isArray(draft.serviceHours) ? draft.serviceHours : [];
+  [...reportForm.elements].forEach((field) => {
+    if (!field?.name || field.type === "file") return;
+    if (Object.hasOwn(draft, field.name)) {
+      field.value = String(draft[field.name] || "");
+    }
+  });
+  fadePlanRows.innerHTML = "";
+  (rows.length ? rows : defaultFadePlanRows()).forEach((row) => addFadePlanRow(row));
+  serviceHourRows.innerHTML = "";
+  (serviceRows.length ? serviceRows : defaultServiceHourRows()).forEach((row) => addServiceHourRow(row));
+}
+
+function reportDraftSnapshot(draft = currentFunderReportDraft()) {
+  return JSON.stringify(draft);
+}
+
+function markReportDraftDirty() {
+  const client = currentClient();
+  if (!client || state.reportDraftClientId !== client.id) return;
+  const dirty = reportDraftSnapshot() !== state.reportDraftSavedSnapshot;
+  state.reportDraftDirty = dirty;
+  if (dirty) {
+    funderExportStatus.textContent = "Unsaved report changes.";
+  } else if (funderExportStatus.textContent === "Unsaved report changes.") {
+    funderExportStatus.textContent = "";
+  }
+}
+
+function syncFunderReportDraftForClient() {
+  const client = currentClient();
+  if (!client || !reportForm) return;
+  if (state.reportDraftClientId === client.id) {
+    markReportDraftDirty();
+    return;
+  }
+  const savedDraft = structuredClone(client.profile?.funderReport || {});
+  resetFunderReportForm();
+  applyFunderReportDraft(savedDraft);
+  state.reportDraftClientId = client.id;
+  state.reportDraftSavedSnapshot = reportDraftSnapshot();
+  state.reportDraftDirty = false;
+  if (hasMeaningfulFunderReportDraft(savedDraft)) {
+    funderExportStatus.textContent = "Saved report draft restored.";
+  } else if (funderExportStatus.textContent === "Saved report draft restored." || funderExportStatus.textContent === "Unsaved report changes.") {
+    funderExportStatus.textContent = "";
+  }
+}
+
 function renderReportSummary() {
   const client = currentClient();
   const sessions = filteredReportSessions();
@@ -3438,6 +3556,164 @@ function renderReportSummary() {
 function syncProgressSummaryField(force = false) {
   if (!reportForm) return;
   setGeneratedReportField("progressSummary", buildReportProgressSummary(), force);
+}
+
+function buildFunderReportPreviewMarkup() {
+  const client = currentClient();
+  const sessions = filteredReportSessions().slice().reverse();
+  const values = new FormData(reportForm);
+  const metrics = funderReportMetrics(sessions);
+  const assessmentGridFile = reportForm.elements.assessmentGrid.files[0];
+  const standardizedGridFile = reportForm.elements.standardizedAssessmentGrid.files[0];
+  return `
+    <section class="report-document">
+      <div class="report-title-block">
+        <p class="eyebrow">Funder report</p>
+        <h2>${escapeHtml(client?.name || "Client")}</h2>
+        <p>${formatDate(values.get("startDate"))} - ${formatDate(values.get("endDate"))}</p>
+      </div>
+      <div class="report-stat-grid">
+        <div><strong>${sessions.length}</strong><span>Sessions reviewed</span></div>
+        <div><strong>${metrics.averageIndependence}%</strong><span>Average independence</span></div>
+        <div><strong>${metrics.targetsReviewed}</strong><span>Targets with data</span></div>
+        <div><strong>${metrics.totalBehaviorFrequency}</strong><span>Total behavior frequency</span></div>
+      </div>
+      <section>
+        <h3>Background Information</h3>
+        ${reportParagraph(values.get("background") || defaultBackgroundInformation())}
+      </section>
+      <section>
+        <h3>Medical Concerns</h3>
+        ${reportParagraph(values.get("medicalConcerns") || defaultMedicalConcerns())}
+      </section>
+      <section>
+        <h3>Reason for Referral</h3>
+        ${reportParagraph(values.get("reasonReferral") || defaultReasonForReferral())}
+      </section>
+      <section>
+        <h3>Impact of Behaviors</h3>
+        ${reportParagraph(values.get("impactBehaviors") || defaultImpactOfBehaviors())}
+      </section>
+      <section>
+        <h3>Client and Family Strengths</h3>
+        ${reportParagraph(values.get("familyStrengths") || defaultFamilyStrengths())}
+      </section>
+      <section>
+        <h3>Initial Observations</h3>
+        ${reportParagraph(values.get("initialObservations") || defaultInitialObservations())}
+      </section>
+      <section>
+        <h3>Functional Assessment</h3>
+        <div class="report-detail-grid">
+          <div><strong>Indirect assessment type</strong><span>${escapeHtml(values.get("indirectAssessmentType") || "Not entered")}</span></div>
+          <div><strong>Conducted by</strong><span>${escapeHtml(values.get("assessmentConductedBy") || "Not entered")}</span></div>
+          <div><strong>Date</strong><span>${values.get("assessmentDate") ? formatDate(values.get("assessmentDate")) : "Not entered"}</span></div>
+        </div>
+        ${reportFilePreview(assessmentGridFile, "Assessment grid")}
+      </section>
+      <section>
+        <h3>Behavior Support Plan</h3>
+        ${reportParagraph(values.get("behaviorSupportPlan") || "Behavior support plan content can be pasted by the supervising BCBA.")}
+      </section>
+      <section>
+        <h3>Behavior Graphs</h3>
+        <article class="chart-panel">
+          <h4>Behavior frequency</h4>
+          <canvas id="report-behavior-chart" width="760" height="320"></canvas>
+        </article>
+        <div id="report-behavior-charts" class="chart-zone"></div>
+      </section>
+      <section>
+        <h3>Progress Summary</h3>
+        ${reportParagraph(values.get("progressSummary") || `Across the reporting period, ${client?.name || "client"} completed ${sessions.length} documented sessions. Average skill independence was ${metrics.averageIndependence}%. Behavior data were reviewed across tracked behaviors for treatment planning.`)}
+      </section>
+      <section>
+        <h3>Standardized Assessment</h3>
+        <div class="report-detail-grid">
+          <div><strong>Assessment type</strong><span>${escapeHtml(values.get("standardizedAssessmentType") || "Not entered")}</span></div>
+          <div><strong>Conducted by</strong><span>${escapeHtml(values.get("standardizedConductedBy") || "Not entered")}</span></div>
+          <div><strong>Date</strong><span>${values.get("standardizedAssessmentDate") ? formatDate(values.get("standardizedAssessmentDate")) : "Not entered"}</span></div>
+        </div>
+        ${reportFilePreview(standardizedGridFile, "Standardized assessment grid")}
+      </section>
+      <section>
+        <h3>Skill Acquisition Graphs</h3>
+        <div id="report-skill-charts" class="chart-zone"></div>
+      </section>
+      <section>
+        <h3>Skill Acquisition Progress Summary</h3>
+        ${renderMasteredTargetsSummary(values.get("startDate"), values.get("endDate"))}
+      </section>
+      <section>
+        <h3>Parent Training</h3>
+        ${renderParentTrainingReportSummary(values.get("startDate"), values.get("endDate"), {
+          summaryText: values.get("parentTrainingSummary"),
+          recommendationText: values.get("parentTrainingRecommendations")
+        })}
+        <div id="report-parent-training-charts" class="chart-zone"></div>
+      </section>
+      <section>
+        <h3>Instructional Goals Information</h3>
+        ${reportParagraph(values.get("instructionalGoalsInfo") || defaultInstructionalGoalsInfo())}
+      </section>
+      <section>
+        <h3>Integration, Generalization, and Maintenance</h3>
+        ${reportParagraph(values.get("generalizationMaintenance") || defaultGeneralizationMaintenance())}
+      </section>
+      <section>
+        <h3>Barriers to Treatment</h3>
+        ${reportParagraph(values.get("barriersToTreatmentSummary") || defaultBarriersToTreatmentSummary())}
+      </section>
+      <section>
+        <h3>Discharge Criteria</h3>
+        ${renderDischargeCriteria(values)}
+      </section>
+      <section>
+        <h3>Fade Out Plan</h3>
+        ${renderFadePlanTable()}
+      </section>
+      <section>
+        <h3>Recommendations</h3>
+        ${reportParagraph(values.get("recommendations") || defaultRecommendations())}
+        ${renderServiceHoursTable()}
+      </section>
+      <section>
+        <h3>Medical Necessity and Justification</h3>
+        ${reportParagraph(values.get("medicalNecessity") || defaultMedicalNecessity())}
+      </section>
+      <section class="report-signature">
+        <p><strong>Prepared by:</strong> ${escapeHtml(values.get("preparedBy") || "Provider")}${values.get("credential") ? `, ${escapeHtml(values.get("credential"))}` : ""}</p>
+        <p><strong>Date:</strong> ${formatDate(new Date().toISOString().slice(0, 10))}</p>
+      </section>
+    </section>
+  `;
+}
+
+function renderFunderReportPreview() {
+  if (!reportPreview || !reportForm) return;
+  reportPreview.innerHTML = buildFunderReportPreviewMarkup();
+  drawFunderReportCharts(filteredReportSessions().slice().reverse());
+}
+
+async function handleSaveFunderReportDraft() {
+  const client = currentClient();
+  if (!client) return;
+  funderExportStatus.textContent = "";
+  try {
+    const draft = currentFunderReportDraft();
+    const updated = await updateClientProfile(client.id, {
+      ...currentClientProfilePayload(client),
+      funderReport: draft
+    });
+    replaceClient(updated);
+    state.reportDraftClientId = updated.id;
+    state.reportDraftSavedSnapshot = reportDraftSnapshot(draft);
+    state.reportDraftDirty = false;
+    funderExportStatus.textContent = `Draft saved ${new Date().toLocaleString()}.`;
+    if (currentView() === "report") renderFunderReportPreview();
+  } catch (error) {
+    funderExportStatus.textContent = `Draft save failed: ${error.message}`;
+  }
 }
 
 function buildReportProgressSummary() {
@@ -5107,9 +5383,21 @@ async function handleGraphDataDeleteClick(event) {
 function handleGraphAnalysisControlChange(event) {
   const toggle = event.target.closest("[data-graph-trend-toggle]");
   if (!toggle) return;
-  state.graphTrendVisibility[toggle.dataset.graphTrendToggle] = toggle.checked;
+  event.preventDefault();
+  const graphKey = toggle.dataset.graphTrendToggle;
+  const previousPanel = toggle.closest(".chart-panel");
+  const previousTop = previousPanel?.getBoundingClientRect().top ?? null;
+  state.graphTrendVisibility[graphKey] = toggle.checked;
   renderCharts();
-  if (reportPreview.innerHTML) drawFunderReportCharts(filteredReportSessions());
+  if (reportPreview.innerHTML) renderFunderReportPreview();
+  requestAnimationFrame(() => {
+    if (!graphKey || previousTop === null) return;
+    const nextToggle = [...document.querySelectorAll("[data-graph-trend-toggle]")].find((input) => input.dataset.graphTrendToggle === graphKey);
+    const nextPanel = nextToggle?.closest(".chart-panel");
+    if (!nextPanel) return;
+    const delta = nextPanel.getBoundingClientRect().top - previousTop;
+    window.scrollTo({ top: Math.max(window.scrollY + delta, 0), behavior: "auto" });
+  });
 }
 
 function handleGraphAnalysisClick(event) {
@@ -5136,132 +5424,7 @@ function handleGenerateFunderReport(event) {
   const client = currentClient();
   const sessions = filteredReportSessions().slice().reverse();
   const values = new FormData(reportForm);
-  const metrics = funderReportMetrics(sessions);
-  const assessmentGridFile = reportForm.elements.assessmentGrid.files[0];
-  const standardizedGridFile = reportForm.elements.standardizedAssessmentGrid.files[0];
-  reportPreview.innerHTML = `
-    <section class="report-document">
-      <div class="report-title-block">
-        <p class="eyebrow">Funder report</p>
-        <h2>${escapeHtml(client?.name || "Client")}</h2>
-        <p>${formatDate(values.get("startDate"))} - ${formatDate(values.get("endDate"))}</p>
-      </div>
-      <div class="report-stat-grid">
-        <div><strong>${sessions.length}</strong><span>Sessions reviewed</span></div>
-        <div><strong>${metrics.averageIndependence}%</strong><span>Average independence</span></div>
-        <div><strong>${metrics.targetsReviewed}</strong><span>Targets with data</span></div>
-        <div><strong>${metrics.totalBehaviorFrequency}</strong><span>Total behavior frequency</span></div>
-      </div>
-      <section>
-        <h3>Background Information</h3>
-        ${reportParagraph(values.get("background") || defaultBackgroundInformation())}
-      </section>
-      <section>
-        <h3>Medical Concerns</h3>
-        ${reportParagraph(values.get("medicalConcerns") || defaultMedicalConcerns())}
-      </section>
-      <section>
-        <h3>Reason for Referral</h3>
-        ${reportParagraph(values.get("reasonReferral") || defaultReasonForReferral())}
-      </section>
-      <section>
-        <h3>Impact of Behaviors</h3>
-        ${reportParagraph(values.get("impactBehaviors") || defaultImpactOfBehaviors())}
-      </section>
-      <section>
-        <h3>Client and Family Strengths</h3>
-        ${reportParagraph(values.get("familyStrengths") || defaultFamilyStrengths())}
-      </section>
-      <section>
-        <h3>Initial Observations</h3>
-        ${reportParagraph(values.get("initialObservations") || defaultInitialObservations())}
-      </section>
-      <section>
-        <h3>Functional Assessment</h3>
-        <div class="report-detail-grid">
-          <div><strong>Indirect assessment type</strong><span>${escapeHtml(values.get("indirectAssessmentType") || "Not entered")}</span></div>
-          <div><strong>Conducted by</strong><span>${escapeHtml(values.get("assessmentConductedBy") || "Not entered")}</span></div>
-          <div><strong>Date</strong><span>${values.get("assessmentDate") ? formatDate(values.get("assessmentDate")) : "Not entered"}</span></div>
-        </div>
-        ${reportFilePreview(assessmentGridFile, "Assessment grid")}
-      </section>
-      <section>
-        <h3>Behavior Support Plan</h3>
-        ${reportParagraph(values.get("behaviorSupportPlan") || "Behavior support plan content can be pasted by the supervising BCBA.")}
-      </section>
-      <section>
-        <h3>Behavior Graphs</h3>
-        <article class="chart-panel">
-          <h4>Behavior frequency</h4>
-          <canvas id="report-behavior-chart" width="760" height="320"></canvas>
-        </article>
-        <div id="report-behavior-charts" class="chart-zone"></div>
-      </section>
-      <section>
-        <h3>Progress Summary</h3>
-        ${reportParagraph(values.get("progressSummary") || `Across the reporting period, ${client?.name || "client"} completed ${sessions.length} documented sessions. Average skill independence was ${metrics.averageIndependence}%. Behavior data were reviewed across tracked behaviors for treatment planning.`)}
-      </section>
-      <section>
-        <h3>Standardized Assessment</h3>
-        <div class="report-detail-grid">
-          <div><strong>Assessment type</strong><span>${escapeHtml(values.get("standardizedAssessmentType") || "Not entered")}</span></div>
-          <div><strong>Conducted by</strong><span>${escapeHtml(values.get("standardizedConductedBy") || "Not entered")}</span></div>
-          <div><strong>Date</strong><span>${values.get("standardizedAssessmentDate") ? formatDate(values.get("standardizedAssessmentDate")) : "Not entered"}</span></div>
-        </div>
-        ${reportFilePreview(standardizedGridFile, "Standardized assessment grid")}
-      </section>
-      <section>
-        <h3>Skill Acquisition Graphs</h3>
-        <div id="report-skill-charts" class="chart-zone"></div>
-      </section>
-      <section>
-        <h3>Skill Acquisition Progress Summary</h3>
-        ${renderMasteredTargetsSummary(values.get("startDate"), values.get("endDate"))}
-      </section>
-      <section>
-        <h3>Parent Training</h3>
-        ${renderParentTrainingReportSummary(values.get("startDate"), values.get("endDate"), {
-          summaryText: values.get("parentTrainingSummary"),
-          recommendationText: values.get("parentTrainingRecommendations")
-        })}
-        <div id="report-parent-training-charts" class="chart-zone"></div>
-      </section>
-      <section>
-        <h3>Instructional Goals Information</h3>
-        ${reportParagraph(values.get("instructionalGoalsInfo") || defaultInstructionalGoalsInfo())}
-      </section>
-      <section>
-        <h3>Integration, Generalization, and Maintenance</h3>
-        ${reportParagraph(values.get("generalizationMaintenance") || defaultGeneralizationMaintenance())}
-      </section>
-      <section>
-        <h3>Barriers to Treatment</h3>
-        ${reportParagraph(values.get("barriersToTreatmentSummary") || defaultBarriersToTreatmentSummary())}
-      </section>
-      <section>
-        <h3>Discharge Criteria</h3>
-        ${renderDischargeCriteria(values)}
-      </section>
-      <section>
-        <h3>Fade Out Plan</h3>
-        ${renderFadePlanTable()}
-      </section>
-      <section>
-        <h3>Recommendations</h3>
-        ${reportParagraph(values.get("recommendations") || defaultRecommendations())}
-        ${renderServiceHoursTable()}
-      </section>
-      <section>
-        <h3>Medical Necessity and Justification</h3>
-        ${reportParagraph(values.get("medicalNecessity") || defaultMedicalNecessity())}
-      </section>
-      <section class="report-signature">
-        <p><strong>Prepared by:</strong> ${escapeHtml(values.get("preparedBy") || "Provider")}${values.get("credential") ? `, ${escapeHtml(values.get("credential"))}` : ""}</p>
-        <p><strong>Date:</strong> ${formatDate(new Date().toISOString().slice(0, 10))}</p>
-      </section>
-    </section>
-  `;
-  drawFunderReportCharts(sessions);
+  renderFunderReportPreview();
   createAuditEvent({
     action: "funder-report-generated",
     clientId: client?.id,
@@ -5854,13 +6017,12 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
 function renderReportGraphAnalysisMarkup(analysis) {
   if (!analysis?.analyses?.length) return "";
   return `
-    <section class="graph-analysis-panel report-graph-analysis">
-      <strong>Graph Analysis</strong>
+    <section class="report-graph-analysis" aria-label="Graph Analysis">
       ${analysis.analyses.map((entry) => `
-        <article class="graph-analysis-series">
-          <h4>${escapeHtml(entry.label)}</h4>
-          <p class="graph-analysis-interpretation">${escapeHtml(entry.interpretation)}</p>
-        </article>
+        <p class="report-graph-analysis-line">
+          <strong>${escapeHtml(entry.label)}:</strong>
+          <span>${escapeHtml(buildCompactGraphAnalysisSentence(entry, analysis.graphType))}</span>
+        </p>
       `).join("")}
     </section>
   `;
@@ -6353,8 +6515,10 @@ function currentClientProfilePayload(client = currentClient()) {
     assessmentConductedBy: client?.profile?.assessment?.conductedBy || "",
     assessmentFileName: client?.profile?.assessment?.fileName || "",
     assessmentNotes: client?.profile?.assessment?.notes || "",
+    funderReport: structuredClone(client?.profile?.funderReport || {}),
     intakeInterview: structuredClone(client?.profile?.intakeInterview || {}),
-    parentTrainingGoals: structuredClone(client?.profile?.parentTrainingGoals || [])
+    parentTrainingGoals: structuredClone(client?.profile?.parentTrainingGoals || []),
+    documents: structuredClone(client?.profile?.documents || [])
   };
 }
 
