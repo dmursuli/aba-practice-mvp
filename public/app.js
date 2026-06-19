@@ -2,7 +2,7 @@ import { createAuditEvent, createClient, createSession, createUser, deleteClient
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
-import { buildCompactGraphAnalysisSentence, hasMeaningfulFunderReportDraft } from "./report-utils.js";
+import { buildCompactGraphAnalysisSentence, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, sanitizeTrendVisibilityMap } from "./report-utils.js";
 import { generateSoapNote } from "./soap.js";
 import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms } from "./session-utils.js";
 
@@ -143,6 +143,7 @@ const printFunderReportButton = document.querySelector("#print-funder-report");
 const downloadFunderTextButton = document.querySelector("#download-funder-text");
 const downloadFunderHtmlButton = document.querySelector("#download-funder-html");
 const saveFunderReportButton = document.querySelector("#save-funder-report");
+const resumeFunderReportButton = document.querySelector("#resume-funder-report");
 const funderExportStatus = document.querySelector("#funder-export-status");
 const note97151Editor = document.querySelector("#note-97151");
 const note97151Status = document.querySelector("#note-97151-status");
@@ -621,6 +622,7 @@ function bindEvents() {
   downloadFunderTextButton.addEventListener("click", () => handleDownloadFunderReport("txt"));
   downloadFunderHtmlButton.addEventListener("click", () => handleDownloadFunderReport("html"));
   saveFunderReportButton?.addEventListener("click", handleSaveFunderReportDraft);
+  resumeFunderReportButton?.addEventListener("click", resumeSavedFunderReportDraft);
   generate97151Button.addEventListener("click", handleGenerate97151Note);
   note97151Editor.addEventListener("blur", handleSave97151Note);
   generatePlan97151Button.addEventListener("click", handleGenerate97151Note);
@@ -3473,23 +3475,62 @@ function handleReportFormChange() {
   if (currentView() === "report") renderFunderReportPreview();
 }
 
+function reportGraphPreferenceKeys() {
+  const client = currentClient();
+  return [
+    ...clientPrograms().map((program) => graphTrendKey("skill", program.id)),
+    ...clientBehaviors().map((behavior) => graphTrendKey("behavior", behavior.id)),
+    graphTrendKey("behavior", "overview"),
+    ...(client ? currentParentTrainingGoals().map((goal) => graphTrendKey("parent", parentTrainingGoalKey(goal))) : [])
+  ];
+}
+
+function currentReportIncludedContent() {
+  return {
+    programIds: clientPrograms().map((program) => program.id),
+    targetIds: clientPrograms().flatMap((program) => (program.targets || []).map((target) => target.id)).filter(Boolean),
+    behaviorIds: clientBehaviors().map((behavior) => behavior.id).filter(Boolean),
+    parentTrainingGoalIds: currentParentTrainingGoals().map((goal) => parentTrainingGoalKey(goal)).filter(Boolean)
+  };
+}
+
 function currentFunderReportDraft() {
   if (!reportForm) return {};
   const values = new FormData(reportForm);
-  const draft = {};
+  const sections = {};
   values.forEach((value, key) => {
     if (key === "assessmentGrid" || key === "standardizedAssessmentGrid") return;
-    draft[key] = String(value || "");
+    sections[key] = String(value || "");
   });
-  draft.fadePlanRows = readFadePlanRows();
-  draft.serviceHours = readServiceHourRows();
-  return draft;
+  return buildFunderDraftRecord({
+    clientId: currentClient()?.id || "",
+    startDate: sections.startDate || "",
+    endDate: sections.endDate || "",
+    sections,
+    fadePlanRows: readFadePlanRows(),
+    serviceHours: readServiceHourRows(),
+    graphPreferences: sanitizeTrendVisibilityMap(state.graphTrendVisibility, reportGraphPreferenceKeys()),
+    includedContent: currentReportIncludedContent(),
+    displaySettings: {
+      compactGraphAnalysis: true
+    },
+    editedGraphAnalysis: structuredClone(currentClient()?.profile?.funderReport?.editedGraphAnalysis || {}),
+    existingDraft: currentClient()?.profile?.funderReport || {}
+  });
 }
 
 function applyFunderReportDraft(draft = {}) {
   if (!reportForm) return;
   const rows = Array.isArray(draft.fadePlanRows) ? draft.fadePlanRows : [];
   const serviceRows = Array.isArray(draft.serviceHours) ? draft.serviceHours : [];
+  const graphPreferences = draft.settings?.graphPreferences || {};
+  reportGraphPreferenceKeys().forEach((key) => {
+    if (Object.hasOwn(graphPreferences, key)) {
+      state.graphTrendVisibility[key] = Boolean(graphPreferences[key]);
+    } else {
+      delete state.graphTrendVisibility[key];
+    }
+  });
   [...reportForm.elements].forEach((field) => {
     if (!field?.name || field.type === "file") return;
     if (Object.hasOwn(draft, field.name)) {
@@ -3504,6 +3545,20 @@ function applyFunderReportDraft(draft = {}) {
 
 function reportDraftSnapshot(draft = currentFunderReportDraft()) {
   return JSON.stringify(draft);
+}
+
+function savedDraftLastSavedAt(draft = currentClient()?.profile?.funderReport || {}) {
+  return draft?.metadata?.lastSavedAt || draft?.metadata?.updatedAt || "";
+}
+
+function updateResumeDraftButtonState(draft = currentClient()?.profile?.funderReport || {}) {
+  if (!resumeFunderReportButton) return;
+  const hasDraft = hasMeaningfulFunderReportDraft(draft);
+  resumeFunderReportButton.disabled = !hasDraft;
+  const timestamp = savedDraftLastSavedAt(draft);
+  resumeFunderReportButton.textContent = hasDraft && timestamp
+    ? `Resume saved draft (${formatDateTime(timestamp)})`
+    : "Resume saved draft";
 }
 
 function markReportDraftDirty() {
@@ -3523,6 +3578,7 @@ function syncFunderReportDraftForClient() {
   if (!client || !reportForm) return;
   if (state.reportDraftClientId === client.id) {
     markReportDraftDirty();
+    updateResumeDraftButtonState(client.profile?.funderReport || {});
     return;
   }
   const savedDraft = structuredClone(client.profile?.funderReport || {});
@@ -3531,11 +3587,33 @@ function syncFunderReportDraftForClient() {
   state.reportDraftClientId = client.id;
   state.reportDraftSavedSnapshot = reportDraftSnapshot();
   state.reportDraftDirty = false;
+  updateResumeDraftButtonState(savedDraft);
   if (hasMeaningfulFunderReportDraft(savedDraft)) {
-    funderExportStatus.textContent = "Saved report draft restored.";
+    const lastSavedAt = savedDraftLastSavedAt(savedDraft);
+    funderExportStatus.textContent = lastSavedAt
+      ? `Saved report draft restored from ${formatDateTime(lastSavedAt)}.`
+      : "Saved report draft restored.";
   } else if (funderExportStatus.textContent === "Saved report draft restored." || funderExportStatus.textContent === "Unsaved report changes.") {
     funderExportStatus.textContent = "";
   }
+}
+
+function resumeSavedFunderReportDraft() {
+  const draft = structuredClone(currentClient()?.profile?.funderReport || {});
+  if (!hasMeaningfulFunderReportDraft(draft)) {
+    funderExportStatus.textContent = "No saved report draft is available for this client yet.";
+    return;
+  }
+  resetFunderReportForm();
+  applyFunderReportDraft(draft);
+  renderReportSummary();
+  renderFunderReportPreview();
+  state.reportDraftSavedSnapshot = reportDraftSnapshot();
+  state.reportDraftDirty = false;
+  const lastSavedAt = savedDraftLastSavedAt(draft);
+  funderExportStatus.textContent = lastSavedAt
+    ? `Saved report draft resumed from ${formatDateTime(lastSavedAt)}.`
+    : "Saved report draft resumed.";
 }
 
 function renderReportSummary() {
@@ -3709,7 +3787,8 @@ async function handleSaveFunderReportDraft() {
     state.reportDraftClientId = updated.id;
     state.reportDraftSavedSnapshot = reportDraftSnapshot(draft);
     state.reportDraftDirty = false;
-    funderExportStatus.textContent = `Draft saved ${new Date().toLocaleString()}.`;
+    updateResumeDraftButtonState(updated.profile?.funderReport || draft);
+    funderExportStatus.textContent = `Draft saved ${new Date().toLocaleString()}. Lightweight draft payload: about ${Math.max(1, Math.round(estimateJsonBytes(draft) / 1024))} KB.`;
     if (currentView() === "report") renderFunderReportPreview();
   } catch (error) {
     funderExportStatus.textContent = `Draft save failed: ${error.message}`;

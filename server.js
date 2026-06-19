@@ -2231,7 +2231,27 @@ function sanitizeClientProfile(payload) {
 
 function sanitizeFunderReport(payload) {
   const textField = (key) => text(payload[key]);
+  const stringArray = (values) => Array.isArray(values) ? values.map((value) => text(value)).filter(Boolean) : [];
+  const booleanMap = (values) => {
+    if (!values || typeof values !== "object" || Array.isArray(values)) return {};
+    return Object.entries(values).reduce((result, [key, value]) => {
+      if (!key) return result;
+      result[text(key)] = Boolean(value);
+      return result;
+    }, {});
+  };
   return {
+    metadata: {
+      clientId: text(payload.metadata?.clientId || payload.clientId),
+      reportingPeriod: {
+        startDate: text(payload.metadata?.reportingPeriod?.startDate || payload.startDate),
+        endDate: text(payload.metadata?.reportingPeriod?.endDate || payload.endDate)
+      },
+      draftStatus: text(payload.metadata?.draftStatus || "draft") || "draft",
+      createdAt: text(payload.metadata?.createdAt),
+      updatedAt: text(payload.metadata?.updatedAt),
+      lastSavedAt: text(payload.metadata?.lastSavedAt)
+    },
     startDate: textField("startDate"),
     endDate: textField("endDate"),
     preparedBy: textField("preparedBy"),
@@ -2262,6 +2282,27 @@ function sanitizeFunderReport(payload) {
     dischargeExecutive: textField("dischargeExecutive"),
     recommendations: textField("recommendations"),
     medicalNecessity: textField("medicalNecessity"),
+    includedContent: {
+      programIds: stringArray(payload.includedContent?.programIds),
+      targetIds: stringArray(payload.includedContent?.targetIds),
+      behaviorIds: stringArray(payload.includedContent?.behaviorIds),
+      parentTrainingGoalIds: stringArray(payload.includedContent?.parentTrainingGoalIds)
+    },
+    settings: {
+      graphPreferences: booleanMap(payload.settings?.graphPreferences),
+      displaySettings: {
+        compactGraphAnalysis: payload.settings?.displaySettings?.compactGraphAnalysis !== false
+      }
+    },
+    editedGraphAnalysis: (() => {
+      const source = payload.editedGraphAnalysis;
+      if (!source || typeof source !== "object" || Array.isArray(source)) return {};
+      return Object.entries(source).reduce((result, [key, value]) => {
+        if (!key) return result;
+        result[text(key)] = text(value);
+        return result;
+      }, {});
+    })(),
     fadePlanRows: Array.isArray(payload.fadePlanRows) ? payload.fadePlanRows.map((row) => ({
       phase: text(row.phase),
       actionStep: text(row.actionStep),
