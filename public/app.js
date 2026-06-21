@@ -2,7 +2,7 @@ import { createAuditEvent, createClient, createSession, createUser, deleteClient
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
-import { buildCompactGraphAnalysisSentence, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, sanitizeTrendVisibilityMap } from "./report-utils.js";
+import { buildCompactGraphAnalysisSentence, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, parseNumberedObjectives, sanitizeTrendVisibilityMap } from "./report-utils.js";
 import { generateSoapNote } from "./soap.js";
 import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms } from "./session-utils.js";
 
@@ -7334,21 +7334,29 @@ function defaultDischargeCriteria() {
 
 function renderDischargeCriteria(values) {
   const objectiveItems = [
-    ["Communication", values.get("dischargeCommunication")],
-    ["Socialization", values.get("dischargeSocialization")],
-    ["Adaptive", values.get("dischargeAdaptive")],
-    ["Executive functioning", values.get("dischargeExecutive")]
-  ].filter(([, text]) => String(text || "").trim());
+    ["Maladaptive Behaviors", parseNumberedObjectives(values.get("dischargeMaladaptiveBehaviors"))],
+    ["Communication", parseNumberedObjectives(values.get("dischargeCommunication"))],
+    ["Socialization", parseNumberedObjectives(values.get("dischargeSocialization"))],
+    ["Adaptive", parseNumberedObjectives(values.get("dischargeAdaptive"))],
+    ["Executive functioning", parseNumberedObjectives(values.get("dischargeExecutive"))]
+  ].filter(([, objectives]) => objectives.length);
 
   return `
     ${reportParagraph(values.get("dischargeCriteria") || defaultDischargeCriteria())}
     <p>Long-term objectives or goals for discharge:</p>
     ${objectiveItems.length ? `
-      <ul class="mastered-target-list">
-        ${objectiveItems.map(([label, text]) => `
-          <li><strong>${escapeHtml(label)}:</strong> <span>${escapeHtml(text)}</span></li>
+      <div class="discharge-objective-groups">
+        ${objectiveItems.map(([label, objectives]) => `
+          <section class="discharge-objective-group">
+            <h4>${escapeHtml(label)}</h4>
+            <ol class="discharge-objective-list">
+              ${objectives.map((objective) => `
+                <li>${escapeHtml(objective)}</li>
+              `).join("")}
+            </ol>
+          </section>
         `).join("")}
-      </ul>
+      </div>
     ` : "<p>No discharge objectives were entered.</p>"}
   `;
 }

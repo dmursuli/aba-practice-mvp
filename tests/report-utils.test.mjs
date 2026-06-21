@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-import { buildCompactGraphAnalysisSentence, buildFunderDraftRecord, draftContainsLargeArtifacts, estimateJsonBytes, hasMeaningfulFunderReportDraft, sanitizeTrendVisibilityMap } from "../public/report-utils.js";
+import { buildCompactGraphAnalysisSentence, buildFunderDraftRecord, draftContainsLargeArtifacts, estimateJsonBytes, hasMeaningfulFunderReportDraft, parseNumberedObjectives, sanitizeTrendVisibilityMap } from "../public/report-utils.js";
 
 test("compact graph analysis sentence keeps report analysis concise and readable", () => {
   const sentence = buildCompactGraphAnalysisSentence({
@@ -83,9 +83,34 @@ test("trend visibility preferences are filtered to allowed report graph keys", (
   });
 });
 
+test("numbered discharge objectives parse into separate list items by domain field", () => {
+  const communication = parseNumberedObjectives(`1. Will engage in simple reciprocal comments that involve internal states regarding a joint object or activity. 2. Will initiate appropriate social commentary regarding special events or personal information. 3. Will tolerate answering questions within a conversational context for 3-4 exchanges without engaging in problem behavior.`);
+
+  assert.deepEqual(communication, [
+    "Will engage in simple reciprocal comments that involve internal states regarding a joint object or activity.",
+    "Will initiate appropriate social commentary regarding special events or personal information.",
+    "Will tolerate answering questions within a conversational context for 3-4 exchanges without engaging in problem behavior."
+  ]);
+});
+
+test("objective parsing preserves quotes and punctuation without concatenating numbered items", () => {
+  const objectives = parseNumberedObjectives(`1. Will tolerate a FIRST/THEN contingency and respond to the cue "wait." 2. Will answer questions about "special events," personal information, and preferred activities.`);
+
+  assert.deepEqual(objectives, [
+    'Will tolerate a FIRST/THEN contingency and respond to the cue "wait."',
+    'Will answer questions about "special events," personal information, and preferred activities.'
+  ]);
+});
+
+test("non-numbered discharge text stays as a single objective item instead of being broken apart", () => {
+  const objectives = parseNumberedObjectives("Will independently transition to classroom routines without engaging in problem behavior.");
+  assert.deepEqual(objectives, ["Will independently transition to classroom routines without engaging in problem behavior."]);
+});
+
 test("report workflow source wires draft save, preview rendering, and compact analysis placement", () => {
   const appSource = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
   const htmlSource = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const cssSource = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
   const serverSource = fs.readFileSync(new URL("../server.js", import.meta.url), "utf8");
 
   assert.match(appSource, /saveFunderReportButton\?\s*\.addEventListener\("click", handleSaveFunderReportDraft\)/);
@@ -97,15 +122,23 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /function renderFunderReportPreview\(/);
   assert.match(appSource, /if \(view === "report"\) renderFunderReportPreview\(\)/);
   assert.match(appSource, /renderReportGraphAnalysisMarkup/);
+  assert.match(appSource, /parseNumberedObjectives/);
+  assert.match(appSource, /discharge-objective-list/);
+  assert.match(appSource, /Maladaptive Behaviors/);
+  assert.match(appSource, /dischargeMaladaptiveBehaviors/);
   assert.match(appSource, /report-graph-analysis-line/);
   assert.match(appSource, /estimateJsonBytes/);
   assert.match(appSource, /window\.scrollTo\(\{ top: Math\.max\(window\.scrollY \+ delta, 0\), behavior: "auto" \}\)/);
   assert.match(htmlSource, /id="resume-funder-report"/);
   assert.match(htmlSource, />Export PDF</);
+  assert.match(htmlSource, /name="dischargeMaladaptiveBehaviors"/);
+  assert.match(cssSource, /\.discharge-objective-list/);
+  assert.match(cssSource, /\.discharge-objective-group h4/);
   assert.match(serverSource, /metadata:\s*\{/);
   assert.match(serverSource, /includedContent:\s*\{/);
   assert.match(serverSource, /graphPreferences:/);
   assert.doesNotMatch(serverSource, /pdfData|base64Pdf|renderedHtml|reportSnapshot/i);
   assert.match(serverSource, /parentTrainingSummary: textField\("parentTrainingSummary"\)/);
   assert.match(serverSource, /parentTrainingRecommendations: textField\("parentTrainingRecommendations"\)/);
+  assert.match(serverSource, /dischargeMaladaptiveBehaviors: textField\("dischargeMaladaptiveBehaviors"\)/);
 });

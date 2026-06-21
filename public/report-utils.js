@@ -19,6 +19,30 @@ export function buildCompactGraphAnalysisSentence(entry, graphType) {
   return `${metrics.join(". ")}. ${String(entry.interpretation || "").trim()}`.replace(/\s+/g, " ").trim();
 }
 
+export function parseNumberedObjectives(source = "") {
+  const text = String(source || "").replace(/\r\n/g, "\n").trim();
+  if (!text) return [];
+
+  const matches = [...text.matchAll(/(?:^|[\n\s])(\d+)\.\s+(?=[A-Z"\[])/g)];
+  if (!matches.length) {
+    return [text.replace(/\s+/g, " ").trim()].filter(Boolean);
+  }
+
+  return matches.map((match, index) => {
+    const numberToken = `${match[1]}.`;
+    const numberIndex = match.index + match[0].lastIndexOf(numberToken);
+    const contentStart = numberIndex + numberToken.length;
+    const nextMatch = matches[index + 1];
+    const nextIndex = nextMatch
+      ? nextMatch.index + nextMatch[0].lastIndexOf(`${nextMatch[1]}.`)
+      : text.length;
+    return text
+      .slice(contentStart, nextIndex)
+      .replace(/\s+/g, " ")
+      .trim();
+  }).filter(Boolean);
+}
+
 function sortObjectKeys(value) {
   if (Array.isArray(value)) return value.map(sortObjectKeys);
   if (!value || typeof value !== "object") return value;

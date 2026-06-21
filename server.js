@@ -2276,6 +2276,7 @@ function sanitizeFunderReport(payload) {
     generalizationMaintenance: textField("generalizationMaintenance"),
     barriersToTreatmentSummary: textField("barriersToTreatmentSummary"),
     dischargeCriteria: textField("dischargeCriteria"),
+    dischargeMaladaptiveBehaviors: textField("dischargeMaladaptiveBehaviors"),
     dischargeCommunication: textField("dischargeCommunication"),
     dischargeSocialization: textField("dischargeSocialization"),
     dischargeAdaptive: textField("dischargeAdaptive"),

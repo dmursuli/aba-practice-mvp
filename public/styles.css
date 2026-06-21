@@ -848,6 +848,31 @@ button:focus-visible {
   color: var(--muted);
 }
 
+.discharge-objective-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.discharge-objective-group {
+  display: grid;
+  gap: 6px;
+}
+
+.discharge-objective-group h4 {
+  margin: 0;
+}
+
+.discharge-objective-list {
+  margin: 0;
+  padding-left: 24px;
+  display: grid;
+  gap: 8px;
+}
+
+.discharge-objective-list li {
+  line-height: 1.5;
+}
+
 .report-signature {
   border-top: 1px solid var(--line);
   padding-top: 12px;
