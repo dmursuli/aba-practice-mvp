@@ -4012,7 +4012,7 @@ function buildFunderReportPreviewMarkup() {
           <div><strong>Conducted by</strong><span>${escapeHtml(values.get("assessmentConductedBy") || "Not entered")}</span></div>
           <div><strong>Date</strong><span>${values.get("assessmentDate") ? formatDate(values.get("assessmentDate")) : "Not entered"}</span></div>
         </div>
-        ${reportFilePreview(reportAssessmentRefs("assessmentGrid"), "Assessment grid")}
+        ${safeReportFilePreview("assessmentGrid", "Assessment grid")}
       </section>
       <section>
         <h3>Behavior Support Plan</h3>
@@ -4037,7 +4037,7 @@ function buildFunderReportPreviewMarkup() {
           <div><strong>Conducted by</strong><span>${escapeHtml(values.get("standardizedConductedBy") || "Not entered")}</span></div>
           <div><strong>Date</strong><span>${values.get("standardizedAssessmentDate") ? formatDate(values.get("standardizedAssessmentDate")) : "Not entered"}</span></div>
         </div>
-        ${reportFilePreview(reportAssessmentRefs("standardizedAssessmentGrid"), "Standardized assessment grid")}
+        ${safeReportFilePreview("standardizedAssessmentGrid", "Standardized assessment grid")}
       </section>
       <section>
         <h3>Skill Acquisition Graphs</h3>
@@ -4094,8 +4094,26 @@ function buildFunderReportPreviewMarkup() {
 
 function renderFunderReportPreview() {
   if (!reportPreview || !reportForm) return;
-  reportPreview.innerHTML = buildFunderReportPreviewMarkup();
-  drawFunderReportCharts(filteredReportSessions().slice().reverse());
+  try {
+    reportPreview.innerHTML = buildFunderReportPreviewMarkup();
+  } catch (error) {
+    console.error("Funder report preview render failed", { message: error?.message || String(error) });
+    reportPreview.innerHTML = `
+      <section class="report-document">
+        <div class="status-message warning">
+          The funder report preview could not be fully rendered. Uploaded assessment documents will be skipped while you continue editing.
+        </div>
+      </section>
+    `;
+    funderExportStatus.textContent = "One uploaded assessment document could not be loaded.";
+    return;
+  }
+  try {
+    drawFunderReportCharts(filteredReportSessions().slice().reverse());
+  } catch (error) {
+    console.error("Funder report chart render failed", { message: error?.message || String(error) });
+    funderExportStatus.textContent = "One chart could not be rendered, but the report content is still available.";
+  }
 }
 
 async function handleSaveFunderReportDraft() {
@@ -7712,6 +7730,18 @@ function reportFilePreview(files, label) {
       }).join("")}
     </div>
   `;
+}
+
+function safeReportFilePreview(fieldName, label) {
+  try {
+    return reportFilePreview(reportAssessmentRefs(fieldName), label);
+  } catch (error) {
+    console.error("Report assessment attachment preview failed", {
+      fieldName,
+      message: error?.message || String(error)
+    });
+    return `<p class="muted"><strong>${escapeHtml(label)}:</strong> One uploaded assessment document could not be loaded.</p>`;
+  }
 }
 
 function defaultBackgroundInformation() {

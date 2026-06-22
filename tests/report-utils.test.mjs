@@ -321,6 +321,9 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /renderReportAssessmentDraftFiles/);
   assert.match(appSource, /handleReportAssessmentUpload/);
   assert.match(appSource, /reportAssessmentDocumentRefsFromClient/);
+  assert.match(appSource, /safeReportFilePreview\("assessmentGrid", "Assessment grid"\)/);
+  assert.match(appSource, /safeReportFilePreview\("standardizedAssessmentGrid", "Standardized assessment grid"\)/);
+  assert.match(appSource, /One uploaded assessment document could not be loaded\./);
   assert.match(appSource, /data-remove-report-attachment/);
   assert.match(appSource, /renderCustomPhaseLineManager/);
   assert.match(appSource, /data-phase-line-form=/);
@@ -332,6 +335,8 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /Draft saved/);
   assert.match(appSource, /Saved report draft restored/);
   assert.match(appSource, /function renderFunderReportPreview\(/);
+  assert.match(appSource, /Funder report preview render failed/);
+  assert.match(appSource, /Funder report chart render failed/);
   assert.match(appSource, /if \(view === "report"\) renderFunderReportPreview\(\)/);
   assert.match(appSource, /renderReportGraphAnalysisMarkup/);
   assert.match(appSource, /parseNumberedObjectives/);
