@@ -60,6 +60,63 @@ export function sanitizeTrendVisibilityMap(source = {}, allowedKeys = []) {
   }, {});
 }
 
+function sanitizeText(value) {
+  return String(value || "").trim();
+}
+
+export function sanitizeAssessmentDocumentRefs(source = {}) {
+  const normalizeList = (value) => {
+    if (!Array.isArray(value)) return [];
+    return value.reduce((result, item) => {
+      const fileId = sanitizeText(item?.fileId || item?.id);
+      if (!fileId) return result;
+      result.push({
+        fileId,
+        originalFileName: sanitizeText(item?.originalFileName || item?.fileName),
+        uploadedAt: sanitizeText(item?.uploadedAt || item?.createdAt),
+        fileSize: Number.isFinite(Number(item?.fileSize)) ? Math.max(0, Number(item.fileSize)) : 0,
+        contentType: sanitizeText(item?.contentType || item?.mimeType),
+        storagePath: sanitizeText(item?.storagePath || item?.relativePath || item?.s3Key),
+        objectKey: sanitizeText(item?.objectKey || item?.s3Key),
+        clientId: sanitizeText(item?.clientId),
+        documentType: sanitizeText(item?.documentType || item?.type)
+      });
+      return result;
+    }, []);
+  };
+
+  return {
+    assessmentGrid: normalizeList(source.assessmentGrid),
+    standardizedAssessmentGrid: normalizeList(source.standardizedAssessmentGrid)
+  };
+}
+
+export function sanitizeCustomPhaseLines(source = {}) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return {};
+  return Object.entries(source).reduce((result, [graphKey, lines]) => {
+    const key = sanitizeText(graphKey);
+    if (!key || !Array.isArray(lines)) return result;
+    const normalized = lines.reduce((entries, line) => {
+      const date = sanitizeText(line?.date);
+      const label = sanitizeText(line?.label);
+      if (!date || !label) return entries;
+      entries.push({
+        id: sanitizeText(line?.id) || `${key}:${date}:${label.toLowerCase()}`,
+        date,
+        label,
+        lineStyle: sanitizeText(line?.lineStyle) === "solid" ? "solid" : "dashed",
+        note: sanitizeText(line?.note),
+        phaseType: "environmentalChange"
+      });
+      return entries;
+    }, []);
+    if (normalized.length) {
+      result[key] = normalized.sort((a, b) => a.date.localeCompare(b.date) || a.label.localeCompare(b.label));
+    }
+    return result;
+  }, {});
+}
+
 export function buildFunderDraftRecord({
   clientId = "",
   startDate = "",
@@ -71,6 +128,8 @@ export function buildFunderDraftRecord({
   includedContent = {},
   displaySettings = {},
   editedGraphAnalysis = {},
+  assessmentDocuments = {},
+  customPhaseLines = {},
   existingDraft = {},
   now = new Date().toISOString()
 } = {}) {
@@ -102,7 +161,9 @@ export function buildFunderDraftRecord({
       graphPreferences: sortObjectKeys(graphPreferences),
       displaySettings: sortObjectKeys(displaySettings)
     },
-    editedGraphAnalysis: sortObjectKeys(editedGraphAnalysis)
+    editedGraphAnalysis: sortObjectKeys(editedGraphAnalysis),
+    assessmentDocuments: sortObjectKeys(sanitizeAssessmentDocumentRefs(assessmentDocuments)),
+    customPhaseLines: sortObjectKeys(sanitizeCustomPhaseLines(customPhaseLines))
   };
 }
 
@@ -124,6 +185,12 @@ export function hasMeaningfulFunderReportDraft(draft = {}) {
   const sections = Object.fromEntries(Object.entries(draft).filter(([key]) => !["metadata", "includedContent", "settings", "editedGraphAnalysis"].includes(key)));
   return Object.entries(sections).some(([key, value]) => {
     if (Array.isArray(value)) return value.length > 0;
+    if (key === "assessmentDocuments") {
+      return Object.values(sanitizeAssessmentDocumentRefs(value)).some((items) => items.length > 0);
+    }
+    if (key === "customPhaseLines") {
+      return Object.values(sanitizeCustomPhaseLines(value)).some((items) => items.length > 0);
+    }
     if (key === "assessmentGrid" || key === "standardizedAssessmentGrid") return false;
     return String(value || "").trim().length > 0;
   });

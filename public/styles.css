@@ -789,6 +789,49 @@ button:focus-visible {
   font-size: 0.88rem;
 }
 
+.report-upload-list,
+.report-upload-preview-list {
+  display: grid;
+  gap: 8px;
+}
+
+.report-upload-draft-list {
+  display: grid;
+  gap: 8px;
+}
+
+.report-upload-draft-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.report-upload-draft-item strong,
+.report-upload-draft-item span {
+  display: block;
+}
+
+.report-upload-draft-item span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.report-upload-draft-actions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.report-upload-draft-item-missing {
+  background: #fff8e8;
+}
+
 .program-report-info {
   display: grid;
   gap: 6px;
@@ -1142,6 +1185,67 @@ button:focus-visible {
   border-top: 1px solid var(--line);
   display: grid;
   gap: 12px;
+}
+
+.graph-phase-line-panel {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+}
+
+.graph-phase-line-list {
+  display: grid;
+  gap: 8px;
+}
+
+.graph-phase-line-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.graph-phase-line-item strong,
+.graph-phase-line-item span {
+  display: block;
+}
+
+.graph-phase-line-item span,
+.graph-phase-line-note {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.graph-phase-line-note {
+  margin: 6px 0 0;
+}
+
+.graph-phase-line-actions,
+.graph-phase-line-form-actions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.graph-phase-line-form {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.graph-phase-line-form label:last-of-type {
+  grid-column: 1 / -1;
+}
+
+.graph-phase-line-form-actions {
+  grid-column: 1 / -1;
 }
 
 .graph-analysis-toolbar,

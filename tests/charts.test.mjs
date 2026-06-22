@@ -52,6 +52,15 @@ function baselineConditionChangeMarker(date) {
   }];
 }
 
+function environmentalChangeMarker(date, lineStyle = 'dashed') {
+  return [{
+    date,
+    label: 'School schedule change',
+    phaseType: 'environmentalChange',
+    lineStyle
+  }];
+}
+
 for (const [label, make] of [['skill acquisition', skillLikeSeries], ['behavior reduction', behaviorLikeSeries]]) {
   test(`${label}: one data point renders baseline only with no treatment line`, () => {
     const model = buildClinicalGraphModel(make([
@@ -156,6 +165,25 @@ for (const [label, make] of [['skill acquisition', skillLikeSeries], ['behavior 
     assert.equal(model.phaseMarkers[0].phaseType, 'baselineConditionChange');
     assert.equal(model.phaseMarkers[0].lineStyle, 'dashed');
     assert.equal(model.phaseMarkers[0].date, '2026-06-01');
+  });
+
+  test(`${label}: custom environmental phase lines can render without changing baseline-to-treatment logic`, () => {
+    const model = buildClinicalGraphModel(
+      make([
+        { x: '2026-06-01', y: 5 },
+        { x: '2026-06-03', y: 15 },
+        { x: '2026-06-05', y: 25 }
+      ]),
+      { phaseMarkers: environmentalChangeMarker('2026-06-01', 'solid') }
+    );
+
+    assert.ok(model.phaseBoundary);
+    assert.equal(model.phaseBoundary.phaseType, 'baselineToTreatment');
+    assert.equal(model.phaseMarkers.length, 1);
+    assert.equal(model.phaseMarkers[0].phaseType, 'environmentalChange');
+    assert.equal(model.phaseMarkers[0].lineStyle, 'solid');
+    assert.equal(derivedPointPhase(0, model.phaseBoundary), 'baseline');
+    assert.equal(derivedPointPhase(1, model.phaseBoundary), 'intervention');
   });
 }
 

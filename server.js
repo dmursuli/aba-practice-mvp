@@ -2240,6 +2240,52 @@ function sanitizeFunderReport(payload) {
       return result;
     }, {});
   };
+  const assessmentDocuments = (() => {
+    const normalizeList = (values) => Array.isArray(values) ? values.reduce((result, item) => {
+      const fileId = text(item?.fileId || item?.id);
+      if (!fileId) return result;
+      result.push({
+        fileId,
+        originalFileName: text(item?.originalFileName || item?.fileName),
+        uploadedAt: text(item?.uploadedAt || item?.createdAt),
+        fileSize: Number.isFinite(Number(item?.fileSize)) ? Math.max(0, Number(item.fileSize)) : 0,
+        contentType: text(item?.contentType || item?.mimeType),
+        storagePath: text(item?.storagePath || item?.relativePath || item?.s3Key),
+        objectKey: text(item?.objectKey || item?.s3Key),
+        clientId: text(item?.clientId),
+        documentType: text(item?.documentType || item?.type)
+      });
+      return result;
+    }, []) : [];
+    return {
+      assessmentGrid: normalizeList(payload.assessmentDocuments?.assessmentGrid),
+      standardizedAssessmentGrid: normalizeList(payload.assessmentDocuments?.standardizedAssessmentGrid)
+    };
+  })();
+  const customPhaseLines = (() => {
+    const source = payload.customPhaseLines;
+    if (!source || typeof source !== "object" || Array.isArray(source)) return {};
+    return Object.entries(source).reduce((result, [graphKey, values]) => {
+      const key = text(graphKey);
+      if (!key || !Array.isArray(values)) return result;
+      const lines = values.reduce((entries, line) => {
+        const date = text(line?.date);
+        const label = text(line?.label);
+        if (!date || !label) return entries;
+        entries.push({
+          id: text(line?.id) || `${key}:${date}:${label.toLowerCase()}`,
+          date,
+          label,
+          lineStyle: text(line?.lineStyle) === "solid" ? "solid" : "dashed",
+          note: text(line?.note),
+          phaseType: "environmentalChange"
+        });
+        return entries;
+      }, []);
+      if (lines.length) result[key] = lines;
+      return result;
+    }, {});
+  })();
   return {
     metadata: {
       clientId: text(payload.metadata?.clientId || payload.clientId),
@@ -2295,6 +2341,8 @@ function sanitizeFunderReport(payload) {
         compactGraphAnalysis: payload.settings?.displaySettings?.compactGraphAnalysis !== false
       }
     },
+    assessmentDocuments,
+    customPhaseLines,
     editedGraphAnalysis: (() => {
       const source = payload.editedGraphAnalysis;
       if (!source || typeof source !== "object" || Array.isArray(source)) return {};
@@ -2492,6 +2540,7 @@ async function saveClientDocument(client, payload) {
   const storedName = `${id}${extension}`;
   const body = Buffer.from(match[2], "base64");
   const mimeType = text(payload.mimeType) || match[1];
+  const fileSize = Number.isFinite(Number(payload.fileSize)) ? Math.max(0, Number(payload.fileSize)) : body.length;
   const key = `${client.id}/${type}/${storedName}`;
   let relativePath = join("uploads", client.id, type, storedName);
   let s3Key = "";
@@ -2520,11 +2569,14 @@ async function saveClientDocument(client, payload) {
     notes: text(payload.notes),
     fileName,
     mimeType,
+    contentType: mimeType,
+    fileSize,
     relativePath,
     s3Key,
     storage: documentStore,
     url: `/uploads/${key.split("/").map(encodeURIComponent).join("/")}`,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    uploadedAt: new Date().toISOString()
   };
   client.profile.documents.unshift(document);
   client.updatedAt = new Date().toISOString();

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-import { buildCompactGraphAnalysisSentence, buildFunderDraftRecord, draftContainsLargeArtifacts, estimateJsonBytes, hasMeaningfulFunderReportDraft, parseNumberedObjectives, sanitizeTrendVisibilityMap } from "../public/report-utils.js";
+import { buildCompactGraphAnalysisSentence, buildFunderDraftRecord, draftContainsLargeArtifacts, estimateJsonBytes, hasMeaningfulFunderReportDraft, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap } from "../public/report-utils.js";
 
 test("compact graph analysis sentence keeps report analysis concise and readable", () => {
   const sentence = buildCompactGraphAnalysisSentence({
@@ -42,6 +42,27 @@ test("structured funder draft record stores editable sections and settings but n
       behaviorIds: ["behavior-1"],
       parentTrainingGoalIds: ["goal-1"]
     },
+    assessmentDocuments: {
+      assessmentGrid: [{
+        fileId: "doc-1",
+        originalFileName: "assessment.pdf",
+        uploadedAt: "2026-06-20T12:00:00.000Z",
+        fileSize: 4096,
+        contentType: "application/pdf",
+        storagePath: "uploads/client-ava/fba-assessment/doc-1.pdf",
+        clientId: "client-ava",
+        documentType: "fba-assessment"
+      }]
+    },
+    customPhaseLines: {
+      "skill:program-1": [{
+        id: "phase-1",
+        date: "2026-05-21",
+        label: "Medication change",
+        lineStyle: "solid",
+        note: "Morning dose adjusted"
+      }]
+    },
     displaySettings: { compactGraphAnalysis: true },
     now: "2026-06-19T12:00:00.000Z"
   });
@@ -52,7 +73,58 @@ test("structured funder draft record stores editable sections and settings but n
   assert.equal(draft.progressSummary, "Editable summary");
   assert.deepEqual(draft.settings.graphPreferences, { "behavior:overview": false, "skill:program-1": true });
   assert.equal(draft.settings.displaySettings.compactGraphAnalysis, true);
+  assert.equal(draft.assessmentDocuments.assessmentGrid[0].fileId, "doc-1");
+  assert.equal(draft.assessmentDocuments.assessmentGrid[0].contentType, "application/pdf");
+  assert.equal(draft.customPhaseLines["skill:program-1"][0].phaseType, "environmentalChange");
+  assert.equal(draft.customPhaseLines["skill:program-1"][0].lineStyle, "solid");
   assert.equal(draftContainsLargeArtifacts(draft), false);
+});
+
+test("assessment document refs stay lightweight and exclude base64 payloads", () => {
+  const refs = sanitizeAssessmentDocumentRefs({
+    assessmentGrid: [{
+      id: "doc-7",
+      fileName: "assessment-grid.pdf",
+      createdAt: "2026-06-22T10:00:00.000Z",
+      fileSize: "8192",
+      mimeType: "application/pdf",
+      relativePath: "uploads/client-ava/fba-assessment/doc-7.pdf",
+      dataUrl: "data:application/pdf;base64,AAAA"
+    }]
+  });
+
+  assert.deepEqual(refs.assessmentGrid[0], {
+    fileId: "doc-7",
+    originalFileName: "assessment-grid.pdf",
+    uploadedAt: "2026-06-22T10:00:00.000Z",
+    fileSize: 8192,
+    contentType: "application/pdf",
+    storagePath: "uploads/client-ava/fba-assessment/doc-7.pdf",
+    objectKey: "",
+    clientId: "",
+    documentType: ""
+  });
+  assert.equal(JSON.stringify(refs).includes("base64"), false);
+});
+
+test("custom environmental phase lines are normalized with stable style and type", () => {
+  const lines = sanitizeCustomPhaseLines({
+    "behavior:aggression": [{
+      date: "2026-05-21",
+      label: "New RBT",
+      lineStyle: "solid",
+      note: "Coverage switch"
+    }]
+  });
+
+  assert.deepEqual(lines["behavior:aggression"][0], {
+    id: "behavior:aggression:2026-05-21:new rbt",
+    date: "2026-05-21",
+    label: "New RBT",
+    lineStyle: "solid",
+    note: "Coverage switch",
+    phaseType: "environmentalChange"
+  });
 });
 
 test("draft payload stays lightweight compared with rendered report artifacts", () => {
@@ -117,6 +189,14 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /resumeFunderReportButton\?\s*\.addEventListener\("click", resumeSavedFunderReportDraft\)/);
   assert.match(appSource, /function handleSaveFunderReportDraft\(/);
   assert.match(appSource, /function resumeSavedFunderReportDraft\(/);
+  assert.match(appSource, /reportAssessmentDocuments/);
+  assert.match(appSource, /reportCustomPhaseLines/);
+  assert.match(appSource, /renderReportAssessmentDraftFiles/);
+  assert.match(appSource, /handleReportAssessmentUpload/);
+  assert.match(appSource, /data-remove-report-attachment/);
+  assert.match(appSource, /renderCustomPhaseLineManager/);
+  assert.match(appSource, /data-phase-line-form=/);
+  assert.match(appSource, /phaseType:\s*"environmentalChange"/);
   assert.match(appSource, /Draft saved/);
   assert.match(appSource, /Saved report draft restored/);
   assert.match(appSource, /function renderFunderReportPreview\(/);
@@ -132,11 +212,19 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(htmlSource, /id="resume-funder-report"/);
   assert.match(htmlSource, />Export PDF</);
   assert.match(htmlSource, /name="dischargeMaladaptiveBehaviors"/);
+  assert.match(htmlSource, /id="assessment-grid-draft-files"/);
+  assert.match(htmlSource, /accept="application\/pdf,image\/\*"/);
   assert.match(cssSource, /\.discharge-objective-list/);
   assert.match(cssSource, /\.discharge-objective-group h4/);
+  assert.match(cssSource, /\.report-upload-draft-item/);
+  assert.match(cssSource, /\.graph-phase-line-panel/);
   assert.match(serverSource, /metadata:\s*\{/);
   assert.match(serverSource, /includedContent:\s*\{/);
   assert.match(serverSource, /graphPreferences:/);
+  assert.match(serverSource, /assessmentDocuments/);
+  assert.match(serverSource, /customPhaseLines/);
+  assert.match(serverSource, /contentType:/);
+  assert.match(serverSource, /fileSize:/);
   assert.doesNotMatch(serverSource, /pdfData|base64Pdf|renderedHtml|reportSnapshot/i);
   assert.match(serverSource, /parentTrainingSummary: textField\("parentTrainingSummary"\)/);
   assert.match(serverSource, /parentTrainingRecommendations: textField\("parentTrainingRecommendations"\)/);

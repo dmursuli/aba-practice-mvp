@@ -2,7 +2,7 @@ import { createAuditEvent, createClient, createSession, createUser, deleteClient
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
-import { buildCompactGraphAnalysisSentence, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, parseNumberedObjectives, sanitizeTrendVisibilityMap } from "./report-utils.js";
+import { buildCompactGraphAnalysisSentence, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap } from "./report-utils.js";
 import { generateSoapNote } from "./soap.js";
 import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms } from "./session-utils.js";
 
@@ -39,6 +39,11 @@ const state = {
   reportDraftClientId: "",
   reportDraftSavedSnapshot: "",
   reportDraftDirty: false,
+  reportAssessmentDocuments: {
+    assessmentGrid: [],
+    standardizedAssessmentGrid: []
+  },
+  reportCustomPhaseLines: {},
   inactivityTimerId: null,
   inactivityWarningTimerId: null,
   lastSessionTouchAt: 0
@@ -135,6 +140,8 @@ const workflowMessage = document.querySelector("#workflow-message");
 const reportForm = document.querySelector("#funder-report-form");
 const reportPreview = document.querySelector("#funder-report-preview");
 const reportSectionNav = document.querySelector("#report-section-nav");
+const assessmentGridDraftFiles = document.querySelector("#assessment-grid-draft-files");
+const standardizedAssessmentGridDraftFiles = document.querySelector("#standardized-assessment-grid-draft-files");
 const fadePlanRows = document.querySelector("#fade-plan-rows");
 const addFadeRowButton = document.querySelector("#add-fade-row");
 const serviceHourRows = document.querySelector("#service-hour-rows");
@@ -599,16 +606,23 @@ function bindEvents() {
   addDomainButton.addEventListener("click", handleAddDomain);
   deleteDomainButton.addEventListener("click", handleDeleteDomain);
   skillCharts.addEventListener("click", handleGraphDataDeleteClick);
+  skillCharts.addEventListener("click", handleGraphPhaseLineClick);
+  skillCharts.addEventListener("submit", handleGraphPhaseLineSubmit);
   skillCharts.addEventListener("change", handleGraphAnalysisControlChange);
   behaviorCharts.addEventListener("click", handleGraphDataDeleteClick);
+  behaviorCharts.addEventListener("click", handleGraphPhaseLineClick);
+  behaviorCharts.addEventListener("submit", handleGraphPhaseLineSubmit);
   behaviorCharts.addEventListener("change", handleGraphAnalysisControlChange);
   behaviorCharts.addEventListener("click", handleGraphAnalysisClick);
   skillCharts.addEventListener("click", handleGraphAnalysisClick);
   programGraphModal?.addEventListener("change", handleGraphAnalysisControlChange);
   programGraphModal?.addEventListener("click", handleGraphAnalysisClick);
+  reportPreview?.addEventListener("click", handleGraphPhaseLineClick);
+  reportPreview?.addEventListener("submit", handleGraphPhaseLineSubmit);
   reportForm.addEventListener("submit", handleGenerateFunderReport);
   reportForm.addEventListener("input", handleReportDraftInput);
   reportForm.addEventListener("change", handleReportFormChange);
+  reportForm.addEventListener("click", handleReportFormClick);
   reportSectionNav?.addEventListener("click", handleReportSectionNavClick);
   addFadeRowButton.addEventListener("click", () => {
     addFadePlanRow();
@@ -980,11 +994,14 @@ function defaultReportDateRange() {
 function resetFunderReportForm() {
   if (!reportForm) return;
   reportForm.reset();
+  state.reportAssessmentDocuments = sanitizeAssessmentDocumentRefs({});
+  state.reportCustomPhaseLines = sanitizeCustomPhaseLines({});
   const range = defaultReportDateRange();
   reportForm.elements.startDate.value = range.startDate;
   reportForm.elements.endDate.value = range.endDate;
   preloadFadePlanRows();
   preloadServiceHourRows();
+  renderReportAssessmentDraftFiles();
 }
 
 function setDefaultDate() {
@@ -3465,14 +3482,279 @@ function documentTypeLabel(type) {
   }[type] || "Document";
 }
 
+function reportAssessmentFieldConfig(fieldName) {
+  return {
+    assessmentGrid: {
+      documentType: "fba-assessment",
+      label: "Assessment grid",
+      mount: assessmentGridDraftFiles
+    },
+    standardizedAssessmentGrid: {
+      documentType: "standardized-assessment",
+      label: "Standardized assessment grid",
+      mount: standardizedAssessmentGridDraftFiles
+    }
+  }[fieldName] || null;
+}
+
+function reportAssessmentDocumentRef(document, clientId = currentClient()?.id || "") {
+  if (!document?.id) return null;
+  return {
+    fileId: document.id,
+    originalFileName: document.fileName || "",
+    uploadedAt: document.uploadedAt || document.createdAt || "",
+    fileSize: Number(document.fileSize || 0),
+    contentType: document.contentType || document.mimeType || "",
+    storagePath: document.relativePath || document.s3Key || "",
+    objectKey: document.s3Key || "",
+    clientId,
+    documentType: document.type || ""
+  };
+}
+
+function reportAssessmentRefs(fieldName) {
+  return sanitizeAssessmentDocumentRefs(state.reportAssessmentDocuments)[fieldName] || [];
+}
+
+function setReportAssessmentRefs(fieldName, refs) {
+  state.reportAssessmentDocuments = {
+    ...sanitizeAssessmentDocumentRefs(state.reportAssessmentDocuments),
+    [fieldName]: sanitizeAssessmentDocumentRefs({ [fieldName]: refs })[fieldName] || []
+  };
+}
+
+function currentClientDocumentById(fileId) {
+  return (currentClient()?.profile?.documents || []).find((document) => document.id === fileId) || null;
+}
+
+function renderReportAssessmentDraftFiles() {
+  ["assessmentGrid", "standardizedAssessmentGrid"].forEach((fieldName) => {
+    const config = reportAssessmentFieldConfig(fieldName);
+    if (!config?.mount) return;
+    const refs = reportAssessmentRefs(fieldName);
+    if (!refs.length) {
+      config.mount.innerHTML = `<p class="muted">No ${escapeHtml(config.label.toLowerCase())} attached to this draft.</p>`;
+      return;
+    }
+    config.mount.innerHTML = `
+      <div class="report-upload-draft-list">
+        ${refs.map((ref) => {
+          const document = currentClientDocumentById(ref.fileId);
+          const fileName = escapeHtml(ref.originalFileName || "Uploaded file");
+          const uploadedAt = ref.uploadedAt ? formatDateTime(ref.uploadedAt) : "Upload time unavailable";
+          const fileSize = ref.fileSize ? `${Math.max(1, Math.round(ref.fileSize / 1024))} KB` : "Size unavailable";
+          if (!document) {
+            return `
+              <div class="report-upload-draft-item report-upload-draft-item-missing">
+                <div>
+                  <strong>${fileName}</strong>
+                  <span>Stored file reference is missing from client documents.</span>
+                </div>
+                <button type="button" class="delete-button" data-remove-report-attachment="${escapeHtml(fieldName)}" data-file-id="${escapeHtml(ref.fileId)}">Remove</button>
+              </div>
+            `;
+          }
+          return `
+            <div class="report-upload-draft-item">
+              <div>
+                <strong>${fileName}</strong>
+                <span>${escapeHtml(uploadedAt)} - ${escapeHtml(fileSize)}</span>
+              </div>
+              <div class="report-upload-draft-actions">
+                <a class="secondary-button" href="${escapeHtml(document.url)}" target="_blank" rel="noopener">View / download</a>
+                <button type="button" class="delete-button" data-remove-report-attachment="${escapeHtml(fieldName)}" data-file-id="${escapeHtml(ref.fileId)}">Remove</button>
+              </div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    `;
+  });
+}
+
+function customPhaseLinesForGraph(graphKey) {
+  return sanitizeCustomPhaseLines(state.reportCustomPhaseLines)[graphKey] || [];
+}
+
+function setCustomPhaseLinesForGraph(graphKey, lines) {
+  state.reportCustomPhaseLines = {
+    ...sanitizeCustomPhaseLines(state.reportCustomPhaseLines),
+    [graphKey]: sanitizeCustomPhaseLines({ [graphKey]: lines })[graphKey] || []
+  };
+}
+
+function graphSeriesDateRange(series = []) {
+  const dates = [...new Set((series || []).flatMap((item) => (item.points || []).map((point) => point.x)).filter(Boolean))].sort();
+  return {
+    startDate: dates[0] || "",
+    endDate: dates[dates.length - 1] || ""
+  };
+}
+
+function graphPhaseMarkers(graphKey, automaticMarkers = []) {
+  return [
+    ...(automaticMarkers || []),
+    ...customPhaseLinesForGraph(graphKey)
+  ];
+}
+
+function renderCustomPhaseLineManager(graphKey, series, options = {}) {
+  const range = graphSeriesDateRange(series);
+  const lines = customPhaseLinesForGraph(graphKey);
+  const editingId = options.editingId || "";
+  const editingLine = editingId ? lines.find((line) => line.id === editingId) : null;
+  const submitLabel = editingLine ? "Save phase line" : "Add phase line";
+  const actionLabel = options.readOnly ? "Phase lines" : "Environmental phase lines";
+  if (options.readOnly && !lines.length) return "";
+  const listMarkup = lines.length
+    ? `
+      <div class="graph-phase-line-list">
+        ${lines.map((line) => `
+          <div class="graph-phase-line-item">
+            <div>
+              <strong>${escapeHtml(line.label)}</strong>
+              <span>${escapeHtml(formatGraphDate(line.date))} - ${escapeHtml(line.lineStyle)}</span>
+              ${line.note ? `<p class="graph-phase-line-note">${escapeHtml(line.note)}</p>` : ""}
+            </div>
+            ${options.readOnly ? "" : `
+              <div class="graph-phase-line-actions">
+                <button type="button" class="secondary-button" data-edit-phase-line="${escapeHtml(graphKey)}" data-phase-line-id="${escapeHtml(line.id)}">Edit</button>
+                <button type="button" class="delete-button" data-delete-phase-line="${escapeHtml(graphKey)}" data-phase-line-id="${escapeHtml(line.id)}">Delete</button>
+              </div>
+            `}
+          </div>
+        `).join("")}
+      </div>
+    `
+    : `<p class="muted">No custom environmental phase lines saved for this graph.</p>`;
+
+  if (options.readOnly) {
+    return `
+      <section class="graph-phase-line-panel graph-phase-line-panel-readonly" aria-label="${escapeHtml(actionLabel)}">
+        <div class="graph-analysis-toolbar">
+          <strong>${escapeHtml(actionLabel)}</strong>
+        </div>
+        ${listMarkup}
+      </section>
+    `;
+  }
+
+  return `
+    <section class="graph-phase-line-panel" data-phase-line-panel="${escapeHtml(graphKey)}">
+      <div class="graph-analysis-toolbar">
+        <strong>${escapeHtml(actionLabel)}</strong>
+      </div>
+      ${listMarkup}
+      <form class="graph-phase-line-form" data-phase-line-form="${escapeHtml(graphKey)}" data-start-date="${escapeHtml(range.startDate)}" data-end-date="${escapeHtml(range.endDate)}">
+        <input type="hidden" name="phaseLineId" value="${escapeHtml(editingLine?.id || "")}">
+        <label>
+          Date
+          <input type="date" name="phaseLineDate" value="${escapeHtml(editingLine?.date || "")}" ${range.startDate ? `min="${escapeHtml(range.startDate)}"` : ""} ${range.endDate ? `max="${escapeHtml(range.endDate)}"` : ""} required>
+        </label>
+        <label>
+          Label
+          <input type="text" name="phaseLineLabel" value="${escapeHtml(editingLine?.label || "")}" placeholder="Medication change, new RBT" required>
+        </label>
+        <label>
+          Line style
+          <select name="phaseLineStyle">
+            <option value="dashed" ${editingLine?.lineStyle !== "solid" ? "selected" : ""}>Dashed</option>
+            <option value="solid" ${editingLine?.lineStyle === "solid" ? "selected" : ""}>Solid</option>
+          </select>
+        </label>
+        <label>
+          Note
+          <input type="text" name="phaseLineNote" value="${escapeHtml(editingLine?.note || "")}" placeholder="Optional environmental note">
+        </label>
+        <div class="graph-phase-line-form-actions">
+          <button type="submit" class="secondary-button">${escapeHtml(submitLabel)}</button>
+          ${editingLine ? `<button type="button" class="secondary-button" data-cancel-phase-line="${escapeHtml(graphKey)}">Cancel</button>` : ""}
+        </div>
+      </form>
+    </section>
+  `;
+}
+
 function handleReportDraftInput() {
   markReportDraftDirty();
 }
 
-function handleReportFormChange() {
+async function handleReportFormChange(event) {
+  const fileField = event?.target?.name;
+  if (fileField === "assessmentGrid" || fileField === "standardizedAssessmentGrid") {
+    await handleReportAssessmentUpload(event.target);
+  }
   markReportDraftDirty();
   renderReportSummary();
   if (currentView() === "report") renderFunderReportPreview();
+}
+
+function handleReportFormClick(event) {
+  const remove = event.target.closest("[data-remove-report-attachment]");
+  if (!remove) return;
+  handleReportAttachmentRemove(remove.dataset.removeReportAttachment, remove.dataset.fileId);
+}
+
+async function handleReportAssessmentUpload(input) {
+  const client = currentClient();
+  const fieldName = input?.name;
+  const config = reportAssessmentFieldConfig(fieldName);
+  const file = input?.files?.[0];
+  if (!client || !config || !file) return;
+
+  const duplicate = reportAssessmentRefs(fieldName).some((ref) => (
+    ref.originalFileName === file.name
+    && Number(ref.fileSize || 0) === Number(file.size || 0)
+    && (ref.contentType || "") === (file.type || "application/octet-stream")
+  ));
+  if (duplicate) {
+    input.value = "";
+    funderExportStatus.textContent = `${config.label} is already attached to this draft.`;
+    return;
+  }
+
+  try {
+    funderExportStatus.textContent = `Uploading ${config.label.toLowerCase()}...`;
+    const dataUrl = await readFileAsDataUrl(file);
+    const documentDate = fieldName === "standardizedAssessmentGrid"
+      ? reportForm.elements.standardizedAssessmentDate?.value || ""
+      : reportForm.elements.assessmentDate?.value || "";
+    const document = await uploadClientDocument(client.id, {
+      documentType: config.documentType,
+      documentDate,
+      notes: `Attached from funder report draft (${config.label})`,
+      fileName: file.name,
+      mimeType: file.type || "application/octet-stream",
+      fileSize: file.size || 0,
+      dataUrl
+    });
+    currentClient().profile = currentClient().profile || {};
+    currentClient().profile.documents = currentClient().profile.documents || [];
+    currentClient().profile.documents = [
+      document,
+      ...currentClient().profile.documents.filter((item) => item.id !== document.id)
+    ];
+    const nextRefs = [...reportAssessmentRefs(fieldName), reportAssessmentDocumentRef(document, client.id)].filter(Boolean);
+    setReportAssessmentRefs(fieldName, nextRefs);
+    renderReportAssessmentDraftFiles();
+    input.value = "";
+    markReportDraftDirty();
+    funderExportStatus.textContent = `${config.label} uploaded and attached to this draft.`;
+  } catch (error) {
+    funderExportStatus.textContent = `${config.label} upload failed: ${error.message}`;
+  }
+}
+
+function handleReportAttachmentRemove(fieldName, fileId) {
+  const config = reportAssessmentFieldConfig(fieldName);
+  const ref = reportAssessmentRefs(fieldName).find((item) => item.fileId === fileId);
+  if (!config || !ref) return;
+  if (!window.confirm(`Remove ${ref.originalFileName || config.label} from this draft? The stored file will remain available in client documents.`)) return;
+  setReportAssessmentRefs(fieldName, reportAssessmentRefs(fieldName).filter((item) => item.fileId !== fileId));
+  renderReportAssessmentDraftFiles();
+  markReportDraftDirty();
+  if (currentView() === "report") renderFunderReportPreview();
+  funderExportStatus.textContent = `${config.label} removed from this draft.`;
 }
 
 function reportGraphPreferenceKeys() {
@@ -3514,6 +3796,8 @@ function currentFunderReportDraft() {
     displaySettings: {
       compactGraphAnalysis: true
     },
+    assessmentDocuments: sanitizeAssessmentDocumentRefs(state.reportAssessmentDocuments),
+    customPhaseLines: sanitizeCustomPhaseLines(state.reportCustomPhaseLines),
     editedGraphAnalysis: structuredClone(currentClient()?.profile?.funderReport?.editedGraphAnalysis || {}),
     existingDraft: currentClient()?.profile?.funderReport || {}
   });
@@ -3524,6 +3808,8 @@ function applyFunderReportDraft(draft = {}) {
   const rows = Array.isArray(draft.fadePlanRows) ? draft.fadePlanRows : [];
   const serviceRows = Array.isArray(draft.serviceHours) ? draft.serviceHours : [];
   const graphPreferences = draft.settings?.graphPreferences || {};
+  state.reportAssessmentDocuments = sanitizeAssessmentDocumentRefs(draft.assessmentDocuments || {});
+  state.reportCustomPhaseLines = sanitizeCustomPhaseLines(draft.customPhaseLines || {});
   reportGraphPreferenceKeys().forEach((key) => {
     if (Object.hasOwn(graphPreferences, key)) {
       state.graphTrendVisibility[key] = Boolean(graphPreferences[key]);
@@ -3541,6 +3827,7 @@ function applyFunderReportDraft(draft = {}) {
   (rows.length ? rows : defaultFadePlanRows()).forEach((row) => addFadePlanRow(row));
   serviceHourRows.innerHTML = "";
   (serviceRows.length ? serviceRows : defaultServiceHourRows()).forEach((row) => addServiceHourRow(row));
+  renderReportAssessmentDraftFiles();
 }
 
 function reportDraftSnapshot(draft = currentFunderReportDraft()) {
@@ -3641,8 +3928,6 @@ function buildFunderReportPreviewMarkup() {
   const sessions = filteredReportSessions().slice().reverse();
   const values = new FormData(reportForm);
   const metrics = funderReportMetrics(sessions);
-  const assessmentGridFile = reportForm.elements.assessmentGrid.files[0];
-  const standardizedGridFile = reportForm.elements.standardizedAssessmentGrid.files[0];
   return `
     <section class="report-document">
       <div class="report-title-block">
@@ -3687,7 +3972,7 @@ function buildFunderReportPreviewMarkup() {
           <div><strong>Conducted by</strong><span>${escapeHtml(values.get("assessmentConductedBy") || "Not entered")}</span></div>
           <div><strong>Date</strong><span>${values.get("assessmentDate") ? formatDate(values.get("assessmentDate")) : "Not entered"}</span></div>
         </div>
-        ${reportFilePreview(assessmentGridFile, "Assessment grid")}
+        ${reportFilePreview(reportAssessmentRefs("assessmentGrid"), "Assessment grid")}
       </section>
       <section>
         <h3>Behavior Support Plan</h3>
@@ -3712,7 +3997,7 @@ function buildFunderReportPreviewMarkup() {
           <div><strong>Conducted by</strong><span>${escapeHtml(values.get("standardizedConductedBy") || "Not entered")}</span></div>
           <div><strong>Date</strong><span>${values.get("standardizedAssessmentDate") ? formatDate(values.get("standardizedAssessmentDate")) : "Not entered"}</span></div>
         </div>
-        ${reportFilePreview(standardizedGridFile, "Standardized assessment grid")}
+        ${reportFilePreview(reportAssessmentRefs("standardizedAssessmentGrid"), "Standardized assessment grid")}
       </section>
       <section>
         <h3>Skill Acquisition Graphs</h3>
@@ -4518,7 +4803,7 @@ function openProgramGraphModal(programId) {
   if (!program) return;
   const chart = buildProgramSkillChart(program, currentSessions().slice().reverse());
   const graphKey = graphTrendKey("skill", programId);
-  const phaseMarkers = masteryMarkersForProgram(program.id);
+  const phaseMarkers = graphPhaseMarkers(graphKey, masteryMarkersForProgram(program.id));
   programGraphModalTitle.textContent = program.name;
   programGraphModalSubtitle.textContent = `${program.domain || "General"}${chart.series.length ? ` - ${chart.series.length} target graph${chart.series.length === 1 ? "" : "s"}` : ""}`;
   programGraphModal.classList.remove("hidden");
@@ -4584,6 +4869,7 @@ function openBehaviorGraphModal(behaviorId) {
       yStep: 1,
       yLabel: "frequency",
       emptyMessage: "No behavior data for this behavior",
+      phaseMarkers: graphPhaseMarkers(graphKey),
       graphType: "behavior",
       showTrendLine: trendLineEnabled(graphKey)
     });
@@ -4594,7 +4880,10 @@ function openBehaviorGraphModal(behaviorId) {
     }
     if (programGraphModalAnalysis) {
       programGraphModalAnalysis.innerHTML = renderGraphAnalysisMarkup(
-        buildGraphAnalysis(chart.series, { graphType: "behavior" }),
+        buildGraphAnalysis(chart.series, {
+          graphType: "behavior",
+          phaseMarkers: graphPhaseMarkers(graphKey)
+        }),
         graphKey,
         { reportField: "progressSummary" }
       );
@@ -5496,6 +5785,111 @@ function handleGraphAnalysisClick(event) {
   funderExportStatus.textContent = "Graph interpretation inserted into the progress summary.";
 }
 
+function handleGraphPhaseLineClick(event) {
+  const edit = event.target.closest("[data-edit-phase-line]");
+  if (edit) {
+    const graphKey = edit.dataset.editPhaseLine;
+    const lines = customPhaseLinesForGraph(graphKey);
+    const line = lines.find((item) => item.id === edit.dataset.phaseLineId);
+    const panel = event.currentTarget;
+    const mount = panel?.querySelector?.(`[data-phase-line-panel="${CSS.escape(graphKey)}"]`);
+    if (!line || !mount) return;
+    const chartPanel = mount.closest(".chart-panel");
+    const series = phaseLineSeriesFromPanel(chartPanel);
+    mount.outerHTML = renderCustomPhaseLineManager(graphKey, series, { editingId: line.id });
+    return;
+  }
+
+  const cancel = event.target.closest("[data-cancel-phase-line]");
+  if (cancel) {
+    const graphKey = cancel.dataset.cancelPhaseLine;
+    const panel = event.currentTarget;
+    const mount = panel?.querySelector?.(`[data-phase-line-panel="${CSS.escape(graphKey)}"]`);
+    const chartPanel = mount?.closest(".chart-panel");
+    if (!mount || !chartPanel) return;
+    mount.outerHTML = renderCustomPhaseLineManager(graphKey, phaseLineSeriesFromPanel(chartPanel));
+    return;
+  }
+
+  const remove = event.target.closest("[data-delete-phase-line]");
+  if (!remove) return;
+  const graphKey = remove.dataset.deletePhaseLine;
+  const phaseLineId = remove.dataset.phaseLineId;
+  const line = customPhaseLinesForGraph(graphKey).find((item) => item.id === phaseLineId);
+  if (!line) return;
+  if (!window.confirm(`Delete the "${line.label}" phase line from this graph?`)) return;
+  setCustomPhaseLinesForGraph(graphKey, customPhaseLinesForGraph(graphKey).filter((item) => item.id !== phaseLineId));
+  markReportDraftDirty();
+  funderExportStatus.textContent = `Removed phase line "${line.label}".`;
+  rerenderGraphSurfaces();
+}
+
+async function handleGraphPhaseLineSubmit(event) {
+  const form = event.target.closest("[data-phase-line-form]");
+  if (!form) return;
+  event.preventDefault();
+  const graphKey = form.dataset.phaseLineForm;
+  const values = new FormData(form);
+  const date = String(values.get("phaseLineDate") || "").trim();
+  const label = String(values.get("phaseLineLabel") || "").trim();
+  const lineStyle = String(values.get("phaseLineStyle") || "dashed").trim() === "solid" ? "solid" : "dashed";
+  const note = String(values.get("phaseLineNote") || "").trim();
+  const existingId = String(values.get("phaseLineId") || "").trim();
+  const startDate = form.dataset.startDate || "";
+  const endDate = form.dataset.endDate || "";
+  if (!date || !label) {
+    graphsMessage.textContent = "Phase line date and label are required.";
+    return;
+  }
+  if ((startDate && date < startDate) || (endDate && date > endDate)) {
+    graphsMessage.textContent = `Phase line date must be between ${formatGraphDate(startDate)} and ${formatGraphDate(endDate)} for this graph.`;
+    return;
+  }
+
+  const nextLines = [
+    ...customPhaseLinesForGraph(graphKey).filter((line) => line.id !== existingId),
+    {
+      id: existingId || cryptoId(),
+      date,
+      label,
+      lineStyle,
+      note,
+      phaseType: "environmentalChange"
+    }
+  ];
+  setCustomPhaseLinesForGraph(graphKey, nextLines);
+  markReportDraftDirty();
+  graphsMessage.textContent = existingId
+    ? `Updated phase line "${label}".`
+    : `Added phase line "${label}".`;
+  funderExportStatus.textContent = graphsMessage.textContent;
+  rerenderGraphSurfaces();
+}
+
+function phaseLineSeriesFromPanel(chartPanel) {
+  const graphKey = chartPanel?.querySelector?.("[data-phase-line-panel]")?.dataset.phaseLinePanel || "";
+  if (!graphKey) return [];
+  if (graphKey.startsWith("skill:")) {
+    const program = clientPrograms().find((item) => item.id === graphKey.slice("skill:".length));
+    return program ? buildProgramSkillChart(program, currentSessions().slice().reverse())?.series || [] : [];
+  }
+  if (graphKey === "behavior:overview") {
+    return behaviorChartSeries(currentView() === "report" ? filteredReportSessions().slice().reverse() : currentSessions().slice().reverse());
+  }
+  if (graphKey.startsWith("behavior:")) {
+    return buildBehaviorChart(
+      graphKey.slice("behavior:".length),
+      currentView() === "report" ? filteredReportSessions().slice().reverse() : currentSessions().slice().reverse()
+    )?.series || [];
+  }
+  return [];
+}
+
+function rerenderGraphSurfaces() {
+  if (currentView() === "graphs") renderCharts();
+  if (reportPreview?.innerHTML) renderFunderReportPreview();
+}
+
 function handleGenerateFunderReport(event) {
   event.preventDefault();
   renderReportSummary();
@@ -5801,9 +6195,17 @@ function drawFunderReportCharts(sessions) {
     yStep: 1,
     yLabel: "frequency",
     emptyMessage: "No behavior data in this report range",
+    phaseMarkers: graphPhaseMarkers(behaviorOverviewGraphKey),
     graphType: "behavior",
     showTrendLine: trendLineEnabled(behaviorOverviewGraphKey)
   });
+  const behaviorPanel = behaviorCanvas.closest(".chart-panel");
+  if (behaviorPanel) {
+    behaviorPanel.querySelector(".graph-phase-line-panel")?.remove();
+    behaviorPanel.insertAdjacentHTML("beforeend", renderCustomPhaseLineManager(behaviorOverviewGraphKey, behaviorSeries, {
+      readOnly: true
+    }));
+  }
 
   const behaviorContainer = reportPreview.querySelector("#report-behavior-charts");
   if (behaviorContainer) drawBehaviorChartSet(sessions, behaviorContainer, "report-behavior-chart");
@@ -5828,11 +6230,15 @@ function renderCharts() {
   skillCharts.innerHTML = "";
   const behaviorSeries = behaviorChartSeries(sessions);
   const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
-  const behaviorOverviewAnalysis = buildGraphAnalysis(behaviorSeries, { graphType: "behavior" });
+  const behaviorOverviewAnalysis = buildGraphAnalysis(behaviorSeries, {
+    graphType: "behavior",
+    phaseMarkers: graphPhaseMarkers(behaviorOverviewGraphKey)
+  });
   drawLineChart(document.querySelector("#behavior-chart"), behaviorSeries, {
     yStep: 1,
     yLabel: "frequency",
     emptyMessage: "Save a session to graph behavior frequency",
+    phaseMarkers: graphPhaseMarkers(behaviorOverviewGraphKey),
     graphType: "behavior",
     showTrendLine: trendLineEnabled(behaviorOverviewGraphKey)
   });
@@ -5842,10 +6248,15 @@ function renderCharts() {
   });
   if (behaviorChartContainer) {
     behaviorChartContainer.querySelector(".graph-analysis-panel")?.remove();
+    behaviorChartContainer.querySelector(".graph-phase-line-panel")?.remove();
     behaviorChartContainer.insertAdjacentHTML("beforeend", renderGraphAnalysisMarkup(
       behaviorOverviewAnalysis,
       behaviorOverviewGraphKey,
       { reportField: "progressSummary" }
+    ));
+    behaviorChartContainer.insertAdjacentHTML("beforeend", renderCustomPhaseLineManager(
+      behaviorOverviewGraphKey,
+      behaviorSeries
     ));
   }
   drawBehaviorChartSet(sessions, behaviorCharts, "behavior-single-chart");
@@ -5909,7 +6320,7 @@ function renderSkillCharts(sessions) {
 
   visibleGroups.flatMap((group) => group.charts).forEach((chart) => {
     const graphKey = graphTrendKey("skill", chart.program.id);
-    const phaseMarkers = masteryMarkersForProgram(chart.program.id);
+    const phaseMarkers = graphPhaseMarkers(graphKey, masteryMarkersForProgram(chart.program.id));
     drawLineChart(skillCharts.querySelector(`[data-program-chart="${chart.program.id}"]`), chart.series, {
       maxY: 100,
       yStep: 10,
@@ -5925,9 +6336,12 @@ function renderSkillCharts(sessions) {
         graphType: "skill",
         phaseMarkers
       });
-      analysisMount.innerHTML = renderGraphAnalysisMarkup(analysis, graphKey, {
-        reportField: "progressSummary"
-      });
+      analysisMount.innerHTML = `
+        ${renderGraphAnalysisMarkup(analysis, graphKey, {
+          reportField: "progressSummary"
+        })}
+        ${renderCustomPhaseLineManager(graphKey, chart.series)}
+      `;
     }
   });
 }
@@ -6267,7 +6681,7 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
 
   charts.forEach((chart) => {
     const graphKey = graphTrendKey("skill", chart.program.id);
-    const phaseMarkers = masteryMarkersForProgram(chart.program.id);
+    const phaseMarkers = graphPhaseMarkers(graphKey, masteryMarkersForProgram(chart.program.id));
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${chart.program.id}"]`), chart.series, {
       maxY: 100,
       yStep: 10,
@@ -6284,7 +6698,10 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
           graphType: "skill",
           phaseMarkers
         });
-        analysisMount.innerHTML = renderReportGraphAnalysisMarkup(analysis);
+        analysisMount.innerHTML = `
+          ${renderReportGraphAnalysisMarkup(analysis)}
+          ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true })}
+        `;
       }
     }
   });
@@ -6335,21 +6752,32 @@ function drawBehaviorChartSet(sessions, container, chartAttribute) {
 
   charts.forEach((chart, index) => {
     const graphKey = graphTrendKey("behavior", chart.behaviorId);
+    const phaseMarkers = graphPhaseMarkers(graphKey);
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${index}"]`), chart.series, {
       yStep: 1,
       yLabel: "frequency",
       emptyMessage: "No behavior data for this behavior",
+      phaseMarkers,
       graphType: "behavior",
       showTrendLine: trendLineEnabled(graphKey)
     });
     const analysisMount = container.querySelector(`[data-behavior-analysis="${escapeHtml(String(chart.behaviorId))}"]`);
     if (analysisMount) {
-      const analysis = buildGraphAnalysis(chart.series, { graphType: "behavior" });
+      const analysis = buildGraphAnalysis(chart.series, {
+        graphType: "behavior",
+        phaseMarkers
+      });
       analysisMount.innerHTML = isReportChart
-        ? renderReportGraphAnalysisMarkup(analysis)
-        : renderGraphAnalysisMarkup(analysis, graphKey, {
-            reportField: "progressSummary"
-          });
+        ? `
+            ${renderReportGraphAnalysisMarkup(analysis)}
+            ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true })}
+          `
+        : `
+            ${renderGraphAnalysisMarkup(analysis, graphKey, {
+              reportField: "progressSummary"
+            })}
+            ${renderCustomPhaseLineManager(graphKey, chart.series)}
+          `;
     }
   });
 }
@@ -7224,18 +7652,26 @@ function signatureBlock(signature, credential, date) {
   return `Provider signature: ${signedBy}${credentialText}\nDate signed: ${formatDate(date || new Date().toISOString().slice(0, 10))}`;
 }
 
-function reportFilePreview(file, label) {
-  if (!file) return `<p class="muted">No ${escapeHtml(label.toLowerCase())} uploaded.</p>`;
-  const fileName = escapeHtml(file.name);
-  if (file.type.startsWith("image/")) {
-    return `
-      <figure class="report-upload-preview">
-        <img src="${URL.createObjectURL(file)}" alt="${escapeHtml(label)} upload">
-        <figcaption>${fileName}</figcaption>
-      </figure>
-    `;
-  }
-  return `<p><strong>${escapeHtml(label)} uploaded:</strong> ${fileName}</p>`;
+function reportFilePreview(files, label) {
+  const items = Array.isArray(files) ? files : [];
+  if (!items.length) return `<p class="muted">No ${escapeHtml(label.toLowerCase())} uploaded.</p>`;
+  return `
+    <div class="report-upload-preview-list">
+      ${items.map((ref) => {
+        const document = currentClientDocumentById(ref.fileId);
+        const fileName = escapeHtml(ref.originalFileName || label);
+        if (!document) {
+          return `<p class="muted"><strong>${escapeHtml(label)}:</strong> ${fileName} (stored file reference missing)</p>`;
+        }
+        return `
+          <p>
+            <strong>${escapeHtml(label)} uploaded:</strong>
+            <a href="${escapeHtml(document.url)}" target="_blank" rel="noopener">${fileName}</a>
+          </p>
+        `;
+      }).join("")}
+    </div>
+  `;
 }
 
 function defaultBackgroundInformation() {

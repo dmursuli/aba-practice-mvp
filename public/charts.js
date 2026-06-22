@@ -344,9 +344,9 @@ export function normalizePhaseMarkers(markers = [], dates = [], phaseBoundary = 
     .filter((marker) => {
       if (!marker.date) return false;
       if (!phaseBoundary) {
-        return marker.phaseType === "baselineConditionChange";
+        return marker.phaseType === "baselineConditionChange" || marker.phaseType === "environmentalChange";
       }
-      if (marker.phaseType === "baselineConditionChange") return true;
+      if (marker.phaseType === "baselineConditionChange" || marker.phaseType === "environmentalChange") return true;
       if (!treatmentStartDate) return false;
       return marker.date >= treatmentStartDate;
     })
@@ -370,14 +370,16 @@ function normalizePhaseMarker(marker = {}) {
 function inferPhaseType(marker = {}) {
   if (marker.label === "Treatment") return "baselineToTreatment";
   if (marker.label === "Target mastered") return "objectiveChange";
+  if (marker.phaseType === "environmentalChange") return "environmentalChange";
   return "objectiveChange";
 }
 
 function phaseMarkerOrder(marker) {
   const order = {
     baselineConditionChange: 0,
-    objectiveChange: 1,
-    targetMastered: 2
+    environmentalChange: 1,
+    objectiveChange: 2,
+    targetMastered: 3
   };
   return order[marker.phaseType] ?? 1;
 }
