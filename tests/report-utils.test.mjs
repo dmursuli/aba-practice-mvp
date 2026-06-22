@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-import { buildCompactGraphAnalysisSentence, buildFunderDraftRecord, draftContainsLargeArtifacts, estimateJsonBytes, hasMeaningfulFunderReportDraft, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap } from "../public/report-utils.js";
+import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, draftContainsLargeArtifacts, estimateJsonBytes, hasMeaningfulFunderReportDraft, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, skillAcquisitionGoalIdentity, skillAcquisitionTargetIdentity, summarizeSkillAcquisitionReport } from "../public/report-utils.js";
 
 test("compact graph analysis sentence keeps report analysis concise and readable", () => {
   const sentence = buildCompactGraphAnalysisSentence({
@@ -127,6 +127,130 @@ test("custom environmental phase lines are normalized with stable style and type
   });
 });
 
+test("skill acquisition summary groups targets by status and deduplicates mastered goals by program id", () => {
+  const model = summarizeSkillAcquisitionReport({
+    programs: [
+      {
+        id: "program-1",
+        name: "Functional Communication: Manding",
+        domain: "Communication",
+        objective: "Will request help independently.",
+        status: "mastered",
+        targets: [
+          { id: "target-1", name: "Request help", status: "mastered" },
+          { id: "target-1", name: "Request help", status: "mastered" }
+        ]
+      },
+      {
+        id: "program-2",
+        name: "Reciprocal play",
+        domain: "Socialization",
+        objective: "Will engage in shared play.",
+        status: "active",
+        targets: [
+          { id: "target-2", name: "Take turns", status: "active" },
+          { id: "target-3", name: "Share toys", status: "paused" }
+        ]
+      }
+    ],
+    planChangeLog: [
+      { type: "program-status-changed", programId: "program-1", programName: "Functional Communication: Manding", domain: "Communication", objective: "Will request help independently.", toStatus: "mastered", date: "2026-06-10" },
+      { type: "program-status-changed", programId: "program-1", programName: "Functional Communication: Manding", domain: "Communication", objective: "Will request help independently.", toStatus: "mastered", date: "2026-06-10" }
+    ],
+    startDate: "2026-06-01",
+    endDate: "2026-06-30"
+  });
+
+  assert.equal(model.masteredGoalsDuringPeriod.length, 1);
+  assert.equal(model.masteredGoalsDuringPeriod[0].programId, "program-1");
+  assert.deepEqual(model.masteredTargets.map((item) => item.targetId), ["target-1"]);
+  assert.deepEqual(model.onHoldTargets.map((item) => item.targetId), ["target-3"]);
+  assert.deepEqual(model.activeTargets.map((item) => item.targetId), ["target-2"]);
+  assert.deepEqual(model.totals, {
+    masteredGoals: 1,
+    masteredTargets: 1,
+    onHoldTargets: 1,
+    activeTargets: 1,
+    totalTargets: 3
+  });
+});
+
+test("skill acquisition summary falls back to current mastered program status when change dates are unavailable", () => {
+  const model = summarizeSkillAcquisitionReport({
+    programs: [
+      {
+        id: "program-legacy",
+        name: "Answer wh- questions",
+        domain: "Communication",
+        objective: "Will answer simple wh- questions.",
+        status: "mastered",
+        targets: [{ id: "target-legacy", name: "Answer who questions", status: "mastered" }]
+      }
+    ],
+    planChangeLog: [],
+    startDate: "2026-06-01",
+    endDate: "2026-06-30"
+  });
+
+  assert.equal(model.masteredGoalsDuringPeriod.length, 1);
+  assert.equal(model.masteredGoalsDuringPeriod[0].assumption, "current-status-fallback");
+});
+
+test("editable skill acquisition summary shows mastered goals, grouped targets, and clean empty states", () => {
+  const text = buildEditableSkillAcquisitionSummary({
+    totals: {
+      masteredGoals: 1,
+      masteredTargets: 1,
+      onHoldTargets: 0,
+      activeTargets: 1,
+      totalTargets: 2
+    },
+    masteredGoalsDuringPeriod: [
+      { programId: "program-1", domain: "Communication", objective: "Will request help independently." }
+    ],
+    masteredTargets: [
+      { targetId: "target-1", programName: "Functional Communication: Manding", domain: "Communication", targetName: "Request help" }
+    ],
+    onHoldTargets: [],
+    activeTargets: [
+      { targetId: "target-2", programName: "Reciprocal play", domain: "Socialization", targetName: "Take turns" }
+    ]
+  });
+
+  assert.match(text, /Status Summary:/);
+  assert.match(text, /- Goals mastered during authorization period: 1/);
+  assert.match(text, /- Mastered skill acquisition targets: 1/);
+  assert.match(text, /- Active skill acquisition targets: 1/);
+  assert.match(text, /- Skill acquisition targets on hold: 0/);
+  assert.match(text, /- Total skill acquisition targets reviewed: 2/);
+  assert.match(text, /Goals Mastered During Authorization Period:/);
+  assert.match(text, /- Communication: Will request help independently\./);
+  assert.match(text, /Mastered Skill Acquisition Targets:/);
+  assert.match(text, /- Functional Communication: Manding \/ Communication: Request help/);
+  assert.match(text, /No skill acquisition targets are currently on hold\./);
+  assert.match(text, /Narrative summary:/);
+});
+
+test("skill acquisition status summary shows zero counts when categories are empty", () => {
+  const text = buildEditableSkillAcquisitionSummary({
+    masteredGoalsDuringPeriod: [],
+    masteredTargets: [],
+    onHoldTargets: [],
+    activeTargets: []
+  });
+
+  assert.match(text, /- Goals mastered during authorization period: 0/);
+  assert.match(text, /- Mastered skill acquisition targets: 0/);
+  assert.match(text, /- Active skill acquisition targets: 0/);
+  assert.match(text, /- Skill acquisition targets on hold: 0/);
+  assert.match(text, /- Total skill acquisition targets reviewed: 0/);
+});
+
+test("skill acquisition identities prefer stable ids before normalized text", () => {
+  assert.equal(skillAcquisitionGoalIdentity({ programId: "program-1", programName: "A", objective: "B" }), "program-1");
+  assert.equal(skillAcquisitionTargetIdentity({ targetId: "target-1", targetName: "T" }), "target-1");
+});
+
 test("draft payload stays lightweight compared with rendered report artifacts", () => {
   const draft = buildFunderDraftRecord({
     clientId: "client-ava",
@@ -197,6 +321,9 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /renderCustomPhaseLineManager/);
   assert.match(appSource, /data-phase-line-form=/);
   assert.match(appSource, /phaseType:\s*"environmentalChange"/);
+  assert.match(appSource, /syncSkillAcquisitionSummaryField/);
+  assert.match(appSource, /skillAcquisitionSummary/);
+  assert.match(appSource, /Skill Acquisition Goal and Target Summary/);
   assert.match(appSource, /Draft saved/);
   assert.match(appSource, /Saved report draft restored/);
   assert.match(appSource, /function renderFunderReportPreview\(/);
@@ -214,6 +341,7 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(htmlSource, /name="dischargeMaladaptiveBehaviors"/);
   assert.match(htmlSource, /id="assessment-grid-draft-files"/);
   assert.match(htmlSource, /accept="application\/pdf,image\/\*"/);
+  assert.match(htmlSource, /name="skillAcquisitionSummary"/);
   assert.match(cssSource, /\.discharge-objective-list/);
   assert.match(cssSource, /\.discharge-objective-group h4/);
   assert.match(cssSource, /\.report-upload-draft-item/);
@@ -225,6 +353,7 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(serverSource, /customPhaseLines/);
   assert.match(serverSource, /contentType:/);
   assert.match(serverSource, /fileSize:/);
+  assert.match(serverSource, /skillAcquisitionSummary: textField\("skillAcquisitionSummary"\)/);
   assert.doesNotMatch(serverSource, /pdfData|base64Pdf|renderedHtml|reportSnapshot/i);
   assert.match(serverSource, /parentTrainingSummary: textField\("parentTrainingSummary"\)/);
   assert.match(serverSource, /parentTrainingRecommendations: textField\("parentTrainingRecommendations"\)/);

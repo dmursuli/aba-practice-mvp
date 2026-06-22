@@ -2,7 +2,7 @@ import { createAuditEvent, createClient, createSession, createUser, deleteClient
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
-import { buildCompactGraphAnalysisSentence, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap } from "./report-utils.js";
+import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, summarizeSkillAcquisitionReport } from "./report-utils.js";
 import { generateSoapNote } from "./soap.js";
 import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms } from "./session-utils.js";
 
@@ -3909,6 +3909,7 @@ function renderReportSummary() {
   applyIntakeInterviewToReport();
   syncParentTrainingReportFields();
   syncProgressSummaryField();
+  syncSkillAcquisitionSummaryField();
   reportClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
@@ -3921,6 +3922,21 @@ function renderReportSummary() {
 function syncProgressSummaryField(force = false) {
   if (!reportForm) return;
   setGeneratedReportField("progressSummary", buildReportProgressSummary(), force);
+}
+
+function skillAcquisitionReportModel(startDate, endDate) {
+  return summarizeSkillAcquisitionReport({
+    programs: clientPrograms(),
+    planChangeLog: currentClient()?.planChangeLog || [],
+    startDate,
+    endDate
+  });
+}
+
+function syncSkillAcquisitionSummaryField(force = false) {
+  if (!reportForm) return;
+  const model = skillAcquisitionReportModel(reportForm.elements.startDate.value, reportForm.elements.endDate.value);
+  setGeneratedReportField("skillAcquisitionSummary", buildEditableSkillAcquisitionSummary(model), force);
 }
 
 function buildFunderReportPreviewMarkup() {
@@ -4004,8 +4020,8 @@ function buildFunderReportPreviewMarkup() {
         <div id="report-skill-charts" class="chart-zone"></div>
       </section>
       <section>
-        <h3>Skill Acquisition Progress Summary</h3>
-        ${renderMasteredTargetsSummary(values.get("startDate"), values.get("endDate"))}
+        <h3>Skill Acquisition Goal and Target Summary</h3>
+        ${renderParentTrainingProgressSummary(values.get("skillAcquisitionSummary") || buildEditableSkillAcquisitionSummary(skillAcquisitionReportModel(values.get("startDate"), values.get("endDate"))))}
       </section>
       <section>
         <h3>Parent Training</h3>

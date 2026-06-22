@@ -117,6 +117,205 @@ export function sanitizeCustomPhaseLines(source = {}) {
   }, {});
 }
 
+function normalizedKeyPart(value) {
+  return sanitizeText(value).toLowerCase();
+}
+
+function normalizeSkillStatus(status = "active") {
+  if (status === "maintenance") return "mastered";
+  if (status === "paused") return "paused";
+  return status === "mastered" ? "mastered" : "active";
+}
+
+export function skillAcquisitionGoalIdentity(goal = {}) {
+  return sanitizeText(goal.programId || goal.goalId)
+    || [
+      normalizedKeyPart(goal.domain),
+      normalizedKeyPart(goal.programName || goal.goalName),
+      normalizedKeyPart(goal.objective)
+    ].join("::");
+}
+
+export function skillAcquisitionTargetIdentity(target = {}) {
+  return sanitizeText(target.targetId)
+    || [
+      normalizedKeyPart(target.domain),
+      normalizedKeyPart(target.programName),
+      normalizedKeyPart(target.targetName)
+    ].join("::");
+}
+
+export function summarizeSkillAcquisitionReport({
+  programs = [],
+  planChangeLog = [],
+  startDate = "",
+  endDate = ""
+} = {}) {
+  const goalMap = new Map();
+  const goalChangeMap = new Map();
+  const targetStatusMap = {
+    mastered: new Map(),
+    paused: new Map(),
+    active: new Map()
+  };
+
+  (programs || []).forEach((program) => {
+    const programStatus = normalizeSkillStatus(program?.status || "active");
+    const programEntry = {
+      programId: sanitizeText(program?.id),
+      goalId: sanitizeText(program?.id),
+      programName: sanitizeText(program?.name),
+      goalName: sanitizeText(program?.name),
+      domain: sanitizeText(program?.domain || "General"),
+      objective: sanitizeText(program?.objective),
+      status: programStatus
+    };
+    goalMap.set(skillAcquisitionGoalIdentity(programEntry), programEntry);
+    (program?.targets || []).forEach((target) => {
+      const targetStatus = normalizeSkillStatus(target?.status || "active");
+      const effectiveStatus = programStatus === "mastered" && targetStatus !== "paused"
+        ? "mastered"
+        : programStatus === "paused" && targetStatus !== "mastered"
+          ? "paused"
+          : targetStatus;
+      const targetEntry = {
+        targetId: sanitizeText(target?.id),
+        targetName: sanitizeText(target?.name),
+        programId: sanitizeText(program?.id),
+        programName: sanitizeText(program?.name),
+        domain: sanitizeText(program?.domain || "General"),
+        objective: sanitizeText(program?.objective),
+        status: effectiveStatus
+      };
+      targetStatusMap[effectiveStatus]?.set(skillAcquisitionTargetIdentity(targetEntry), targetEntry);
+    });
+  });
+
+  (planChangeLog || [])
+    .filter((change) => (
+      change?.type === "program-status-changed"
+      && change?.toStatus === "mastered"
+      && (!startDate || change.date >= startDate)
+      && (!endDate || change.date <= endDate)
+    ))
+    .forEach((change) => {
+      const entry = {
+        programId: sanitizeText(change.programId),
+        goalId: sanitizeText(change.programId),
+        programName: sanitizeText(change.programName),
+        goalName: sanitizeText(change.programName),
+        domain: sanitizeText(change.domain || "General"),
+        objective: sanitizeText(change.objective),
+        masteredDate: sanitizeText(change.date),
+        status: "mastered",
+        assumption: ""
+      };
+      goalChangeMap.set(skillAcquisitionGoalIdentity(entry), entry);
+    });
+
+  goalMap.forEach((goal, key) => {
+    if (goalChangeMap.has(key)) return;
+    if (goal.status !== "mastered") return;
+    const hasProgramHistory = (planChangeLog || []).some((change) => (
+      change?.type === "program-status-changed" && sanitizeText(change.programId) === goal.programId
+    ));
+    if (hasProgramHistory) return;
+    goalChangeMap.set(key, {
+      ...goal,
+      masteredDate: "",
+      assumption: "current-status-fallback"
+    });
+  });
+
+  const masteredGoalsDuringPeriod = [...goalChangeMap.values()]
+    .sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName));
+  const masteredTargets = [...targetStatusMap.mastered.values()].sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName) || a.targetName.localeCompare(b.targetName));
+  const onHoldTargets = [...targetStatusMap.paused.values()].sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName) || a.targetName.localeCompare(b.targetName));
+  const activeTargets = [...targetStatusMap.active.values()].sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName) || a.targetName.localeCompare(b.targetName));
+
+  return {
+    masteredGoalsDuringPeriod,
+    masteredTargets,
+    onHoldTargets,
+    activeTargets,
+    totals: {
+      masteredGoals: masteredGoalsDuringPeriod.length,
+      masteredTargets: masteredTargets.length,
+      onHoldTargets: onHoldTargets.length,
+      activeTargets: activeTargets.length,
+      totalTargets: masteredTargets.length + onHoldTargets.length + activeTargets.length
+    }
+  };
+}
+
+function skillGoalLabel(goal = {}) {
+  const heading = sanitizeText(goal.domain) ? `${sanitizeText(goal.domain)}: ` : "";
+  return `${heading}${sanitizeText(goal.objective || goal.programName || goal.goalName)}`.trim();
+}
+
+function skillTargetLabel(target = {}) {
+  const prefix = [sanitizeText(target.programName), sanitizeText(target.domain)].filter(Boolean).join(" / ");
+  return prefix
+    ? `${prefix}: ${sanitizeText(target.targetName)}`
+    : sanitizeText(target.targetName);
+}
+
+export function buildEditableSkillAcquisitionSummary(model = {}) {
+  const masteredGoals = Array.isArray(model.masteredGoalsDuringPeriod) ? model.masteredGoalsDuringPeriod : [];
+  const masteredTargets = Array.isArray(model.masteredTargets) ? model.masteredTargets : [];
+  const onHoldTargets = Array.isArray(model.onHoldTargets) ? model.onHoldTargets : [];
+  const activeTargets = Array.isArray(model.activeTargets) ? model.activeTargets : [];
+  const totals = model.totals || {
+    masteredGoals: masteredGoals.length,
+    masteredTargets: masteredTargets.length,
+    onHoldTargets: onHoldTargets.length,
+    activeTargets: activeTargets.length,
+    totalTargets: masteredTargets.length + onHoldTargets.length + activeTargets.length
+  };
+  const narrative = `During this authorization period, the client mastered ${masteredGoals.length} skill acquisition goal${masteredGoals.length === 1 ? "" : "s"} and ${masteredTargets.length} skill acquisition target${masteredTargets.length === 1 ? "" : "s"}. ${activeTargets.length} target${activeTargets.length === 1 ? "" : "s"} remain active and ${onHoldTargets.length} target${onHoldTargets.length === 1 ? "" : "s"} ${onHoldTargets.length === 1 ? "is" : "are"} currently on hold. Continued intervention is recommended to promote generalization, maintenance, and acquisition of remaining treatment targets.`;
+
+  const lines = [
+    "Status Summary:",
+    `- Goals mastered during authorization period: ${totals.masteredGoals || 0}`,
+    `- Mastered skill acquisition targets: ${totals.masteredTargets || 0}`,
+    `- Active skill acquisition targets: ${totals.activeTargets || 0}`,
+    `- Skill acquisition targets on hold: ${totals.onHoldTargets || 0}`,
+    `- Total skill acquisition targets reviewed: ${totals.totalTargets || 0}`,
+    "",
+    "Goals Mastered During Authorization Period:"
+  ];
+
+  if (masteredGoals.length) {
+    masteredGoals.forEach((goal) => lines.push(`- ${skillGoalLabel(goal)}`));
+  } else {
+    lines.push("No skill acquisition goals were mastered during this authorization period.");
+  }
+
+  lines.push("", "Mastered Skill Acquisition Targets:");
+  if (masteredTargets.length) {
+    masteredTargets.forEach((target) => lines.push(`- ${skillTargetLabel(target)}`));
+  } else {
+    lines.push("No skill acquisition targets were mastered during this authorization period.");
+  }
+
+  lines.push("", "On Hold Skill Acquisition Targets:");
+  if (onHoldTargets.length) {
+    onHoldTargets.forEach((target) => lines.push(`- ${skillTargetLabel(target)}`));
+  } else {
+    lines.push("No skill acquisition targets are currently on hold.");
+  }
+
+  lines.push("", "Active Skill Acquisition Targets:");
+  if (activeTargets.length) {
+    activeTargets.forEach((target) => lines.push(`- ${skillTargetLabel(target)}`));
+  } else {
+    lines.push("No skill acquisition targets are currently active.");
+  }
+
+  lines.push("", "Narrative summary:", narrative);
+  return lines.join("\n");
+}
+
 export function buildFunderDraftRecord({
   clientId = "",
   startDate = "",
