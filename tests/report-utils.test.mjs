@@ -227,7 +227,10 @@ test("editable skill acquisition summary shows mastered goals, grouped targets, 
   assert.match(text, /- Communication: Will request help independently\./);
   assert.match(text, /Mastered Skill Acquisition Targets:/);
   assert.match(text, /- Functional Communication: Manding \/ Communication: Request help/);
+  assert.match(text, /On Hold Skill Acquisition Targets:/);
   assert.match(text, /No skill acquisition targets are currently on hold\./);
+  assert.doesNotMatch(text, /Active Skill Acquisition Targets:/);
+  assert.doesNotMatch(text, /Reciprocal play \/ Socialization: Take turns/);
   assert.match(text, /Narrative summary:/);
 });
 
@@ -317,6 +320,7 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /reportCustomPhaseLines/);
   assert.match(appSource, /renderReportAssessmentDraftFiles/);
   assert.match(appSource, /handleReportAssessmentUpload/);
+  assert.match(appSource, /reportAssessmentDocumentRefsFromClient/);
   assert.match(appSource, /data-remove-report-attachment/);
   assert.match(appSource, /renderCustomPhaseLineManager/);
   assert.match(appSource, /data-phase-line-form=/);
@@ -324,6 +328,7 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /syncSkillAcquisitionSummaryField/);
   assert.match(appSource, /skillAcquisitionSummary/);
   assert.match(appSource, /Skill Acquisition Goal and Target Summary/);
+  assert.doesNotMatch(appSource, /<h4>Active Skill Acquisition Targets<\/h4>/);
   assert.match(appSource, /Draft saved/);
   assert.match(appSource, /Saved report draft restored/);
   assert.match(appSource, /function renderFunderReportPreview\(/);

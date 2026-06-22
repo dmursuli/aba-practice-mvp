@@ -3497,6 +3497,15 @@ function reportAssessmentFieldConfig(fieldName) {
   }[fieldName] || null;
 }
 
+function reportAssessmentDocumentRefsFromClient(fieldName, client = currentClient()) {
+  const config = reportAssessmentFieldConfig(fieldName);
+  if (!config || !client?.profile?.documents?.length) return [];
+  return client.profile.documents
+    .filter((document) => document.type === config.documentType)
+    .map((document) => reportAssessmentDocumentRef(document, client.id))
+    .filter(Boolean);
+}
+
 function reportAssessmentDocumentRef(document, clientId = currentClient()?.id || "") {
   if (!document?.id) return null;
   return {
@@ -3513,7 +3522,9 @@ function reportAssessmentDocumentRef(document, clientId = currentClient()?.id ||
 }
 
 function reportAssessmentRefs(fieldName) {
-  return sanitizeAssessmentDocumentRefs(state.reportAssessmentDocuments)[fieldName] || [];
+  const savedRefs = sanitizeAssessmentDocumentRefs(state.reportAssessmentDocuments)[fieldName] || [];
+  if (savedRefs.length) return savedRefs;
+  return reportAssessmentDocumentRefsFromClient(fieldName);
 }
 
 function setReportAssessmentRefs(fieldName, refs) {
@@ -3780,9 +3791,14 @@ function currentFunderReportDraft() {
   if (!reportForm) return {};
   const values = new FormData(reportForm);
   const sections = {};
+  const existingDraft = currentClient()?.profile?.funderReport || {};
   values.forEach((value, key) => {
     if (key === "assessmentGrid" || key === "standardizedAssessmentGrid") return;
     sections[key] = String(value || "");
+  });
+  const assessmentDocuments = sanitizeAssessmentDocumentRefs({
+    assessmentGrid: reportAssessmentRefs("assessmentGrid"),
+    standardizedAssessmentGrid: reportAssessmentRefs("standardizedAssessmentGrid")
   });
   return buildFunderDraftRecord({
     clientId: currentClient()?.id || "",
@@ -3796,10 +3812,10 @@ function currentFunderReportDraft() {
     displaySettings: {
       compactGraphAnalysis: true
     },
-    assessmentDocuments: sanitizeAssessmentDocumentRefs(state.reportAssessmentDocuments),
+    assessmentDocuments,
     customPhaseLines: sanitizeCustomPhaseLines(state.reportCustomPhaseLines),
-    editedGraphAnalysis: structuredClone(currentClient()?.profile?.funderReport?.editedGraphAnalysis || {}),
-    existingDraft: currentClient()?.profile?.funderReport || {}
+    editedGraphAnalysis: structuredClone(existingDraft.editedGraphAnalysis || {}),
+    existingDraft
   });
 }
 
@@ -3808,7 +3824,15 @@ function applyFunderReportDraft(draft = {}) {
   const rows = Array.isArray(draft.fadePlanRows) ? draft.fadePlanRows : [];
   const serviceRows = Array.isArray(draft.serviceHours) ? draft.serviceHours : [];
   const graphPreferences = draft.settings?.graphPreferences || {};
-  state.reportAssessmentDocuments = sanitizeAssessmentDocumentRefs(draft.assessmentDocuments || {});
+  const restoredAssessmentDocuments = sanitizeAssessmentDocumentRefs(draft.assessmentDocuments || {});
+  state.reportAssessmentDocuments = {
+    assessmentGrid: restoredAssessmentDocuments.assessmentGrid.length
+      ? restoredAssessmentDocuments.assessmentGrid
+      : reportAssessmentDocumentRefsFromClient("assessmentGrid"),
+    standardizedAssessmentGrid: restoredAssessmentDocuments.standardizedAssessmentGrid.length
+      ? restoredAssessmentDocuments.standardizedAssessmentGrid
+      : reportAssessmentDocumentRefsFromClient("standardizedAssessmentGrid")
+  };
   state.reportCustomPhaseLines = sanitizeCustomPhaseLines(draft.customPhaseLines || {});
   reportGraphPreferenceKeys().forEach((key) => {
     if (Object.hasOwn(graphPreferences, key)) {

@@ -305,13 +305,6 @@ export function buildEditableSkillAcquisitionSummary(model = {}) {
     lines.push("No skill acquisition targets are currently on hold.");
   }
 
-  lines.push("", "Active Skill Acquisition Targets:");
-  if (activeTargets.length) {
-    activeTargets.forEach((target) => lines.push(`- ${skillTargetLabel(target)}`));
-  } else {
-    lines.push("No skill acquisition targets are currently active.");
-  }
-
   lines.push("", "Narrative summary:", narrative);
   return lines.join("\n");
 }
