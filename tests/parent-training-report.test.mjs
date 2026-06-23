@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalIdentity, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from '../public/parent-training-report.js';
+import { removeParentGoalPointFromSession } from '../public/session-utils.js';
 
 test('parent-training summary deduplicates goals and caregivers across sessions', () => {
   const model = summarizeParentTrainingReport({
@@ -125,4 +126,43 @@ test('mastered parent-training goals are filtered to the authorization/reporting
   ], '2026-06-01', '2026-06-15');
 
   assert.deepEqual(goals.map((goal) => goal.parentTrainingGoalId), ['goal-1']);
+});
+
+test('deleted caregiver-training points are excluded from fidelity averages and report summaries', () => {
+  const originalSessions = [
+    {
+      date: '2026-06-01',
+      parentTraining: { caregiverName: 'Ariana', trainingFocus: 'transitions' },
+      parentGoals: [
+        { goalName: 'Coach caregiver on transitions', targetName: 'Use visual timer', fidelity: 100 }
+      ]
+    },
+    {
+      date: '2026-06-08',
+      parentTraining: { caregiverName: 'Ariana', trainingFocus: 'transitions' },
+      parentGoals: [
+        { goalName: 'Coach caregiver on transitions', targetName: 'Use visual timer', fidelity: 60 }
+      ]
+    }
+  ];
+
+  const updatedSessions = [
+    removeParentGoalPointFromSession(originalSessions[0], 'Coach caregiver on transitions', 'Use visual timer').session,
+    originalSessions[1]
+  ];
+
+  const model = summarizeParentTrainingReport({
+    parentSessions: updatedSessions,
+    currentGoals: [
+      { goalName: 'Coach caregiver on transitions', targetName: 'Use visual timer' }
+    ],
+    goalReviewsByKey: {
+      [parentTrainingGoalKey({ goalName: 'Coach caregiver on transitions', targetName: 'Use visual timer' })]: 'active'
+    },
+    masteredGoalsDuringPeriod: []
+  });
+
+  assert.equal(model.sessionCount, 2);
+  assert.equal(model.averageFidelity, 60);
+  assert.match(model.summaryText, /Average caregiver fidelity .* 60%/i);
 });

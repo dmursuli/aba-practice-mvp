@@ -1,4 +1,4 @@
-import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, setupVerificationEmail, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, setupVerificationEmail, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
@@ -130,6 +130,7 @@ const behaviorList = document.querySelector("#behavior-list");
 const skillCharts = document.querySelector("#skill-charts");
 const behaviorChartPanel = document.querySelector("#behavior-chart")?.closest(".chart-panel");
 const behaviorCharts = document.querySelector("#behavior-charts");
+const parentTrainingCharts = document.querySelector("#parent-training-charts");
 const graphsClientSummary = document.querySelector("#graphs-client-summary");
 const graphScopeTabs = document.querySelector("#graph-scope-tabs");
 const graphDomainTabs = document.querySelector("#graph-domain-tabs");
@@ -615,6 +616,11 @@ function bindEvents() {
   behaviorCharts.addEventListener("change", handleGraphAnalysisControlChange);
   behaviorCharts.addEventListener("click", handleGraphAnalysisClick);
   skillCharts.addEventListener("click", handleGraphAnalysisClick);
+  parentTrainingCharts.addEventListener("click", handleGraphDataDeleteClick);
+  parentTrainingCharts.addEventListener("click", handleGraphPhaseLineClick);
+  parentTrainingCharts.addEventListener("submit", handleGraphPhaseLineSubmit);
+  parentTrainingCharts.addEventListener("change", handleGraphAnalysisControlChange);
+  parentTrainingCharts.addEventListener("click", handleGraphAnalysisClick);
   programGraphModal?.addEventListener("change", handleGraphAnalysisControlChange);
   programGraphModal?.addEventListener("click", handleGraphAnalysisClick);
   reportPreview?.addEventListener("click", handleGraphPhaseLineClick);
@@ -876,7 +882,8 @@ function clearSensitiveDom() {
     reportPreview,
     workflowBoard,
     skillCharts,
-    behaviorCharts
+    behaviorCharts,
+    parentTrainingCharts
   ].forEach((node) => {
     if (node) node.innerHTML = "";
   });
@@ -5772,7 +5779,8 @@ async function handleDeleteSession(sessionId) {
 async function handleGraphDataDeleteClick(event) {
   const skillDelete = event.target.closest("[data-delete-skill-point]");
   const behaviorDelete = event.target.closest("[data-delete-behavior-point]");
-  if (!skillDelete && !behaviorDelete) return;
+  const parentDelete = event.target.closest("[data-delete-parent-point]");
+  if (!skillDelete && !behaviorDelete && !parentDelete) return;
 
   graphsMessage.textContent = "";
   try {
@@ -5784,6 +5792,21 @@ async function handleGraphDataDeleteClick(event) {
         skillDelete.dataset.sessionId,
         skillDelete.dataset.programId,
         skillDelete.dataset.targetId
+      );
+      await refreshData();
+      render();
+      graphsMessage.textContent = `${label} data for ${date} deleted.`;
+      return;
+    }
+
+    if (parentDelete) {
+      const label = parentDelete.dataset.pointLabel || "this caregiver-training target";
+      const date = parentDelete.dataset.pointDate ? formatGraphDate(parentDelete.dataset.pointDate) : "this date";
+      if (!window.confirm(`Delete ${label} data for ${date}? This will immediately update caregiver-training graphs, fidelity averages, and parent-training report summaries.`)) return;
+      await deleteSessionParentGoalData(
+        parentDelete.dataset.sessionId,
+        parentDelete.dataset.goalName,
+        parentDelete.dataset.targetName
       );
       await refreshData();
       render();
@@ -5832,15 +5855,19 @@ function handleGraphAnalysisClick(event) {
   const graphKey = insert.dataset.insertGraphAnalysis;
   const chartAnalysis = event.target.closest("[data-graph-analysis]");
   const label = insert.dataset.seriesLabel || "";
-  if (!graphKey || !chartAnalysis || !reportForm?.elements?.progressSummary) return;
+  const reportField = insert.dataset.reportField || chartAnalysis?.dataset.reportField || "progressSummary";
+  const targetField = reportForm?.elements?.[reportField];
+  if (!graphKey || !chartAnalysis || !targetField) return;
   const analysisPayload = chartAnalysis.dataset.graphAnalysisPayload
     ? JSON.parse(decodeURIComponent(chartAnalysis.dataset.graphAnalysisPayload))
     : null;
   if (!analysisPayload) return;
-  const existing = reportForm.elements.progressSummary.value.trim();
+  const existing = String(targetField.value || "").trim();
   const addition = graphInterpretationText(analysisPayload, graphKey, label);
-  reportForm.elements.progressSummary.value = existing ? `${existing}\n\n${addition}` : addition;
-  funderExportStatus.textContent = "Graph interpretation inserted into the progress summary.";
+  targetField.value = existing ? `${existing}\n\n${addition}` : addition;
+  funderExportStatus.textContent = reportField === "parentTrainingSummary"
+    ? "Graph interpretation inserted into the parent training summary."
+    : "Graph interpretation inserted into the progress summary.";
 }
 
 function handleGraphPhaseLineClick(event) {
@@ -5927,18 +5954,22 @@ async function handleGraphPhaseLineSubmit(event) {
 function phaseLineSeriesFromPanel(chartPanel) {
   const graphKey = chartPanel?.querySelector?.("[data-phase-line-panel]")?.dataset.phaseLinePanel || "";
   if (!graphKey) return [];
+  const sessions = currentView() === "report"
+    ? filteredReportSessions().slice().reverse()
+    : currentSessions().slice().reverse();
   if (graphKey.startsWith("skill:")) {
     const program = clientPrograms().find((item) => item.id === graphKey.slice("skill:".length));
-    return program ? buildProgramSkillChart(program, currentSessions().slice().reverse())?.series || [] : [];
+    return program ? buildProgramSkillChart(program, sessions)?.series || [] : [];
   }
   if (graphKey === "behavior:overview") {
-    return behaviorChartSeries(currentView() === "report" ? filteredReportSessions().slice().reverse() : currentSessions().slice().reverse());
+    return behaviorChartSeries(sessions);
   }
   if (graphKey.startsWith("behavior:")) {
-    return buildBehaviorChart(
-      graphKey.slice("behavior:".length),
-      currentView() === "report" ? filteredReportSessions().slice().reverse() : currentSessions().slice().reverse()
-    )?.series || [];
+    return buildBehaviorChart(graphKey.slice("behavior:".length), sessions)?.series || [];
+  }
+  if (graphKey.startsWith("parent:")) {
+    const goalKey = graphKey.slice("parent:".length);
+    return buildParentTrainingChartModels(sessions).find((chart) => chart.goalKey === goalKey)?.series || [];
   }
   return [];
 }
@@ -6269,7 +6300,13 @@ function drawFunderReportCharts(sessions) {
   if (behaviorContainer) drawBehaviorChartSet(sessions, behaviorContainer, "report-behavior-chart");
 
   const parentTrainingContainer = reportPreview.querySelector("#report-parent-training-charts");
-  if (parentTrainingContainer) drawParentTrainingChartSet(sessions, parentTrainingContainer, "report-parent-training-chart");
+  if (parentTrainingContainer) {
+    drawParentTrainingChartSet(sessions, parentTrainingContainer, "report-parent-training-chart", {
+      readOnly: true,
+      reportField: "parentTrainingSummary",
+      emptyMessage: "No parent training graph data were collected during this reporting period."
+    });
+  }
 }
 
 function renderCharts() {
@@ -6278,14 +6315,28 @@ function renderCharts() {
   renderGraphScopeTabs();
   behaviorChartPanel?.classList.toggle("hidden", !scope.showBehaviorGraphs);
   behaviorCharts.classList.toggle("hidden", !scope.showBehaviorGraphs);
+  parentTrainingCharts.classList.toggle("hidden", !scope.showParentTrainingCharts);
   graphDomainTabs.classList.toggle("hidden", !scope.showSkillCharts);
   if (scope.showSkillCharts) {
     renderSkillCharts(sessions);
     behaviorCharts.innerHTML = "";
+    parentTrainingCharts.innerHTML = "";
+    return;
+  }
+
+  if (scope.showParentTrainingCharts) {
+    skillCharts.innerHTML = "";
+    behaviorCharts.innerHTML = "";
+    drawParentTrainingChartSet(sessions, parentTrainingCharts, "parent-training-chart", {
+      readOnly: false,
+      reportField: "parentTrainingSummary",
+      emptyMessage: "No caregiver training graph data available."
+    });
     return;
   }
 
   skillCharts.innerHTML = "";
+  parentTrainingCharts.innerHTML = "";
   const behaviorSeries = behaviorChartSeries(sessions);
   const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
   const behaviorOverviewAnalysis = buildGraphAnalysis(behaviorSeries, {
@@ -6322,9 +6373,9 @@ function renderCharts() {
 
 function renderGraphScopeTabs() {
   if (!graphScopeTabs) return;
-  graphScopeTabs.innerHTML = ["skills", "behaviors"].map((tab) => `
+  graphScopeTabs.innerHTML = ["skills", "behaviors", "parent"].map((tab) => `
     <button type="button" class="domain-tab ${tab === state.activeGraphTab ? "active" : ""}" data-graph-scope-tab="${tab}">
-      ${tab === "skills" ? "Skills" : "Behaviors"}
+      ${tab === "skills" ? "Skills" : tab === "behaviors" ? "Behaviors" : "Caregiver Training"}
     </button>
   `).join("");
   graphScopeTabs.querySelectorAll("[data-graph-scope-tab]").forEach((button) => {
@@ -6438,6 +6489,43 @@ function buildProgramSkillChart(program, sessions) {
   return { program, series };
 }
 
+function buildParentTrainingChartModels(sessions) {
+  const parentSessions = sessions.filter((session) => session.serviceType === "parent-training");
+  const goalNames = [...new Set(parentSessions.flatMap((session) => (
+    (session.parentGoals || []).map((goal) => goal.goalName)
+  )))].filter(Boolean);
+
+  return goalNames.map((goalName) => {
+    const goalKey = parentTrainingGoalKey({ goalName, targetName: "" });
+    const targetNames = [...new Set(parentSessions.flatMap((session) => (
+      (session.parentGoals || [])
+        .filter((goal) => goal.goalName === goalName)
+        .map((goal) => goal.targetName)
+    )))].filter(Boolean);
+    const series = targetNames.map((targetName) => ({
+      name: targetName,
+      meta: {
+        goalName,
+        targetName
+      },
+      points: parentSessions.flatMap((session) => {
+        const goal = (session.parentGoals || []).find((item) => (
+          item.goalName === goalName && item.targetName === targetName
+        ));
+        return goal ? [{
+          x: session.date,
+          y: Number(goal.fidelity || 0),
+          phase: "intervention",
+          sessionId: session.id,
+          goalName,
+          targetName
+        }] : [];
+      })
+    })).filter((item) => item.points.length);
+    return { goalName, goalKey, series };
+  }).filter((chart) => chart.series.length);
+}
+
 function masteryMarkersForProgram(programId) {
   const markers = (currentClient()?.planChangeLog || [])
     .filter((change) => (
@@ -6511,13 +6599,16 @@ function trendLineEnabled(graphKey) {
 
 function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
   if (!analysis?.analyses?.length) return "";
-  const insertLabel = options.reportField === "progressSummary"
-    ? "Insert interpretation into report"
-    : "Insert interpretation";
+  const reportField = options.reportField || "progressSummary";
+  const insertLabel = reportField === "parentTrainingSummary"
+    ? "Insert into parent training summary"
+    : reportField === "progressSummary"
+      ? "Insert interpretation into report"
+      : "Insert interpretation";
   const showTrendLine = trendLineEnabled(graphKey);
   const payload = escapeHtml(encodeURIComponent(JSON.stringify(analysis)));
   return `
-    <section class="graph-analysis-panel" data-graph-analysis="${escapeHtml(graphKey)}" data-graph-analysis-payload="${payload}">
+    <section class="graph-analysis-panel" data-graph-analysis="${escapeHtml(graphKey)}" data-graph-analysis-payload="${payload}" data-report-field="${escapeHtml(reportField)}">
       <div class="graph-analysis-toolbar">
         <strong>Graph Analysis</strong>
         <label class="trend-line-toggle">
@@ -6530,7 +6621,7 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
         <article class="graph-analysis-series">
           <div class="graph-analysis-series-heading">
             <h4>${escapeHtml(entry.label)}</h4>
-            <button type="button" class="secondary-button" data-insert-graph-analysis="${escapeHtml(graphKey)}" data-series-label="${escapeHtml(entry.label)}">${insertLabel}</button>
+            <button type="button" class="secondary-button" data-insert-graph-analysis="${escapeHtml(graphKey)}" data-series-label="${escapeHtml(entry.label)}" data-report-field="${escapeHtml(reportField)}">${insertLabel}</button>
           </div>
           <p class="graph-analysis-interpretation">${escapeHtml(entry.interpretation)}</p>
           <div class="graph-analysis-grid">
@@ -6670,6 +6761,43 @@ function renderBehaviorDataManagerMarkup(chart) {
               data-session-id="${escapeHtml(row.sessionId)}"
               data-behavior-id="${escapeHtml(row.behaviorId)}"
               data-point-label="${escapeHtml(row.behaviorName)}"
+              data-point-date="${escapeHtml(row.date)}"
+            >Delete</button>
+          </div>
+        `).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function renderParentTrainingDataManagerMarkup(chart) {
+  const rows = chart.series.flatMap((series) => series.points.map((point) => ({
+    sessionId: point.sessionId,
+    goalName: point.goalName || chart.goalName,
+    targetName: point.targetName || series.name,
+    targetLabel: `${chart.goalName}: ${series.name}`,
+    date: point.x,
+    value: point.y
+  }))).sort((a, b) => b.date.localeCompare(a.date));
+  if (!rows.length) return "";
+  return `
+    <details class="graph-data-manager">
+      <summary>Manage data points</summary>
+      <div class="graph-data-list">
+        ${rows.map((row) => `
+          <div class="graph-data-row">
+            <div>
+              <strong>${escapeHtml(row.targetLabel)}</strong>
+              <span>${escapeHtml(formatGraphDate(row.date))} - ${row.value}% fidelity</span>
+            </div>
+            <button
+              type="button"
+              class="delete-button"
+              data-delete-parent-point="true"
+              data-session-id="${escapeHtml(row.sessionId)}"
+              data-goal-name="${escapeHtml(row.goalName)}"
+              data-target-name="${escapeHtml(row.targetName)}"
+              data-point-label="${escapeHtml(row.targetLabel)}"
               data-point-date="${escapeHtml(row.date)}"
             >Delete</button>
           </div>
@@ -6840,32 +6968,14 @@ function drawBehaviorChartSet(sessions, container, chartAttribute) {
   });
 }
 
-function drawParentTrainingChartSet(sessions, container, chartAttribute) {
-  const parentSessions = sessions.filter((session) => session.serviceType === "parent-training");
-  const goalNames = [...new Set(parentSessions.flatMap((session) => (
-    (session.parentGoals || []).map((goal) => goal.goalName)
-  )))].filter(Boolean);
-
-  const charts = goalNames.map((goalName) => {
-    const targetNames = [...new Set(parentSessions.flatMap((session) => (
-      (session.parentGoals || [])
-        .filter((goal) => goal.goalName === goalName)
-        .map((goal) => goal.targetName)
-    )))].filter(Boolean);
-    const series = targetNames.map((targetName) => ({
-      name: targetName,
-      points: parentSessions.flatMap((session) => {
-        const goal = (session.parentGoals || []).find((item) => (
-          item.goalName === goalName && item.targetName === targetName
-        ));
-        return goal ? [{ x: session.date, y: Number(goal.fidelity || 0), phase: "intervention" }] : [];
-      })
-    })).filter((item) => item.points.length);
-    return { goalName, series };
-  }).filter((chart) => chart.series.length);
+function drawParentTrainingChartSet(sessions, container, chartAttribute, options = {}) {
+  const charts = buildParentTrainingChartModels(sessions);
+  const isReadOnly = Boolean(options.readOnly);
+  const reportField = options.reportField || "parentTrainingSummary";
+  const emptyMessage = options.emptyMessage || "No caregiver training graph data available.";
 
   if (!charts.length) {
-    container.innerHTML = '<p>No parent training graph data were collected during this reporting period.</p>';
+    container.innerHTML = `<p>${escapeHtml(emptyMessage)}</p>`;
     return;
   }
 
@@ -6873,17 +6983,40 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute) {
     <article class="chart-panel">
       <h3>${escapeHtml(chart.goalName)}</h3>
       <canvas data-${chartAttribute}="${index}" width="760" height="320"></canvas>
-      ${renderGraphLegendMarkup(chart.series)}
+      ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("parent", chart.goalKey)) })}
+      <div data-parent-training-analysis="${escapeHtml(chart.goalKey)}"></div>
+      ${isReadOnly ? "" : renderParentTrainingDataManagerMarkup(chart)}
     </article>
   `).join("");
 
   charts.forEach((chart, index) => {
+    const graphKey = graphTrendKey("parent", chart.goalKey);
+    const phaseMarkers = graphPhaseMarkers(graphKey);
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${index}"]`), chart.series, {
       maxY: 100,
       yStep: 10,
       yLabel: "caregiver fidelity %",
-      emptyMessage: "No parent training data for this goal"
+      emptyMessage: "No parent training data for this goal",
+      graphType: "skill",
+      phaseMarkers,
+      showTrendLine: trendLineEnabled(graphKey)
     });
+    const analysisMount = container.querySelector(`[data-parent-training-analysis="${escapeHtml(chart.goalKey)}"]`);
+    if (analysisMount) {
+      const analysis = buildGraphAnalysis(chart.series, {
+        graphType: "skill",
+        phaseMarkers
+      });
+      analysisMount.innerHTML = isReadOnly
+        ? `
+            ${renderReportGraphAnalysisMarkup(analysis)}
+            ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true })}
+          `
+        : `
+            ${renderGraphAnalysisMarkup(analysis, graphKey, { reportField })}
+            ${renderCustomPhaseLineManager(graphKey, chart.series)}
+          `;
+    }
   });
 }
 

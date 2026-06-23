@@ -8,6 +8,7 @@ import {
   duplicateBehaviorIds,
   duplicateTargetIdsFromPrograms,
   removeBehaviorPointFromSession,
+  removeParentGoalPointFromSession,
   removeTargetPointFromSession
 } from '../public/session-utils.js';
 
@@ -68,6 +69,34 @@ test('deleting a missing data point leaves session data unchanged', () => {
   const behaviorDelete = removeBehaviorPointFromSession(session, 'behavior-missing');
   assert.equal(behaviorDelete.removed, false);
   assert.equal(behaviorDelete.session, session);
+});
+
+test('user can delete an individual caregiver-training data point', () => {
+  const session = {
+    id: 'session-parent-1',
+    parentGoals: [
+      {
+        goalName: 'Coach caregiver to use first-then language',
+        targetName: 'Use first-then board during transitions',
+        fidelity: 80
+      },
+      {
+        goalName: 'Coach caregiver to use first-then language',
+        targetName: 'Deliver visual before verbal prompt',
+        fidelity: 90
+      }
+    ]
+  };
+
+  const result = removeParentGoalPointFromSession(
+    session,
+    'Coach caregiver to use first-then language',
+    'Use first-then board during transitions'
+  );
+  assert.equal(result.removed, true);
+  assert.deepEqual(result.session.parentGoals.map((goal) => goal.targetName), [
+    'Deliver visual before verbal prompt'
+  ]);
 });
 
 test('auto-populated session rows can be deduplicated by stable target id', () => {

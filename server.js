@@ -8,6 +8,7 @@ import {
   duplicateBehaviorIds,
   duplicateTargetIdsFromPrograms,
   removeBehaviorPointFromSession,
+  removeParentGoalPointFromSession,
   removeTargetPointFromSession
 } from "./public/session-utils.js";
 
@@ -1295,6 +1296,43 @@ export function createAppServer() {
       logAudit(db, req, actor, "session-behavior-data-deleted", {
         clientId: session.clientId,
         details: { sessionId, behaviorId, date: session.date, serviceType: session.serviceType || "97153" }
+      });
+      await writeDb(db);
+      sendJson(res, 200, session);
+      return;
+    }
+
+    const parentGoalPointMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/parent-goals\/([^/]+)\/([^/]+)$/);
+    if (req.method === "DELETE" && parentGoalPointMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba", "rbt"])) return;
+      const actor = currentUser(req, db);
+      const session = db.sessions.find((item) => item.id === parentGoalPointMatch[1]);
+      if (!session) {
+        sendJson(res, 404, { errors: ["Session not found."] });
+        return;
+      }
+      if (!canAccessAgency(actor, session.agency)) {
+        sendJson(res, 403, { errors: ["You cannot access this session."] });
+        return;
+      }
+      const client = db.clients.find((item) => item.id === session.clientId);
+      if (!client || !canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
+      const [, sessionId, encodedGoalName, encodedTargetName] = parentGoalPointMatch;
+      const goalName = decodeURIComponent(encodedGoalName);
+      const targetName = decodeURIComponent(encodedTargetName);
+      const result = removeParentGoalPointFromSession(session, goalName, targetName);
+      if (!result.removed) {
+        sendJson(res, 404, { errors: ["Caregiver-training data point not found."] });
+        return;
+      }
+      Object.assign(session, result.session, { updatedAt: new Date().toISOString() });
+      logAudit(db, req, actor, "session-parent-goal-data-deleted", {
+        clientId: session.clientId,
+        details: { sessionId, goalName, targetName, date: session.date, serviceType: session.serviceType || "parent-training" }
       });
       await writeDb(db);
       sendJson(res, 200, session);

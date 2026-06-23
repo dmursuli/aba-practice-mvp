@@ -1,6 +1,7 @@
 export function graphScopeVisibility(activeTab = "skills") {
   return {
-    showSkillCharts: activeTab !== "behaviors",
-    showBehaviorGraphs: activeTab === "behaviors"
+    showSkillCharts: activeTab === "skills",
+    showBehaviorGraphs: activeTab === "behaviors",
+    showParentTrainingCharts: activeTab === "parent"
   };
 }

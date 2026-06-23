@@ -33,6 +33,21 @@ export function removeBehaviorPointFromSession(session, behaviorId) {
   };
 }
 
+export function removeParentGoalPointFromSession(session, goalName, targetName) {
+  const parentGoals = Array.isArray(session?.parentGoals) ? session.parentGoals : [];
+  const normalizedGoalName = String(goalName || "").trim().toLowerCase();
+  const normalizedTargetName = String(targetName || "").trim().toLowerCase();
+  const nextParentGoals = parentGoals.filter((goal) => (
+    String(goal?.goalName || "").trim().toLowerCase() !== normalizedGoalName
+    || String(goal?.targetName || "").trim().toLowerCase() !== normalizedTargetName
+  ));
+  const removed = nextParentGoals.length !== parentGoals.length;
+  return {
+    removed,
+    session: removed ? { ...session, parentGoals: nextParentGoals } : session
+  };
+}
+
 export function duplicateTargetIdsFromPrograms(programs = []) {
   const seen = new Set();
   const duplicates = new Set();

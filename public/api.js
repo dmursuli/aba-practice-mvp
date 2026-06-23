@@ -214,6 +214,14 @@ export async function deleteSessionBehaviorData(sessionId, behaviorId) {
   return parseResponse(response);
 }
 
+export async function deleteSessionParentGoalData(sessionId, goalName, targetName) {
+  const response = await fetch(
+    `/api/sessions/${sessionId}/parent-goals/${encodeURIComponent(goalName)}/${encodeURIComponent(targetName)}`,
+    { method: "DELETE" }
+  );
+  return parseResponse(response);
+}
+
 export async function updateClientPlan(clientId, plan) {
   const response = await fetch(`/api/clients/${clientId}/plan`, {
     method: "PUT",

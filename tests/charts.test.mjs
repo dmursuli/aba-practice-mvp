@@ -217,6 +217,20 @@ test('graph date labels include the year in M/D/YYYY format', () => {
   assert.equal(formatGraphDate('2026-05-21'), '5/21/2026');
 });
 
+test('caregiver-training graphs reuse graph tooling in Graph View and Funder Report', () => {
+  const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const htmlSource = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+
+  assert.match(appSource, /Caregiver Training/);
+  assert.match(appSource, /drawParentTrainingChartSet\(sessions, parentTrainingCharts, "parent-training-chart"/);
+  assert.match(appSource, /renderCustomPhaseLineManager\(graphKey, chart\.series/);
+  assert.match(appSource, /data-delete-parent-point/);
+  assert.match(appSource, /parentTrainingSummary/);
+  assert.match(appSource, /data-parent-training-analysis/);
+  assert.match(appSource, /report-parent-training-charts/);
+  assert.match(htmlSource, /id="parent-training-charts"/);
+});
+
 test('skill graph analysis reports baseline, treatment, trend, and mastery metrics', () => {
   const analysis = buildGraphAnalysis([{
     name: 'Request break',
