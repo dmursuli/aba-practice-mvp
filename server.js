@@ -340,19 +340,28 @@ async function serveUpload(req, res, db, user) {
     return;
   }
 
-  if (documentStore === "s3") {
-    if (!safePath || safePath.startsWith("..")) {
+  const document = (client.profile?.documents || []).find((item) => (
+    item?.relativePath === safePath
+    || item?.s3Key === safePath
+    || String(item?.url || "").replace(/^\/uploads\/?/, "") === safePath
+  )) || null;
+  const documentStorage = document?.storage || (document?.s3Key ? "s3" : "local");
+  const s3Key = document?.s3Key || safePath;
+  const localRelativePath = document?.relativePath || safePath;
+
+  if ((documentStorage === "s3" || (!document && documentStore === "s3"))) {
+    if (!s3Key || s3Key.startsWith("..")) {
       res.writeHead(403);
       res.end("Forbidden");
       return;
     }
     try {
       const { getS3Object } = await import("./lib/s3-storage.mjs");
-      const object = await getS3Object(s3Config(), safePath);
+      const object = await getS3Object(s3Config(), s3Key);
       applySecurityHeaders(res);
       applyNoStoreHeaders(res);
       res.writeHead(200, {
-        "content-type": object.ContentType || contentTypes[extname(safePath)] || "application/octet-stream"
+        "content-type": object.ContentType || contentTypes[extname(s3Key)] || "application/octet-stream"
       });
       for await (const chunk of object.Body) res.write(chunk);
       res.end();
@@ -363,7 +372,7 @@ async function serveUpload(req, res, db, user) {
     return;
   }
 
-  const filePath = join(uploadsDir, safePath);
+  const filePath = join(root, localRelativePath.startsWith("uploads") ? localRelativePath : join("uploads", localRelativePath));
 
   if (!filePath.startsWith(uploadsDir)) {
     res.writeHead(403);

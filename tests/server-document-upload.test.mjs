@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 
 test("document upload falls back to local protected storage when S3 is unavailable", async () => {
   process.env.ABA_DISABLE_AUTOSTART = "1";
@@ -35,4 +36,13 @@ test("document upload falls back to local protected storage when S3 is unavailab
   assert.match(document.storageWarning, /stored locally on the server/i);
   assert.equal(client.profile.documents[0].id, document.id);
   assert.match(document.url, /^\/uploads\//);
+});
+
+test("upload serving uses per-document storage metadata instead of global document store", () => {
+  const serverSource = fs.readFileSync(new URL("../server.js", import.meta.url), "utf8");
+  assert.match(serverSource, /const document = \(client\.profile\?\.documents \|\| \[\]\)\.find/);
+  assert.match(serverSource, /const documentStorage = document\?\.storage \|\| \(document\?\.s3Key \? "s3" : "local"\)/);
+  assert.match(serverSource, /const s3Key = document\?\.s3Key \|\| safePath/);
+  assert.match(serverSource, /const localRelativePath = document\?\.relativePath \|\| safePath/);
+  assert.match(serverSource, /\(documentStorage === "s3" \|\| \(!document && documentStore === "s3"\)\)/);
 });
