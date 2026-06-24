@@ -3757,7 +3757,9 @@ async function handleReportAssessmentUpload(input) {
     renderReportAssessmentDraftFiles();
     input.value = "";
     markReportDraftDirty();
-    funderExportStatus.textContent = `${config.label} uploaded and attached to this draft.`;
+    funderExportStatus.textContent = document.storageWarning
+      ? `${config.label} uploaded and attached to this draft. ${document.storageWarning}`
+      : `${config.label} uploaded and attached to this draft.`;
   } catch (error) {
     funderExportStatus.textContent = `${config.label} upload failed: ${error.message}`;
   }
@@ -7843,6 +7845,13 @@ function signatureBlock(signature, credential, date) {
   return `Provider signature: ${signedBy}${credentialText}\nDate signed: ${formatDate(date || new Date().toISOString().slice(0, 10))}`;
 }
 
+function assessmentDocumentCanRenderInline(document, ref) {
+  const contentType = String(document?.contentType || document?.mimeType || ref?.contentType || "").trim().toLowerCase();
+  if (contentType.startsWith("image/")) return true;
+  const fileName = String(ref?.originalFileName || document?.fileName || "").trim().toLowerCase();
+  return [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".heic", ".heif"].some((extension) => fileName.endsWith(extension));
+}
+
 function reportFilePreview(files, label) {
   const items = Array.isArray(files) ? files : [];
   if (!items.length) return `<p class="muted">No ${escapeHtml(label.toLowerCase())} uploaded.</p>`;
@@ -7853,6 +7862,17 @@ function reportFilePreview(files, label) {
         const fileName = escapeHtml(ref.originalFileName || label);
         if (!document) {
           return `<p class="muted"><strong>${escapeHtml(label)}:</strong> ${fileName} (stored file reference missing)</p>`;
+        }
+        if (assessmentDocumentCanRenderInline(document, ref)) {
+          return `
+            <figure class="report-upload-preview">
+              <img src="${escapeHtml(document.url)}" alt="${fileName}">
+              <figcaption>
+                <strong>${escapeHtml(label)} uploaded:</strong>
+                <a href="${escapeHtml(document.url)}" target="_blank" rel="noopener">${fileName}</a>
+              </figcaption>
+            </figure>
+          `;
         }
         return `
           <p>

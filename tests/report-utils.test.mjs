@@ -323,6 +323,9 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /reportAssessmentDocumentRefsFromClient/);
   assert.match(appSource, /safeReportFilePreview\("assessmentGrid", "Assessment grid"\)/);
   assert.match(appSource, /safeReportFilePreview\("standardizedAssessmentGrid", "Standardized assessment grid"\)/);
+  assert.match(appSource, /function assessmentDocumentCanRenderInline\(/);
+  assert.match(appSource, /<figure class="report-upload-preview">/);
+  assert.match(appSource, /<img src="\$\{escapeHtml\(document\.url\)\}" alt="\$\{fileName\}">/);
   assert.match(appSource, /One uploaded assessment document could not be loaded\./);
   assert.match(appSource, /data-remove-report-attachment/);
   assert.match(appSource, /renderCustomPhaseLineManager/);

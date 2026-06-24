@@ -2563,7 +2563,7 @@ function sanitizeIntakeInterview(interview) {
   };
 }
 
-async function saveClientDocument(client, payload) {
+export async function saveClientDocument(client, payload, options = {}) {
   const fileName = text(payload.fileName);
   const dataUrl = text(payload.dataUrl);
   if (!fileName || !dataUrl) {
@@ -2581,22 +2581,43 @@ async function saveClientDocument(client, payload) {
   const mimeType = text(payload.mimeType) || match[1];
   const fileSize = Number.isFinite(Number(payload.fileSize)) ? Math.max(0, Number(payload.fileSize)) : body.length;
   const key = `${client.id}/${type}/${storedName}`;
-  let relativePath = join("uploads", client.id, type, storedName);
+  const preferredDocumentStore = options.documentStore || documentStore;
+  const relativePathFallback = join("uploads", client.id, type, storedName);
+  let relativePath = relativePathFallback;
   let s3Key = "";
-
-  if (documentStore === "s3") {
-    const { putS3Object } = await import("./lib/s3-storage.mjs");
-    await putS3Object(s3Config(), {
-      key,
-      body,
-      contentType: mimeType
-    });
-    relativePath = "";
-    s3Key = key;
-  } else {
+  let storage = preferredDocumentStore;
+  let storageWarning = "";
+  const persistLocal = options.persistLocal || (async () => {
     const clientDir = join(uploadsDir, client.id, type);
     await mkdir(clientDir, { recursive: true });
     await writeFile(join(clientDir, storedName), body);
+  });
+
+  if (preferredDocumentStore === "s3") {
+    try {
+      const putS3Object = options.putS3Object || (await import("./lib/s3-storage.mjs")).putS3Object;
+      await putS3Object(s3Config(), {
+        key,
+        body,
+        contentType: mimeType
+      });
+      relativePath = "";
+      s3Key = key;
+    } catch (error) {
+      storage = "local";
+      storageWarning = "Secure cloud upload was unavailable, so the document was stored locally on the server instead.";
+      relativePath = relativePathFallback;
+      s3Key = "";
+      console.error("Document upload fell back to local storage", {
+        clientId: client.id,
+        documentType: type,
+        fileName,
+        message: error?.message || String(error)
+      });
+      await persistLocal();
+    }
+  } else {
+    await persistLocal();
   }
 
   client.profile = client.profile || {};
@@ -2612,7 +2633,8 @@ async function saveClientDocument(client, payload) {
     fileSize,
     relativePath,
     s3Key,
-    storage: documentStore,
+    storage,
+    storageWarning,
     url: `/uploads/${key.split("/").map(encodeURIComponent).join("/")}`,
     createdAt: new Date().toISOString(),
     uploadedAt: new Date().toISOString()
