@@ -153,6 +153,7 @@ export function summarizeSkillAcquisitionReport({
 } = {}) {
   const goalMap = new Map();
   const goalChangeMap = new Map();
+  const currentProgramMap = new Map();
   const targetStatusMap = {
     mastered: new Map(),
     paused: new Map(),
@@ -171,6 +172,7 @@ export function summarizeSkillAcquisitionReport({
       status: programStatus
     };
     goalMap.set(skillAcquisitionGoalIdentity(programEntry), programEntry);
+    if (programEntry.programId) currentProgramMap.set(programEntry.programId, programEntry);
     (program?.targets || []).forEach((target) => {
       const targetStatus = normalizeSkillStatus(target?.status || "active");
       const effectiveStatus = programStatus === "mastered" && targetStatus !== "paused"
@@ -191,12 +193,15 @@ export function summarizeSkillAcquisitionReport({
     });
   });
 
-  (planChangeLog || [])
+  const masteryHistoryInRange = (planChangeLog || []).filter((change) => (
+    (!startDate || change?.date >= startDate)
+    && (!endDate || change?.date <= endDate)
+  ));
+
+  masteryHistoryInRange
     .filter((change) => (
       change?.type === "program-status-changed"
       && change?.toStatus === "mastered"
-      && (!startDate || change.date >= startDate)
-      && (!endDate || change.date <= endDate)
     ))
     .forEach((change) => {
       const entry = {
@@ -213,13 +218,41 @@ export function summarizeSkillAcquisitionReport({
       goalChangeMap.set(skillAcquisitionGoalIdentity(entry), entry);
     });
 
+  const masteredTargetIds = new Set([...targetStatusMap.mastered.values()].map((target) => target.targetId).filter(Boolean));
+  const fallbackGoalMap = new Map();
+  masteryHistoryInRange
+    .filter((change) => change?.type === "target-status-changed" && change?.toStatus === "mastered")
+    .forEach((change) => {
+      const targetId = sanitizeText(change.targetId);
+      const programId = sanitizeText(change.programId);
+      if (!programId || !targetId || !masteredTargetIds.has(targetId)) return;
+      const currentGoal = currentProgramMap.get(programId);
+      const entry = {
+        programId,
+        goalId: programId,
+        programName: sanitizeText(change.programName) || sanitizeText(currentGoal?.programName),
+        goalName: sanitizeText(change.programName) || sanitizeText(currentGoal?.goalName),
+        domain: sanitizeText(change.domain || currentGoal?.domain || "General"),
+        objective: sanitizeText(change.objective || currentGoal?.objective || change.programName),
+        masteredDate: sanitizeText(change.date),
+        status: currentGoal?.status || "active",
+        assumption: "target-mastery-fallback"
+      };
+      const key = skillAcquisitionGoalIdentity(entry);
+      if (!goalChangeMap.has(key) && !fallbackGoalMap.has(key)) {
+        fallbackGoalMap.set(key, entry);
+      }
+    });
+  fallbackGoalMap.forEach((entry, key) => goalChangeMap.set(key, entry));
+
   goalMap.forEach((goal, key) => {
     if (goalChangeMap.has(key)) return;
     if (goal.status !== "mastered") return;
-    const hasProgramHistory = (planChangeLog || []).some((change) => (
-      change?.type === "program-status-changed" && sanitizeText(change.programId) === goal.programId
+    const hasHistory = (planChangeLog || []).some((change) => (
+      sanitizeText(change.programId) === goal.programId
+      && (change?.type === "program-status-changed" || change?.type === "target-status-changed")
     ));
-    if (hasProgramHistory) return;
+    if (hasHistory) return;
     goalChangeMap.set(key, {
       ...goal,
       masteredDate: "",
@@ -238,6 +271,17 @@ export function summarizeSkillAcquisitionReport({
     masteredTargets,
     onHoldTargets,
     activeTargets,
+    debug: {
+      masteredTargetsCount: masteredTargets.length,
+      masteredTargetIds: masteredTargets.map((target) => target.targetId),
+      masteredTargetGoalMap: masteredTargets.map((target) => ({
+        targetId: target.targetId,
+        programId: target.programId,
+        programName: target.programName
+      })),
+      deduplicatedMasteredGoalIds: masteredGoalsDuringPeriod.map((goal) => goal.programId || goal.goalId).filter(Boolean),
+      masteredGoalCount: masteredGoalsDuringPeriod.length
+    },
     totals: {
       masteredGoals: masteredGoalsDuringPeriod.length,
       masteredTargets: masteredTargets.length,

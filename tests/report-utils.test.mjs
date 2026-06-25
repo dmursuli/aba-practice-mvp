@@ -163,6 +163,8 @@ test("skill acquisition summary groups targets by status and deduplicates master
 
   assert.equal(model.masteredGoalsDuringPeriod.length, 1);
   assert.equal(model.masteredGoalsDuringPeriod[0].programId, "program-1");
+  assert.equal(model.totals.masteredGoals, model.masteredGoalsDuringPeriod.length);
+  assert.deepEqual(model.debug.deduplicatedMasteredGoalIds, ["program-1"]);
   assert.deepEqual(model.masteredTargets.map((item) => item.targetId), ["target-1"]);
   assert.deepEqual(model.onHoldTargets.map((item) => item.targetId), ["target-3"]);
   assert.deepEqual(model.activeTargets.map((item) => item.targetId), ["target-2"]);
@@ -194,6 +196,156 @@ test("skill acquisition summary falls back to current mastered program status wh
 
   assert.equal(model.masteredGoalsDuringPeriod.length, 1);
   assert.equal(model.masteredGoalsDuringPeriod[0].assumption, "current-status-fallback");
+});
+
+test("multiple mastered targets within the same goal count as one mastered goal when using target-mastery fallback", () => {
+  const model = summarizeSkillAcquisitionReport({
+    programs: [
+      {
+        id: "program-1",
+        name: "Functional Communication: Manding",
+        domain: "Communication",
+        objective: "Will request help independently.",
+        status: "active",
+        targets: [
+          { id: "target-1", name: "Request help", status: "mastered" },
+          { id: "target-2", name: "Request break", status: "mastered" }
+        ]
+      }
+    ],
+    planChangeLog: [
+      { type: "target-status-changed", programId: "program-1", programName: "Functional Communication: Manding", domain: "Communication", targetId: "target-1", targetName: "Request help", toStatus: "mastered", date: "2026-06-10" },
+      { type: "target-status-changed", programId: "program-1", programName: "Functional Communication: Manding", domain: "Communication", targetId: "target-2", targetName: "Request break", toStatus: "mastered", date: "2026-06-12" }
+    ],
+    startDate: "2026-06-01",
+    endDate: "2026-06-30"
+  });
+
+  assert.equal(model.masteredTargets.length, 2);
+  assert.equal(model.masteredGoalsDuringPeriod.length, 1);
+  assert.equal(model.masteredGoalsDuringPeriod[0].programId, "program-1");
+  assert.equal(model.masteredGoalsDuringPeriod[0].assumption, "target-mastery-fallback");
+  assert.equal(model.totals.masteredGoals, model.masteredGoalsDuringPeriod.length);
+});
+
+test("multiple goals with mastered targets count as multiple mastered goals", () => {
+  const model = summarizeSkillAcquisitionReport({
+    programs: [
+      {
+        id: "program-1",
+        name: "Goal One",
+        domain: "Communication",
+        objective: "Goal one objective",
+        status: "active",
+        targets: [{ id: "target-1", name: "Target one", status: "mastered" }]
+      },
+      {
+        id: "program-2",
+        name: "Goal Two",
+        domain: "Socialization",
+        objective: "Goal two objective",
+        status: "active",
+        targets: [{ id: "target-2", name: "Target two", status: "mastered" }]
+      }
+    ],
+    planChangeLog: [
+      { type: "target-status-changed", programId: "program-1", programName: "Goal One", domain: "Communication", targetId: "target-1", targetName: "Target one", toStatus: "mastered", date: "2026-06-10" },
+      { type: "target-status-changed", programId: "program-2", programName: "Goal Two", domain: "Socialization", targetId: "target-2", targetName: "Target two", toStatus: "mastered", date: "2026-06-11" }
+    ],
+    startDate: "2026-06-01",
+    endDate: "2026-06-30"
+  });
+
+  assert.equal(model.masteredGoalsDuringPeriod.length, 2);
+  assert.deepEqual(model.masteredGoalsDuringPeriod.map((goal) => goal.programId), ["program-1", "program-2"]);
+  assert.equal(model.totals.masteredGoals, model.masteredGoalsDuringPeriod.length);
+});
+
+test("active and on-hold targets do not count as mastered goals in fallback mode", () => {
+  const model = summarizeSkillAcquisitionReport({
+    programs: [
+      {
+        id: "program-1",
+        name: "Goal One",
+        domain: "Communication",
+        objective: "Goal one objective",
+        status: "active",
+        targets: [
+          { id: "target-1", name: "Target one", status: "active" },
+          { id: "target-2", name: "Target two", status: "paused" }
+        ]
+      }
+    ],
+    planChangeLog: [
+      { type: "target-status-changed", programId: "program-1", programName: "Goal One", domain: "Communication", targetId: "target-1", targetName: "Target one", toStatus: "mastered", date: "2026-06-10" },
+      { type: "target-status-changed", programId: "program-1", programName: "Goal One", domain: "Communication", targetId: "target-2", targetName: "Target two", toStatus: "mastered", date: "2026-06-11" }
+    ],
+    startDate: "2026-06-01",
+    endDate: "2026-06-30"
+  });
+
+  assert.equal(model.masteredTargets.length, 0);
+  assert.equal(model.masteredGoalsDuringPeriod.length, 0);
+});
+
+test("authorization period filtering applies to mastered goal fallback and target counts", () => {
+  const model = summarizeSkillAcquisitionReport({
+    programs: [
+      {
+        id: "program-1",
+        name: "Goal One",
+        domain: "Communication",
+        objective: "Goal one objective",
+        status: "mastered",
+        targets: [{ id: "target-1", name: "Target one", status: "mastered" }]
+      }
+    ],
+    planChangeLog: [
+      { type: "target-status-changed", programId: "program-1", programName: "Goal One", domain: "Communication", targetId: "target-1", targetName: "Target one", toStatus: "mastered", date: "2026-05-01" }
+    ],
+    startDate: "2026-06-01",
+    endDate: "2026-06-30"
+  });
+
+  assert.equal(model.masteredTargets.length, 1);
+  assert.equal(model.masteredGoalsDuringPeriod.length, 0);
+});
+
+test("editable skill acquisition summary keeps mastered goal count aligned with list length", () => {
+  const model = summarizeSkillAcquisitionReport({
+    programs: [
+      {
+        id: "program-1",
+        name: "Goal One",
+        domain: "Communication",
+        objective: "Goal one objective",
+        status: "active",
+        targets: [{ id: "target-1", name: "Target one", status: "mastered" }]
+      },
+      {
+        id: "program-2",
+        name: "Goal Two",
+        domain: "Socialization",
+        objective: "Goal two objective",
+        status: "active",
+        targets: [{ id: "target-2", name: "Target two", status: "mastered" }]
+      }
+    ],
+    planChangeLog: [
+      { type: "target-status-changed", programId: "program-1", programName: "Goal One", domain: "Communication", targetId: "target-1", targetName: "Target one", toStatus: "mastered", date: "2026-06-10" },
+      { type: "target-status-changed", programId: "program-2", programName: "Goal Two", domain: "Socialization", targetId: "target-2", targetName: "Target two", toStatus: "mastered", date: "2026-06-11" }
+    ],
+    startDate: "2026-06-01",
+    endDate: "2026-06-30"
+  });
+  const text = buildEditableSkillAcquisitionSummary(model);
+  const listedGoals = (text.match(/^- (Communication|Socialization): /gm) || []).length;
+
+  assert.equal(model.totals.masteredGoals, 2);
+  assert.equal(model.masteredGoalsDuringPeriod.length, 2);
+  assert.equal(listedGoals, 2);
+  assert.match(text, /- Goals mastered during authorization period: 2/);
+  assert.match(text, /- Mastered skill acquisition targets: 2/);
 });
 
 test("editable skill acquisition summary shows mastered goals, grouped targets, and clean empty states", () => {
