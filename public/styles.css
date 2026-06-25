@@ -875,6 +875,15 @@ button:focus-visible {
   font-weight: 900;
 }
 
+.report-breakdown-table {
+  margin-top: 8px;
+}
+
+.report-breakdown-table th,
+.report-breakdown-table td {
+  font-size: 0.85rem;
+}
+
 .mastered-target-list {
   display: grid;
   gap: 8px;

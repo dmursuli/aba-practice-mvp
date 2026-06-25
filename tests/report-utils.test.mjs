@@ -267,6 +267,72 @@ test("multiple goals with mastered targets count as multiple mastered goals", ()
   assert.equal(model.totals.masteredGoals, model.masteredGoalsDuringPeriod.length);
 });
 
+test("domain breakdown renders per skill acquisition domain with deduplicated goal and target counts", () => {
+  const model = summarizeSkillAcquisitionReport({
+    programs: [
+      {
+        id: "program-1",
+        name: "Goal One",
+        domain: "Communication",
+        objective: "Goal one objective",
+        status: "active",
+        targets: [
+          { id: "target-1", name: "Target one", status: "mastered" },
+          { id: "target-1", name: "Target one", status: "mastered" },
+          { id: "target-2", name: "Target two", status: "active" }
+        ]
+      },
+      {
+        id: "program-2",
+        name: "Goal Two",
+        domain: "Communication",
+        objective: "Goal two objective",
+        status: "paused",
+        targets: [{ id: "target-3", name: "Target three", status: "paused" }]
+      },
+      {
+        id: "program-3",
+        name: "Goal Three",
+        domain: "Socialization",
+        objective: "Goal three objective",
+        status: "active",
+        targets: [{ id: "target-4", name: "Target four", status: "mastered" }]
+      }
+    ],
+    planChangeLog: [
+      { type: "target-status-changed", programId: "program-1", programName: "Goal One", domain: "Communication", targetId: "target-1", targetName: "Target one", toStatus: "mastered", date: "2026-06-10" },
+      { type: "target-status-changed", programId: "program-3", programName: "Goal Three", domain: "Socialization", targetId: "target-4", targetName: "Target four", toStatus: "mastered", date: "2026-06-11" }
+    ],
+    startDate: "2026-06-01",
+    endDate: "2026-06-30"
+  });
+
+  assert.deepEqual(model.domainBreakdown, [
+    {
+      domain: "Communication",
+      activeGoals: 1,
+      masteredGoals: 1,
+      onHoldGoals: 1,
+      percentGoalsMastered: "33%",
+      activeTargets: 1,
+      masteredTargets: 1,
+      onHoldTargets: 1,
+      percentTargetsMastered: "33%"
+    },
+    {
+      domain: "Socialization",
+      activeGoals: 1,
+      masteredGoals: 1,
+      onHoldGoals: 0,
+      percentGoalsMastered: "50%",
+      activeTargets: 0,
+      masteredTargets: 1,
+      onHoldTargets: 0,
+      percentTargetsMastered: "100%"
+    }
+  ]);
+});
+
 test("active and on-hold targets do not count as mastered goals in fallback mode", () => {
   const model = summarizeSkillAcquisitionReport({
     programs: [
@@ -315,6 +381,39 @@ test("authorization period filtering applies to mastered goal fallback and targe
 
   assert.equal(model.masteredTargets.length, 1);
   assert.equal(model.masteredGoalsDuringPeriod.length, 0);
+  assert.equal(model.masteredTargetsDuringPeriod.length, 0);
+});
+
+test("domain breakdown shows zero mastered percentages when no mastered goals or targets exist", () => {
+  const model = summarizeSkillAcquisitionReport({
+    programs: [
+      {
+        id: "program-1",
+        name: "Goal One",
+        domain: "Daily Living Skills",
+        objective: "Goal one objective",
+        status: "active",
+        targets: [{ id: "target-1", name: "Target one", status: "active" }]
+      }
+    ],
+    planChangeLog: [],
+    startDate: "2026-06-01",
+    endDate: "2026-06-30"
+  });
+
+  assert.deepEqual(model.domainBreakdown, [
+    {
+      domain: "Daily Living Skills",
+      activeGoals: 1,
+      masteredGoals: 0,
+      onHoldGoals: 0,
+      percentGoalsMastered: "0%",
+      activeTargets: 1,
+      masteredTargets: 0,
+      onHoldTargets: 0,
+      percentTargetsMastered: "0%"
+    }
+  ]);
 });
 
 test("editable skill acquisition summary keeps mastered goal count aligned with list length", () => {
@@ -372,6 +471,30 @@ test("editable skill acquisition summary shows mastered goals, grouped targets, 
     onHoldTargets: [],
     activeTargets: [
       { targetId: "target-2", programName: "Reciprocal play", domain: "Socialization", targetName: "Take turns" }
+    ],
+    domainBreakdown: [
+      {
+        domain: "Communication",
+        activeGoals: 0,
+        masteredGoals: 1,
+        onHoldGoals: 0,
+        percentGoalsMastered: "100%",
+        activeTargets: 0,
+        masteredTargets: 1,
+        onHoldTargets: 0,
+        percentTargetsMastered: "100%"
+      },
+      {
+        domain: "Socialization",
+        activeGoals: 1,
+        masteredGoals: 0,
+        onHoldGoals: 0,
+        percentGoalsMastered: "0%",
+        activeTargets: 1,
+        masteredTargets: 0,
+        onHoldTargets: 0,
+        percentTargetsMastered: "0%"
+      }
     ]
   });
 
@@ -381,6 +504,10 @@ test("editable skill acquisition summary shows mastered goals, grouped targets, 
   assert.match(text, /- Active skill acquisition targets: 1/);
   assert.match(text, /- Skill acquisition targets on hold: 0/);
   assert.match(text, /- Total skill acquisition targets reviewed: 2/);
+  assert.match(text, /Domain Breakdown:/);
+  assert.match(text, /\| Domain \| Active Goals \| Mastered Goals \| On-Hold Goals \| % Goals Mastered \| Active Targets \| Mastered Targets \| On-Hold Targets \| % Targets Mastered \|/);
+  assert.match(text, /\| Communication \| 0 \| 1 \| 0 \| 100% \| 0 \| 1 \| 0 \| 100% \|/);
+  assert.match(text, /\| Socialization \| 1 \| 0 \| 0 \| 0% \| 1 \| 0 \| 0 \| 0% \|/);
   assert.match(text, /Goals Mastered During Authorization Period:/);
   assert.match(text, /- Communication: Will request help independently\./);
   assert.match(text, /Mastered Skill Acquisition Targets:/);
@@ -502,6 +629,7 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /handleReportAssessmentUpload/);
   assert.match(appSource, /generatedSectionAutofill/);
   assert.match(appSource, /isLegacyGeneratedSkillAcquisitionSummary/);
+  assert.match(appSource, /report-breakdown-table/);
   assert.match(appSource, /reportAssessmentDocumentRefsFromClient/);
   assert.match(appSource, /safeReportFilePreview\("assessmentGrid", "Assessment grid"\)/);
   assert.match(appSource, /safeReportFilePreview\("standardizedAssessmentGrid", "Standardized assessment grid"\)/);
@@ -540,6 +668,7 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(cssSource, /\.discharge-objective-list/);
   assert.match(cssSource, /\.discharge-objective-group h4/);
   assert.match(cssSource, /\.report-upload-draft-item/);
+  assert.match(cssSource, /\.report-breakdown-table/);
   assert.match(cssSource, /\.graph-phase-line-panel/);
   assert.match(serverSource, /metadata:\s*\{/);
   assert.match(serverSource, /includedContent:\s*\{/);

@@ -6239,6 +6239,7 @@ function renderParentTrainingProgressSummary(value) {
   let paragraphBuffer = [];
   let listHeading = "";
   let listItems = [];
+  let tableLines = [];
 
   const flushParagraph = () => {
     if (!paragraphBuffer.length) return;
@@ -6258,8 +6259,41 @@ function renderParentTrainingProgressSummary(value) {
     listHeading = "";
     listItems = [];
   };
+  const flushTable = () => {
+    if (!tableLines.length) return;
+    const parsedRows = tableLines
+      .map((line) => line.split("|").map((cell) => cell.trim()).filter((cell, index, cells) => !(index === 0 && !cell && cells.length > 1) && !(index === cells.length - 1 && !cell)))
+      .filter((cells) => cells.length);
+    tableLines = [];
+    if (parsedRows.length < 2) {
+      paragraphBuffer.push(...parsedRows.map((cells) => cells.join(" ")));
+      return;
+    }
+    const [headerRow, ...bodyRows] = parsedRows;
+    const dataRows = bodyRows.filter((cells) => !cells.every((cell) => /^:?-{3,}:?$/.test(cell)));
+    if (!dataRows.length) return;
+    sections.push(`
+      <div class="report-table-wrap">
+        <table class="fade-plan-table report-breakdown-table">
+          <thead>
+            <tr>${headerRow.map((cell) => `<th>${escapeHtml(cell)}</th>`).join("")}</tr>
+          </thead>
+          <tbody>
+            ${dataRows.map((cells) => `<tr>${cells.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    `);
+  };
 
   lines.forEach((line) => {
+    if (/^\|.+\|$/.test(line)) {
+      flushParagraph();
+      flushList();
+      tableLines.push(line);
+      return;
+    }
+    if (tableLines.length) flushTable();
     if (line.startsWith("- ")) {
       flushParagraph();
       listItems.push(line.slice(2).trim());
@@ -6277,6 +6311,7 @@ function renderParentTrainingProgressSummary(value) {
 
   flushParagraph();
   flushList();
+  flushTable();
   return sections.join("");
 }
 

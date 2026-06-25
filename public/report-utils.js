@@ -171,7 +171,8 @@ export function summarizeSkillAcquisitionReport({
       objective: sanitizeText(program?.objective),
       status: programStatus
     };
-    goalMap.set(skillAcquisitionGoalIdentity(programEntry), programEntry);
+    const goalKey = skillAcquisitionGoalIdentity(programEntry);
+    goalMap.set(goalKey, programEntry);
     if (programEntry.programId) currentProgramMap.set(programEntry.programId, programEntry);
     (program?.targets || []).forEach((target) => {
       const targetStatus = normalizeSkillStatus(target?.status || "active");
@@ -220,6 +221,7 @@ export function summarizeSkillAcquisitionReport({
 
   const masteredTargetIds = new Set([...targetStatusMap.mastered.values()].map((target) => target.targetId).filter(Boolean));
   const fallbackGoalMap = new Map();
+  const masteredTargetChangeMap = new Map();
   masteryHistoryInRange
     .filter((change) => change?.type === "target-status-changed" && change?.toStatus === "mastered")
     .forEach((change) => {
@@ -227,6 +229,18 @@ export function summarizeSkillAcquisitionReport({
       const programId = sanitizeText(change.programId);
       if (!programId || !targetId || !masteredTargetIds.has(targetId)) return;
       const currentGoal = currentProgramMap.get(programId);
+      const targetEntry = {
+        targetId,
+        targetName: sanitizeText(change.targetName),
+        programId,
+        programName: sanitizeText(change.programName) || sanitizeText(currentGoal?.programName),
+        domain: sanitizeText(change.domain || currentGoal?.domain || "General"),
+        objective: sanitizeText(change.objective || currentGoal?.objective || change.programName),
+        masteredDate: sanitizeText(change.date),
+        status: "mastered",
+        assumption: ""
+      };
+      masteredTargetChangeMap.set(skillAcquisitionTargetIdentity(targetEntry), targetEntry);
       const entry = {
         programId,
         goalId: programId,
@@ -260,17 +274,42 @@ export function summarizeSkillAcquisitionReport({
     });
   });
 
+  targetStatusMap.mastered.forEach((target, key) => {
+    if (masteredTargetChangeMap.has(key)) return;
+    const hasHistory = (planChangeLog || []).some((change) => (
+      change?.type === "target-status-changed"
+      && sanitizeText(change.targetId) === target.targetId
+    ));
+    if (hasHistory) return;
+    masteredTargetChangeMap.set(key, {
+      ...target,
+      masteredDate: "",
+      assumption: "current-status-fallback"
+    });
+  });
+
   const masteredGoalsDuringPeriod = [...goalChangeMap.values()]
     .sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName));
+  const masteredTargetsDuringPeriod = [...masteredTargetChangeMap.values()]
+    .sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName) || a.targetName.localeCompare(b.targetName));
   const masteredTargets = [...targetStatusMap.mastered.values()].sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName) || a.targetName.localeCompare(b.targetName));
   const onHoldTargets = [...targetStatusMap.paused.values()].sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName) || a.targetName.localeCompare(b.targetName));
   const activeTargets = [...targetStatusMap.active.values()].sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName) || a.targetName.localeCompare(b.targetName));
+  const domainBreakdown = buildSkillDomainBreakdown({
+    goals: [...goalMap.values()],
+    masteredGoalsDuringPeriod,
+    activeTargets,
+    onHoldTargets,
+    masteredTargetsDuringPeriod
+  });
 
   return {
     masteredGoalsDuringPeriod,
+    masteredTargetsDuringPeriod,
     masteredTargets,
     onHoldTargets,
     activeTargets,
+    domainBreakdown,
     debug: {
       masteredTargetsCount: masteredTargets.length,
       masteredTargetIds: masteredTargets.map((target) => target.targetId),
@@ -280,7 +319,9 @@ export function summarizeSkillAcquisitionReport({
         programName: target.programName
       })),
       deduplicatedMasteredGoalIds: masteredGoalsDuringPeriod.map((goal) => goal.programId || goal.goalId).filter(Boolean),
-      masteredGoalCount: masteredGoalsDuringPeriod.length
+      masteredGoalCount: masteredGoalsDuringPeriod.length,
+      masteredTargetsDuringPeriodCount: masteredTargetsDuringPeriod.length,
+      masteredTargetsDuringPeriodIds: masteredTargetsDuringPeriod.map((target) => target.targetId)
     },
     totals: {
       masteredGoals: masteredGoalsDuringPeriod.length,
@@ -290,6 +331,98 @@ export function summarizeSkillAcquisitionReport({
       totalTargets: masteredTargets.length + onHoldTargets.length + activeTargets.length
     }
   };
+}
+
+function normalizeDomainName(value = "") {
+  return sanitizeText(value || "General") || "General";
+}
+
+function skillDomainIdentity(value = "") {
+  return normalizeDomainName(value).toLowerCase();
+}
+
+function toRoundedPercent(numerator = 0, denominator = 0) {
+  if (!denominator) return "0%";
+  return `${Math.round((Number(numerator || 0) / Number(denominator || 0)) * 100)}%`;
+}
+
+function buildSkillDomainBreakdown({
+  goals = [],
+  masteredGoalsDuringPeriod = [],
+  activeTargets = [],
+  onHoldTargets = [],
+  masteredTargetsDuringPeriod = []
+} = {}) {
+  const domainMap = new Map();
+  const ensureDomain = (domain) => {
+    const key = skillDomainIdentity(domain);
+    if (!domainMap.has(key)) {
+      domainMap.set(key, {
+        domain: normalizeDomainName(domain),
+        activeGoalIds: new Set(),
+        masteredGoalIds: new Set(),
+        onHoldGoalIds: new Set(),
+        activeTargetIds: new Set(),
+        masteredTargetIds: new Set(),
+        onHoldTargetIds: new Set()
+      });
+    }
+    return domainMap.get(key);
+  };
+
+  (goals || []).forEach((goal) => {
+    const bucket = ensureDomain(goal.domain);
+    const goalId = skillAcquisitionGoalIdentity(goal);
+    if (!goalId) return;
+    if (goal.status === "paused") bucket.onHoldGoalIds.add(goalId);
+    else if (goal.status === "active") bucket.activeGoalIds.add(goalId);
+  });
+
+  (masteredGoalsDuringPeriod || []).forEach((goal) => {
+    const bucket = ensureDomain(goal.domain);
+    const goalId = skillAcquisitionGoalIdentity(goal);
+    if (goalId) bucket.masteredGoalIds.add(goalId);
+  });
+
+  (activeTargets || []).forEach((target) => {
+    const bucket = ensureDomain(target.domain);
+    const targetId = skillAcquisitionTargetIdentity(target);
+    if (targetId) bucket.activeTargetIds.add(targetId);
+  });
+
+  (onHoldTargets || []).forEach((target) => {
+    const bucket = ensureDomain(target.domain);
+    const targetId = skillAcquisitionTargetIdentity(target);
+    if (targetId) bucket.onHoldTargetIds.add(targetId);
+  });
+
+  (masteredTargetsDuringPeriod || []).forEach((target) => {
+    const bucket = ensureDomain(target.domain);
+    const targetId = skillAcquisitionTargetIdentity(target);
+    if (targetId) bucket.masteredTargetIds.add(targetId);
+  });
+
+  return [...domainMap.values()]
+    .map((entry) => {
+      const activeGoals = entry.activeGoalIds.size;
+      const masteredGoals = entry.masteredGoalIds.size;
+      const onHoldGoals = entry.onHoldGoalIds.size;
+      const activeTargetCount = entry.activeTargetIds.size;
+      const masteredTargetCount = entry.masteredTargetIds.size;
+      const onHoldTargetCount = entry.onHoldTargetIds.size;
+      return {
+        domain: entry.domain,
+        activeGoals,
+        masteredGoals,
+        onHoldGoals,
+        percentGoalsMastered: toRoundedPercent(masteredGoals, activeGoals + masteredGoals + onHoldGoals),
+        activeTargets: activeTargetCount,
+        masteredTargets: masteredTargetCount,
+        onHoldTargets: onHoldTargetCount,
+        percentTargetsMastered: toRoundedPercent(masteredTargetCount, activeTargetCount + masteredTargetCount + onHoldTargetCount)
+      };
+    })
+    .sort((a, b) => a.domain.localeCompare(b.domain));
 }
 
 function skillGoalLabel(goal = {}) {
@@ -309,6 +442,7 @@ export function buildEditableSkillAcquisitionSummary(model = {}) {
   const masteredTargets = Array.isArray(model.masteredTargets) ? model.masteredTargets : [];
   const onHoldTargets = Array.isArray(model.onHoldTargets) ? model.onHoldTargets : [];
   const activeTargets = Array.isArray(model.activeTargets) ? model.activeTargets : [];
+  const domainBreakdown = Array.isArray(model.domainBreakdown) ? model.domainBreakdown : [];
   const totals = model.totals || {
     masteredGoals: masteredGoals.length,
     masteredTargets: masteredTargets.length,
@@ -324,10 +458,25 @@ export function buildEditableSkillAcquisitionSummary(model = {}) {
     `- Mastered skill acquisition targets: ${totals.masteredTargets || 0}`,
     `- Active skill acquisition targets: ${totals.activeTargets || 0}`,
     `- Skill acquisition targets on hold: ${totals.onHoldTargets || 0}`,
-    `- Total skill acquisition targets reviewed: ${totals.totalTargets || 0}`,
+    `- Total skill acquisition targets reviewed: ${totals.totalTargets || 0}`
+  ];
+
+  if (domainBreakdown.length) {
+    lines.push(
+      "",
+      "Domain Breakdown:",
+      "| Domain | Active Goals | Mastered Goals | On-Hold Goals | % Goals Mastered | Active Targets | Mastered Targets | On-Hold Targets | % Targets Mastered |",
+      "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+    );
+    domainBreakdown.forEach((row) => {
+      lines.push(`| ${row.domain} | ${row.activeGoals} | ${row.masteredGoals} | ${row.onHoldGoals} | ${row.percentGoalsMastered} | ${row.activeTargets} | ${row.masteredTargets} | ${row.onHoldTargets} | ${row.percentTargetsMastered} |`);
+    });
+  }
+
+  lines.push(
     "",
     "Goals Mastered During Authorization Period:"
-  ];
+  );
 
   if (masteredGoals.length) {
     masteredGoals.forEach((goal) => lines.push(`- ${skillGoalLabel(goal)}`));
