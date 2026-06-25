@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, draftContainsLargeArtifacts, estimateJsonBytes, hasMeaningfulFunderReportDraft, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, skillAcquisitionGoalIdentity, skillAcquisitionTargetIdentity, summarizeSkillAcquisitionReport } from "../public/report-utils.js";
+import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, draftContainsLargeArtifacts, estimateJsonBytes, hasMeaningfulFunderReportDraft, isLegacyGeneratedSkillAcquisitionSummary, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, skillAcquisitionGoalIdentity, skillAcquisitionTargetIdentity, summarizeSkillAcquisitionReport } from "../public/report-utils.js";
 
 test("compact graph analysis sentence keeps report analysis concise and readable", () => {
   const sentence = buildCompactGraphAnalysisSentence({
@@ -32,6 +32,9 @@ test("structured funder draft record stores editable sections and settings but n
     sections: {
       progressSummary: "Editable summary",
       parentTrainingSummary: "Coaching progress"
+    },
+    generatedSectionAutofill: {
+      skillAcquisitionSummary: "Status Summary:\n- Goals mastered during authorization period: 2"
     },
     fadePlanRows: [{ phase: "1", actionStep: "Fade supervision" }],
     serviceHours: [{ serviceCode: "97153", hours: "20" }],
@@ -70,6 +73,9 @@ test("structured funder draft record stores editable sections and settings but n
   assert.equal(draft.metadata.clientId, "client-ava");
   assert.equal(draft.metadata.draftStatus, "draft");
   assert.equal(draft.metadata.lastSavedAt, "2026-06-19T12:00:00.000Z");
+  assert.deepEqual(draft.metadata.generatedSectionAutofill, {
+    skillAcquisitionSummary: "Status Summary:\n- Goals mastered during authorization period: 2"
+  });
   assert.equal(draft.progressSummary, "Editable summary");
   assert.deepEqual(draft.settings.graphPreferences, { "behavior:overview": false, "skill:program-1": true });
   assert.equal(draft.settings.displaySettings.compactGraphAnalysis, true);
@@ -421,6 +427,28 @@ test("draft payload stays lightweight compared with rendered report artifacts", 
   assert.ok(estimateJsonBytes(draft) < 16 * 1024);
 });
 
+test("legacy generated skill acquisition summaries are detected for backward-compatible refresh", () => {
+  assert.equal(isLegacyGeneratedSkillAcquisitionSummary(`Status Summary:
+- Goals mastered during authorization period: 8
+- Mastered skill acquisition targets: 25
+- Active skill acquisition targets: 10
+- Skill acquisition targets on hold: 4
+- Total skill acquisition targets reviewed: 39
+
+Goals Mastered During Authorization Period:
+- Communication: Goal one
+
+Mastered Skill Acquisition Targets:
+- Goal one / Target one
+
+On Hold Skill Acquisition Targets:
+No skill acquisition targets are currently on hold.
+
+Narrative summary:
+During this authorization period, the client mastered 8 skill acquisition goals.`), true);
+  assert.equal(isLegacyGeneratedSkillAcquisitionSummary("Custom manually written note"), false);
+});
+
 test("trend visibility preferences are filtered to allowed report graph keys", () => {
   const filtered = sanitizeTrendVisibilityMap({
     "skill:program-1": true,
@@ -472,6 +500,8 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /reportCustomPhaseLines/);
   assert.match(appSource, /renderReportAssessmentDraftFiles/);
   assert.match(appSource, /handleReportAssessmentUpload/);
+  assert.match(appSource, /generatedSectionAutofill/);
+  assert.match(appSource, /isLegacyGeneratedSkillAcquisitionSummary/);
   assert.match(appSource, /reportAssessmentDocumentRefsFromClient/);
   assert.match(appSource, /safeReportFilePreview\("assessmentGrid", "Assessment grid"\)/);
   assert.match(appSource, /safeReportFilePreview\("standardizedAssessmentGrid", "Standardized assessment grid"\)/);

@@ -358,6 +358,7 @@ export function buildFunderDraftRecord({
   startDate = "",
   endDate = "",
   sections = {},
+  generatedSectionAutofill = {},
   fadePlanRows = [],
   serviceHours = [],
   graphPreferences = {},
@@ -380,7 +381,8 @@ export function buildFunderDraftRecord({
       draftStatus: "draft",
       createdAt: previousCreatedAt,
       updatedAt: now,
-      lastSavedAt: now
+      lastSavedAt: now,
+      generatedSectionAutofill: sortObjectKeys(generatedSectionAutofill)
     },
     startDate: String(startDate || ""),
     endDate: String(endDate || ""),
@@ -401,6 +403,16 @@ export function buildFunderDraftRecord({
     assessmentDocuments: sortObjectKeys(sanitizeAssessmentDocumentRefs(assessmentDocuments)),
     customPhaseLines: sortObjectKeys(sanitizeCustomPhaseLines(customPhaseLines))
   };
+}
+
+export function isLegacyGeneratedSkillAcquisitionSummary(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return text.includes("Status Summary:")
+    && text.includes("Goals mastered during authorization period:")
+    && text.includes("Mastered Skill Acquisition Targets:")
+    && text.includes("On Hold Skill Acquisition Targets:")
+    && text.includes("Narrative summary:");
 }
 
 export function estimateJsonBytes(value) {

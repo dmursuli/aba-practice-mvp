@@ -2,7 +2,7 @@ import { createAuditEvent, createClient, createSession, createUser, deleteClient
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
-import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, summarizeSkillAcquisitionReport } from "./report-utils.js";
+import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, isLegacyGeneratedSkillAcquisitionSummary, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, summarizeSkillAcquisitionReport } from "./report-utils.js";
 import { generateSoapNote } from "./soap.js";
 import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms } from "./session-utils.js";
 
@@ -3800,10 +3800,17 @@ function currentFunderReportDraft() {
   if (!reportForm) return {};
   const values = new FormData(reportForm);
   const sections = {};
+  const generatedSectionAutofill = {};
   const existingDraft = currentClient()?.profile?.funderReport || {};
   values.forEach((value, key) => {
     if (key === "assessmentGrid" || key === "standardizedAssessmentGrid") return;
     sections[key] = String(value || "");
+  });
+  [...reportForm.elements].forEach((field) => {
+    if (!field?.name || field.type === "file") return;
+    if (field.dataset?.autofillValue) {
+      generatedSectionAutofill[field.name] = String(field.dataset.autofillValue || "");
+    }
   });
   const assessmentDocuments = sanitizeAssessmentDocumentRefs({
     assessmentGrid: reportAssessmentRefs("assessmentGrid"),
@@ -3814,6 +3821,7 @@ function currentFunderReportDraft() {
     startDate: sections.startDate || "",
     endDate: sections.endDate || "",
     sections,
+    generatedSectionAutofill,
     fadePlanRows: readFadePlanRows(),
     serviceHours: readServiceHourRows(),
     graphPreferences: sanitizeTrendVisibilityMap(state.graphTrendVisibility, reportGraphPreferenceKeys()),
@@ -3833,6 +3841,7 @@ function applyFunderReportDraft(draft = {}) {
   const rows = Array.isArray(draft.fadePlanRows) ? draft.fadePlanRows : [];
   const serviceRows = Array.isArray(draft.serviceHours) ? draft.serviceHours : [];
   const graphPreferences = draft.settings?.graphPreferences || {};
+  const generatedSectionAutofill = draft.metadata?.generatedSectionAutofill || {};
   const restoredAssessmentDocuments = sanitizeAssessmentDocumentRefs(draft.assessmentDocuments || {});
   state.reportAssessmentDocuments = {
     assessmentGrid: restoredAssessmentDocuments.assessmentGrid.length
@@ -3854,6 +3863,14 @@ function applyFunderReportDraft(draft = {}) {
     if (!field?.name || field.type === "file") return;
     if (Object.hasOwn(draft, field.name)) {
       field.value = String(draft[field.name] || "");
+    }
+    const restoredAutofill = generatedSectionAutofill[field.name];
+    if (typeof restoredAutofill === "string" && restoredAutofill) {
+      field.dataset.autofillValue = restoredAutofill;
+    } else if (field.name === "skillAcquisitionSummary" && isLegacyGeneratedSkillAcquisitionSummary(field.value || "")) {
+      field.dataset.autofillValue = String(field.value || "");
+    } else {
+      delete field.dataset.autofillValue;
     }
   });
   fadePlanRows.innerHTML = "";
