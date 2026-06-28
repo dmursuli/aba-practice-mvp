@@ -1,5 +1,5 @@
 import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, setupVerificationEmail, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
-import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate } from "./charts.js";
+import { buildGraphAnalysis, buildLegendItems, drawLineChart, filterSeriesPointsByDateRange, formatGraphDate } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
 import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, isLegacyGeneratedSkillAcquisitionSummary, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, summarizeSkillAcquisitionReport } from "./report-utils.js";
@@ -32,6 +32,12 @@ const state = {
   authFlow: "password",
   authChallenge: null,
   graphTrendVisibility: {},
+  behaviorGraphRangePreset: "default",
+  behaviorGraphCustomStart: "",
+  behaviorGraphCustomEnd: "",
+  behaviorGraphShowPoints: true,
+  behaviorGraphAnalyzeAllData: false,
+  hiddenBehaviorSeries: {},
   draftCache: {
     intake: {},
     session: {}
@@ -129,6 +135,7 @@ const domainTabs = document.querySelector("#domain-tabs");
 const behaviorList = document.querySelector("#behavior-list");
 const skillCharts = document.querySelector("#skill-charts");
 const behaviorChartPanel = document.querySelector("#behavior-chart")?.closest(".chart-panel");
+const behaviorGraphControls = document.querySelector("#behavior-graph-controls");
 const behaviorCharts = document.querySelector("#behavior-charts");
 const parentTrainingCharts = document.querySelector("#parent-training-charts");
 const graphsClientSummary = document.querySelector("#graphs-client-summary");
@@ -4940,6 +4947,112 @@ function buildBehaviorChart(behaviorId, sessions) {
   };
 }
 
+function latestSessionDate(sessions = []) {
+  return (sessions || []).reduce((latest, session) => (
+    !latest || session.date > latest ? session.date : latest
+  ), "");
+}
+
+function shiftIsoDate(date, offsetDays) {
+  if (!date) return "";
+  const value = new Date(`${date}T00:00:00`);
+  value.setUTCDate(value.getUTCDate() + offsetDays);
+  return value.toISOString().slice(0, 10);
+}
+
+function currentAuthorizationRange() {
+  const authorization = currentClient()?.profile?.authorization || {};
+  return {
+    startDate: authorization.startDate || "",
+    endDate: authorization.endDate || ""
+  };
+}
+
+function resolvedBehaviorGraphRangePreset() {
+  if (state.behaviorGraphRangePreset !== "default") return state.behaviorGraphRangePreset;
+  const authorization = currentAuthorizationRange();
+  return authorization.startDate && authorization.endDate ? "authorization" : "last90";
+}
+
+function behaviorGraphRangeLabel() {
+  const preset = resolvedBehaviorGraphRangePreset();
+  return {
+    last30: "Last 30 days",
+    last60: "Last 60 days",
+    last90: "Last 90 days",
+    last6months: "Last 6 months",
+    last12months: "Last 12 months",
+    authorization: "Authorization period",
+    all: "All data",
+    custom: "Custom date range"
+  }[preset] || "Selected date range";
+}
+
+function behaviorGraphRange() {
+  const preset = resolvedBehaviorGraphRangePreset();
+  const sessions = currentSessions();
+  const lastDate = latestSessionDate(sessions);
+  const authorization = currentAuthorizationRange();
+  if (preset === "authorization") {
+    return {
+      preset,
+      startDate: authorization.startDate || "",
+      endDate: authorization.endDate || "",
+      label: "Authorization period"
+    };
+  }
+  if (preset === "custom") {
+    return {
+      preset,
+      startDate: state.behaviorGraphCustomStart || "",
+      endDate: state.behaviorGraphCustomEnd || "",
+      label: "Custom date range"
+    };
+  }
+  if (preset === "all" || !lastDate) {
+    return {
+      preset,
+      startDate: "",
+      endDate: "",
+      label: preset === "all" ? "All data" : behaviorGraphRangeLabel()
+    };
+  }
+  const days = {
+    last30: 30,
+    last60: 60,
+    last90: 90,
+    last6months: 183,
+    last12months: 365
+  }[preset] || 90;
+  return {
+    preset,
+    startDate: shiftIsoDate(lastDate, -(days - 1)),
+    endDate: lastDate,
+    label: behaviorGraphRangeLabel()
+  };
+}
+
+function sessionsWithinRange(sessions, range) {
+  return (sessions || []).filter((session) => (
+    (!range.startDate || session.date >= range.startDate)
+    && (!range.endDate || session.date <= range.endDate)
+  ));
+}
+
+function anySeriesDataBeforeRange(series = [], startDate = "") {
+  if (!startDate) return false;
+  return (series || []).some((entry) => (
+    (entry.points || []).some((point) => point.x < startDate)
+    && (entry.points || []).some((point) => point.x >= startDate)
+  ));
+}
+
+function visibleBehaviorIds() {
+  return clientBehaviors()
+    .filter((behavior) => state.hiddenBehaviorSeries[behavior.id] !== true)
+    .map((behavior) => behavior.id);
+}
+
 function openBehaviorGraphModal(behaviorId) {
   const chart = buildBehaviorChart(behaviorId, currentSessions().slice().reverse());
   if (!chart) return;
@@ -6333,6 +6446,7 @@ function drawFunderReportCharts(sessions) {
   const behaviorCanvas = reportPreview.querySelector("#report-behavior-chart");
   if (!behaviorCanvas) return;
   const behaviorSeries = behaviorChartSeries(sessions);
+  const allBehaviorSeries = behaviorChartSeries(currentSessions().slice().reverse());
   const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
   drawLineChart(behaviorCanvas, behaviorSeries, {
     yStep: 1,
@@ -6340,7 +6454,9 @@ function drawFunderReportCharts(sessions) {
     emptyMessage: "No behavior data in this report range",
     phaseMarkers: graphPhaseMarkers(behaviorOverviewGraphKey),
     graphType: "behavior",
-    showTrendLine: trendLineEnabled(behaviorOverviewGraphKey)
+    showTrendLine: trendLineEnabled(behaviorOverviewGraphKey),
+    showPointMarkers: true,
+    suppressAutoTreatmentBoundary: anySeriesDataBeforeRange(allBehaviorSeries, reportForm.elements.startDate.value)
   });
   const behaviorPanel = behaviorCanvas.closest(".chart-panel");
   if (behaviorPanel) {
@@ -6351,7 +6467,17 @@ function drawFunderReportCharts(sessions) {
   }
 
   const behaviorContainer = reportPreview.querySelector("#report-behavior-charts");
-  if (behaviorContainer) drawBehaviorChartSet(sessions, behaviorContainer, "report-behavior-chart");
+  if (behaviorContainer) {
+    drawBehaviorChartSet(sessions, behaviorContainer, "report-behavior-chart", {
+      range: {
+        startDate: reportForm.elements.startDate.value,
+        endDate: reportForm.elements.endDate.value,
+        label: "Authorization period"
+      },
+      allSeries: allBehaviorSeries,
+      visibleBehaviorIds: clientBehaviors().map((behavior) => behavior.id)
+    });
+  }
 
   const parentTrainingContainer = reportPreview.querySelector("#report-parent-training-charts");
   if (parentTrainingContainer) {
@@ -6391,19 +6517,32 @@ function renderCharts() {
 
   skillCharts.innerHTML = "";
   parentTrainingCharts.innerHTML = "";
-  const behaviorSeries = behaviorChartSeries(sessions);
-  const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
-  const behaviorOverviewAnalysis = buildGraphAnalysis(behaviorSeries, {
-    graphType: "behavior",
-    phaseMarkers: graphPhaseMarkers(behaviorOverviewGraphKey)
+  renderBehaviorGraphControls();
+  const allBehaviorSeries = behaviorChartSeries(sessions);
+  const range = behaviorGraphRange();
+  const behaviorSeries = filterSeriesPointsByDateRange(allBehaviorSeries, range, {
+    includeSeriesIds: visibleBehaviorIds()
   });
+  const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
+  const behaviorOverviewAnalysis = buildGraphAnalysis(
+    state.behaviorGraphAnalyzeAllData
+      ? allBehaviorSeries.filter((series) => visibleBehaviorIds().includes(series.meta?.behaviorId))
+      : behaviorSeries,
+    {
+      graphType: "behavior",
+      phaseMarkers: graphPhaseMarkers(behaviorOverviewGraphKey),
+      rangeLabel: state.behaviorGraphAnalyzeAllData ? "All data" : range.label
+    }
+  );
   drawLineChart(document.querySelector("#behavior-chart"), behaviorSeries, {
     yStep: 1,
     yLabel: "frequency",
     emptyMessage: "Save a session to graph behavior frequency",
     phaseMarkers: graphPhaseMarkers(behaviorOverviewGraphKey),
     graphType: "behavior",
-    showTrendLine: trendLineEnabled(behaviorOverviewGraphKey)
+    showTrendLine: trendLineEnabled(behaviorOverviewGraphKey),
+    showPointMarkers: state.behaviorGraphShowPoints,
+    suppressAutoTreatmentBoundary: anySeriesDataBeforeRange(allBehaviorSeries, range.startDate)
   });
   const behaviorChartContainer = document.querySelector("#behavior-chart")?.closest(".chart-panel");
   renderGraphLegend(behaviorChartContainer, behaviorSeries, {
@@ -6422,7 +6561,99 @@ function renderCharts() {
       behaviorSeries
     ));
   }
-  drawBehaviorChartSet(sessions, behaviorCharts, "behavior-single-chart");
+  drawBehaviorChartSet(sessions, behaviorCharts, "behavior-single-chart", {
+    range,
+    allSeries: allBehaviorSeries,
+    visibleBehaviorIds: visibleBehaviorIds()
+  });
+}
+
+function renderBehaviorGraphControls() {
+  if (!behaviorGraphControls) return;
+  const range = behaviorGraphRange();
+  const currentPreset = resolvedBehaviorGraphRangePreset();
+  const options = [
+    ["default", "Default"],
+    ["last30", "Last 30 days"],
+    ["last60", "Last 60 days"],
+    ["last90", "Last 90 days"],
+    ["last6months", "Last 6 months"],
+    ["last12months", "Last 12 months"],
+    ["authorization", "Authorization period"],
+    ["all", "All data"],
+    ["custom", "Custom date range"]
+  ];
+  const toggleMarkup = clientBehaviors().map((behavior) => `
+    <label class="graph-toggle-pill">
+      <input type="checkbox" data-behavior-visibility="${escapeHtml(behavior.id)}" ${state.hiddenBehaviorSeries[behavior.id] ? "" : "checked"}>
+      <span>${escapeHtml(behavior.name)}</span>
+    </label>
+  `).join("");
+  behaviorGraphControls.innerHTML = `
+    <section class="graph-controls" aria-label="Behavior graph controls">
+      <div class="graph-controls-row">
+        <label>
+          Date range
+          <select id="behavior-graph-range-preset">
+            ${options.map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === currentPreset ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+          </select>
+        </label>
+        ${currentPreset === "custom" ? `
+          <label>
+            Start date
+            <input type="date" id="behavior-graph-custom-start" value="${escapeHtml(state.behaviorGraphCustomStart || "")}">
+          </label>
+          <label>
+            End date
+            <input type="date" id="behavior-graph-custom-end" value="${escapeHtml(state.behaviorGraphCustomEnd || "")}">
+          </label>
+        ` : ""}
+        <label class="graph-toggle-pill">
+          <input type="checkbox" id="behavior-graph-show-points" ${state.behaviorGraphShowPoints ? "checked" : ""}>
+          <span>Show data points</span>
+        </label>
+        <label class="graph-toggle-pill">
+          <input type="checkbox" id="behavior-graph-analyze-all" ${state.behaviorGraphAnalyzeAllData ? "checked" : ""}>
+          <span>Analyze all data</span>
+        </label>
+      </div>
+      <div class="graph-controls-row">
+        <div>
+          <strong>Visible behaviors</strong>
+          <div class="graph-toggle-list">${toggleMarkup || '<span class="muted">No behaviors configured.</span>'}</div>
+        </div>
+      </div>
+      <p class="graph-range-note">
+        Viewing <strong>${escapeHtml(range.label)}</strong>. Tooltip inspection still shows exact dates and values.
+      </p>
+    </section>
+  `;
+  behaviorGraphControls.querySelector("#behavior-graph-range-preset")?.addEventListener("change", (event) => {
+    state.behaviorGraphRangePreset = event.target.value;
+    renderCharts();
+  });
+  behaviorGraphControls.querySelector("#behavior-graph-custom-start")?.addEventListener("change", (event) => {
+    state.behaviorGraphCustomStart = event.target.value;
+    renderCharts();
+  });
+  behaviorGraphControls.querySelector("#behavior-graph-custom-end")?.addEventListener("change", (event) => {
+    state.behaviorGraphCustomEnd = event.target.value;
+    renderCharts();
+  });
+  behaviorGraphControls.querySelector("#behavior-graph-show-points")?.addEventListener("change", (event) => {
+    state.behaviorGraphShowPoints = event.target.checked;
+    renderCharts();
+  });
+  behaviorGraphControls.querySelector("#behavior-graph-analyze-all")?.addEventListener("change", (event) => {
+    state.behaviorGraphAnalyzeAllData = event.target.checked;
+    renderCharts();
+  });
+  behaviorGraphControls.querySelectorAll("[data-behavior-visibility]").forEach((checkbox) => {
+    checkbox.addEventListener("change", (event) => {
+      state.hiddenBehaviorSeries[event.target.dataset.behaviorVisibility] = !event.target.checked;
+      renderCharts();
+    });
+  });
 }
 
 function renderGraphScopeTabs() {
@@ -6967,9 +7198,14 @@ function behaviorChartSeries(sessions) {
   })).filter((series) => series.points.length);
 }
 
-function drawBehaviorChartSet(sessions, container, chartAttribute) {
+function drawBehaviorChartSet(sessions, container, chartAttribute, options = {}) {
   const isReportChart = String(chartAttribute || "").startsWith("report-");
-  const charts = behaviorChartSeries(sessions).map((series) => ({
+  const range = options.range || behaviorGraphRange();
+  const allSeries = options.allSeries || behaviorChartSeries(currentSessions().slice().reverse());
+  const visibleIds = options.visibleBehaviorIds || visibleBehaviorIds();
+  const charts = filterSeriesPointsByDateRange(behaviorChartSeries(sessions), range, {
+    includeSeriesIds: visibleIds
+  }).map((series) => ({
     behaviorId: series.meta?.behaviorId || series.name,
     behavior: series.name,
     series: [series]
@@ -6983,7 +7219,9 @@ function drawBehaviorChartSet(sessions, container, chartAttribute) {
   container.innerHTML = charts.map((chart, index) => `
     <article class="chart-panel">
       <h3>${escapeHtml(chart.behavior)}</h3>
-      <canvas data-${chartAttribute}="${index}" width="760" height="320"></canvas>
+      <div class="graph-canvas-scroll">
+        <canvas data-${chartAttribute}="${index}" width="760" height="320"></canvas>
+      </div>
       ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("behavior", chart.behaviorId)) })}
       <div data-behavior-analysis="${escapeHtml(String(chart.behaviorId))}"></div>
       ${isReportChart ? "" : renderBehaviorDataManagerMarkup(chart)}
@@ -6999,13 +7237,22 @@ function drawBehaviorChartSet(sessions, container, chartAttribute) {
       emptyMessage: "No behavior data for this behavior",
       phaseMarkers,
       graphType: "behavior",
-      showTrendLine: trendLineEnabled(graphKey)
+      showTrendLine: trendLineEnabled(graphKey),
+      showPointMarkers: isReportChart ? true : state.behaviorGraphShowPoints,
+      suppressAutoTreatmentBoundary: anySeriesDataBeforeRange(
+        allSeries.filter((series) => series.meta?.behaviorId === chart.behaviorId),
+        range.startDate
+      )
     });
     const analysisMount = container.querySelector(`[data-behavior-analysis="${escapeHtml(String(chart.behaviorId))}"]`);
     if (analysisMount) {
-      const analysis = buildGraphAnalysis(chart.series, {
+      const analysisSeries = state.behaviorGraphAnalyzeAllData && !isReportChart
+        ? allSeries.filter((series) => series.meta?.behaviorId === chart.behaviorId)
+        : chart.series;
+      const analysis = buildGraphAnalysis(analysisSeries, {
         graphType: "behavior",
-        phaseMarkers
+        phaseMarkers,
+        rangeLabel: state.behaviorGraphAnalyzeAllData && !isReportChart ? "All data" : range.label
       });
       analysisMount.innerHTML = isReportChart
         ? `

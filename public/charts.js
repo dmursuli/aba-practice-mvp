@@ -1,8 +1,16 @@
 const palette = ["#167c80", "#d1495b", "#edae49", "#4b7bec", "#6a994e", "#9d4edd"];
 const MOVING_AVERAGE_WINDOW = 5;
+const DENSE_DATE_THRESHOLD = 32;
 
 export function drawLineChart(canvas, series, options = {}) {
+  if (!canvas) return;
   const ctx = canvas.getContext("2d");
+  const allPoints = series.flatMap((item) => item.points);
+  const dateCount = new Set(allPoints.map((point) => point.x)).size;
+  const useAngledDates = dateCount > 8;
+  const showPointMarkers = shouldShowPointMarkers(series, options);
+  canvas.style.width = "100%";
+  canvas.style.maxWidth = "100%";
   const rect = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.max(320, Math.floor(rect.width * dpr));
@@ -11,9 +19,6 @@ export function drawLineChart(canvas, series, options = {}) {
 
   const width = canvas.width / dpr;
   const height = canvas.height / dpr;
-  const allPoints = series.flatMap((item) => item.points);
-  const dateCount = new Set(allPoints.map((point) => point.x)).size;
-  const useAngledDates = dateCount > 2;
   const margin = { top: 52, right: 28, bottom: useAngledDates ? 92 : 68, left: 56 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
@@ -30,6 +35,14 @@ export function drawLineChart(canvas, series, options = {}) {
 
   const model = buildClinicalGraphModel(series, options);
   const { dates, phaseBoundary, phaseMarkers } = model;
+  const dateTicks = buildDateTicks(series, {
+    ...options,
+    dates,
+    phaseDates: [
+      ...(phaseBoundary?.date ? [phaseBoundary.date] : []),
+      ...phaseMarkers.map((marker) => marker.date).filter(Boolean)
+    ]
+  });
   const maxY = Math.max(options.maxY || 0, ...allPoints.map((point) => point.y), 1);
   const yTop = options.maxY || Math.max(options.yStep || 1, Math.ceil(maxY * 1.15));
   const layout = buildChartLayout(dates, margin.left, plotWidth, phaseBoundary, phaseMarkers);
@@ -45,7 +58,7 @@ export function drawLineChart(canvas, series, options = {}) {
   drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions);
   drawPhaseMarkers(ctx, margin, plotHeight, phaseMarkers, dates, xPositions, layout.markerXByDate);
 
-  dates.forEach((date, index) => {
+  dateTicks.forEach(({ date, index }) => {
     const x = xPositions[index];
     ctx.fillStyle = "#59656f";
     ctx.font = "10px system-ui, sans-serif";
@@ -120,10 +133,12 @@ export function drawLineChart(canvas, series, options = {}) {
     drawPhaseSegments(ctx, points, phaseBoundary, breakLines);
 
     points.forEach((point) => {
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
-      ctx.fill();
+      if (showPointMarkers) {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
       interactivePoints.push(point);
     });
   });
@@ -170,6 +185,7 @@ export function buildGraphAnalysis(series, options = {}) {
     graphType,
     phaseBoundary: model.phaseBoundary,
     dates: model.dates,
+    rangeLabel: options.rangeLabel || "selected date range",
     trendLineEligible: analyses.some((entry) => entry.trendLineEligible),
     trendLineMessage: analyses.some((entry) => !entry.trendLineEligible)
       ? "Trend line requires at least 5 data points."
@@ -187,6 +203,58 @@ export function buildMovingAverageSeriesSet(series, options = {}) {
     points: buildMovingAveragePoints(item.points || [], { dates, phaseBoundary, windowSize }),
     meta: item.meta || {}
   }));
+}
+
+export function filterSeriesPointsByDateRange(series, range = {}, options = {}) {
+  const includeSeriesIds = new Set(options.includeSeriesIds || []);
+  return (series || [])
+    .filter((item) => {
+      if (!includeSeriesIds.size) return true;
+      const id = item.meta?.behaviorId || item.meta?.targetId || item.meta?.goalName || item.name;
+      return includeSeriesIds.has(id);
+    })
+    .map((item) => ({
+      ...item,
+      points: (item.points || []).filter((point) => (
+        (!range.startDate || point.x >= range.startDate)
+        && (!range.endDate || point.x <= range.endDate)
+      ))
+    }))
+    .filter((item) => (item.points || []).length);
+}
+
+export function buildDateTicks(series, options = {}) {
+  const dates = options.dates || [...new Set((series || []).flatMap((item) => (item.points || []).map((point) => point.x)))].sort();
+  if (options.showAllDateLabels) return dates.map((date, index) => ({ date, index }));
+  if (dates.length < 20) return dates.map((date, index) => ({ date, index }));
+
+  const desiredVisibleLabels = dates.length <= 50
+    ? Math.min(18, Math.ceil(dates.length / 2))
+    : dates.length <= 100
+      ? 10
+      : 12;
+  const interval = Math.max(1, Math.ceil(dates.length / desiredVisibleLabels));
+  const tickIndexes = new Set([0, dates.length - 1]);
+
+  for (let index = 0; index < dates.length; index += interval) {
+    tickIndexes.add(index);
+  }
+
+  (options.phaseDates || []).forEach((date) => {
+    const index = dates.indexOf(date);
+    if (index >= 0) tickIndexes.add(index);
+  });
+
+  return [...tickIndexes]
+    .sort((a, b) => a - b)
+    .map((index) => ({ date: dates[index], index }));
+}
+
+export function shouldShowPointMarkers(series, options = {}) {
+  if (typeof options.showPointMarkers === "boolean") return options.showPointMarkers;
+  const pointCount = (series || []).reduce((sum, item) => sum + (item.points || []).length, 0);
+  const dateCount = new Set((series || []).flatMap((item) => (item.points || []).map((point) => point.x))).size;
+  return pointCount <= 60 && dateCount <= DENSE_DATE_THRESHOLD;
 }
 
 export function buildMovingAveragePoints(points, options = {}) {
@@ -390,7 +458,7 @@ export function derivedPointPhase(dateIndex, phaseBoundary = null) {
 }
 
 function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options) {
-  const tickValues = axisTicks(yTop, options.yStep);
+  const tickValues = axisTicks(yTop, options.yStep, options.graphType === "behavior");
   ctx.strokeStyle = "#d6dde3";
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -539,58 +607,45 @@ function drawPhaseSegments(ctx, points, phaseBoundary, breakLines = []) {
   });
 }
 
-function buildChartLayout(dates, left, width, phaseBoundary, markers = []) {
+export function buildChartLayout(dates, left, width, phaseBoundary, markers = []) {
   const dateXPositions = Array(dates.length).fill(NaN);
   const markerXByDate = new Map();
-  const timelineItems = dates.map((date) => ({
-    kind: "date",
-    date,
-    sortValue: dateSortValue(date)
-  }));
+  const padding = Math.min(28, width * 0.08);
+  const start = left + padding;
+  const end = left + width - padding;
+  const dateValues = dates.map((date) => dateSortValue(date));
+
+  if (dates.length === 1) {
+    dateXPositions[0] = (start + end) / 2;
+  } else {
+    const minValue = dateValues[0];
+    const maxValue = dateValues[dateValues.length - 1];
+    const valueSpan = Math.max(1, maxValue - minValue);
+    dateValues.forEach((value, index) => {
+      const x = start + ((value - minValue) / valueSpan) * (end - start);
+      dateXPositions[index] = x;
+    });
+  }
 
   (markers || [])
     .filter((marker) => marker?.position === "after-date" && marker?.date)
     .forEach((marker) => {
-      timelineItems.push({
-        kind: "marker",
-        date: marker.date,
-        sortValue: dateSortValue(marker.date) + 0.5
-      });
+      const dateIndex = dates.indexOf(marker.date);
+      if (dateIndex < 0) return;
+      const baseX = dateXPositions[dateIndex];
+      const nextX = dateIndex < dateXPositions.length - 1 ? dateXPositions[dateIndex + 1] : null;
+      const previousX = dateIndex > 0 ? dateXPositions[dateIndex - 1] : null;
+      const forwardGap = Number.isFinite(nextX) ? Math.max(0, nextX - baseX) : 0;
+      const backwardGap = Number.isFinite(previousX) ? Math.max(0, baseX - previousX) : 0;
+      const availableGap = forwardGap || backwardGap;
+      const offset = Math.min(16, Math.max(6, availableGap * 0.2));
+      const markerX = Number.isFinite(nextX)
+        ? Math.min(baseX + offset, nextX - 4)
+        : Number.isFinite(previousX)
+          ? baseX + Math.min(10, Math.max(4, backwardGap * 0.15))
+          : baseX;
+      markerXByDate.set(marker.date, markerX);
     });
-
-  timelineItems.sort((a, b) => a.sortValue - b.sortValue);
-
-  const slotCount = Math.max(timelineItems.length, 1);
-  const padding = Math.min(28, width * 0.08);
-  const start = left + padding;
-  const end = left + width - padding;
-
-  let slotPositions;
-  if (!phaseBoundary) {
-    slotPositions = buildCenteredSegmentPositions(slotCount, start, end, 88);
-  } else {
-    const baselineDate = dates[phaseBoundary.leftIndex];
-    const treatmentDate = dates[phaseBoundary.rightIndex];
-    const phaseBoundaryValue = (dateSortValue(baselineDate) + dateSortValue(treatmentDate)) / 2;
-    const leftItems = timelineItems.filter((item) => item.sortValue <= phaseBoundaryValue);
-    const rightItems = timelineItems.filter((item) => item.sortValue > phaseBoundaryValue);
-    const phaseGap = Math.min(72, width * 0.12);
-    const usableWidth = end - start - phaseGap;
-    const leftWidth = usableWidth / 2;
-    const rightWidth = usableWidth / 2;
-    const leftPositions = buildCenteredSegmentPositions(leftItems.length, start, start + leftWidth, 88);
-    const rightPositions = buildCenteredSegmentPositions(rightItems.length, start + leftWidth + phaseGap, end, 88);
-    slotPositions = [...leftPositions, ...rightPositions];
-  }
-
-  timelineItems.forEach((item, index) => {
-    const x = slotPositions[index];
-    if (item.kind === "date") {
-      dateXPositions[dates.indexOf(item.date)] = x;
-    } else {
-      markerXByDate.set(item.date, x);
-    }
-  });
 
   return { dateXPositions, markerXByDate };
 }
@@ -599,16 +654,22 @@ function dateSortValue(value) {
   return Date.parse(`${value}T00:00:00`);
 }
 
-function axisTicks(yTop, yStep) {
+function axisTicks(yTop, yStep, wholeNumbersOnly = false) {
   if (!yStep) {
-    return [0, 1, 2, 3, 4].map((index) => Math.round((yTop / 4) * index));
+    const steps = wholeNumbersOnly ? Math.min(5, Math.max(2, yTop)) : 4;
+    return Array.from({ length: steps + 1 }, (_, index) => {
+      const value = Math.round((yTop / steps) * index);
+      return wholeNumbersOnly ? Math.round(value) : value;
+    });
   }
   const ticks = [];
-  for (let value = 0; value <= yTop; value += yStep) {
+  const maxTickCount = 6;
+  const step = Math.max(yStep, Math.ceil(yTop / maxTickCount));
+  for (let value = 0; value <= yTop; value += step) {
     ticks.push(value);
   }
   if (ticks[ticks.length - 1] !== yTop) ticks.push(yTop);
-  return ticks;
+  return wholeNumbersOnly ? [...new Set(ticks.map((value) => Math.round(value)))] : ticks;
 }
 
 function drawEmpty(ctx, width, height, message) {
@@ -616,17 +677,6 @@ function drawEmpty(ctx, width, height, message) {
   ctx.font = "15px system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText(message, width / 2, height / 2);
-}
-
-function buildCenteredSegmentPositions(count, start, end, maxStep) {
-  if (count <= 0) return [];
-  if (count === 1) return [(start + end) / 2];
-  const width = end - start;
-  const naturalStep = width / (count - 1);
-  const step = Math.min(naturalStep, maxStep);
-  const span = step * (count - 1);
-  const offset = (width - span) / 2;
-  return Array.from({ length: count }, (_, index) => start + offset + index * step);
 }
 
 export function formatGraphDate(value) {

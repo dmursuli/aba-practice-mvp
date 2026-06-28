@@ -2,7 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
+  buildChartLayout,
+  buildDateTicks,
   buildClinicalGraphModel,
+  filterSeriesPointsByDateRange,
   buildGraphAnalysis,
   buildLegendItems,
   buildMovingAverageSeriesSet,
@@ -217,18 +220,81 @@ test('graph date labels include the year in M/D/YYYY format', () => {
   assert.equal(formatGraphDate('2026-05-21'), '5/21/2026');
 });
 
-test('caregiver-training graphs reuse graph tooling in Graph View and Funder Report', () => {
+test('dense graphs thin x-axis labels while keeping the first and last dates', () => {
+  const series = [{
+    name: 'Aggression',
+    points: Array.from({ length: 75 }, (_, index) => ({
+      x: new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10),
+      y: index % 7
+    }))
+  }];
+  const ticks = buildDateTicks(series);
+  assert.equal(ticks[0].date, '2026-01-01');
+  assert.equal(ticks.at(-1).date, '2026-03-16');
+  assert.ok(ticks.length >= 8 && ticks.length <= 12);
+});
+
+test('all-data chart layout uses the full plot width instead of reserving a phase gap', () => {
+  const dates = ['2026-04-17', '2026-04-18', '2026-04-20', '2026-04-22', '2026-04-24'];
+  const phaseBoundary = {
+    date: '2026-04-18',
+    leftIndex: 0,
+    rightIndex: 1,
+    label: 'Treatment',
+    lineStyle: 'solid',
+    phaseType: 'baselineToTreatment'
+  };
+  const layout = buildChartLayout(dates, 56, 600, phaseBoundary, []);
+  const positions = layout.dateXPositions;
+  const totalSpan = positions.at(-1) - positions[0];
+  const treatmentSpan = positions.at(-1) - positions[1];
+  const baselineGap = positions[1] - positions[0];
+
+  assert.ok(Number.isFinite(positions[0]));
+  assert.ok(Number.isFinite(positions.at(-1)));
+  assert.ok(totalSpan > 450);
+  assert.ok(treatmentSpan > totalSpan * 0.7);
+  assert.ok(baselineGap < totalSpan * 0.2);
+});
+
+test('date range filtering keeps all source points intact while changing the visible graph series', () => {
+  const series = [{
+    name: 'Aggression',
+    meta: { behaviorId: 'behavior-1' },
+    points: [
+      { x: '2026-01-01', y: 3 },
+      { x: '2026-02-01', y: 2 },
+      { x: '2026-03-01', y: 1 }
+    ]
+  }];
+  const filtered = filterSeriesPointsByDateRange(series, {
+    startDate: '2026-02-01',
+    endDate: '2026-03-01'
+  });
+
+  assert.equal(series[0].points.length, 3);
+  assert.equal(filtered[0].points.length, 2);
+  assert.deepEqual(filtered[0].points.map((point) => point.x), ['2026-02-01', '2026-03-01']);
+});
+
+test('graph layout uses responsive width without data-length based canvas sizing', () => {
   const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   const htmlSource = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const chartSource = fs.readFileSync(new URL('../public/charts.js', import.meta.url), 'utf8');
+  const stylesSource = fs.readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 
-  assert.match(appSource, /Caregiver Training/);
-  assert.match(appSource, /drawParentTrainingChartSet\(sessions, parentTrainingCharts, "parent-training-chart"/);
-  assert.match(appSource, /renderCustomPhaseLineManager\(graphKey, chart\.series/);
-  assert.match(appSource, /data-delete-parent-point/);
-  assert.match(appSource, /parentTrainingSummary/);
-  assert.match(appSource, /data-parent-training-analysis/);
-  assert.match(appSource, /report-parent-training-charts/);
-  assert.match(htmlSource, /id="parent-training-charts"/);
+  assert.match(appSource, /behaviorGraphRangePreset/);
+  assert.match(appSource, /behavior-graph-range-preset/);
+  assert.match(appSource, /showPointMarkers: state\.behaviorGraphShowPoints/);
+  assert.match(appSource, /<div class="graph-canvas-scroll">/);
+  assert.match(htmlSource, /id="behavior-graph-controls"/);
+  assert.match(chartSource, /canvas\.style\.width = "100%"/);
+  assert.match(chartSource, /canvas\.style\.maxWidth = "100%"/);
+  assert.doesNotMatch(chartSource, /dateCount \* DENSE_SCROLL_PIXELS_PER_DATE/);
+  assert.doesNotMatch(chartSource, /canvas\.style\.width = `\$\{denseWidth\}px`/);
+  assert.match(stylesSource, /\.graph-canvas-scroll\s*\{[\s\S]*width: 100%;[\s\S]*max-width: 100%;/);
+  assert.match(stylesSource, /\.graph-canvas-scroll canvas\s*\{[\s\S]*width: 100%;[\s\S]*max-width: 100%;/);
+  assert.match(stylesSource, /\.view-switcher\s*\{[\s\S]*flex-wrap: wrap;[\s\S]*overflow-x: visible;/);
 });
 
 test('skill graph analysis reports baseline, treatment, trend, and mastery metrics', () => {

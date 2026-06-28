@@ -1151,6 +1151,74 @@ button:focus-visible {
   padding: 14px;
 }
 
+.graph-controls {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.graph-controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  align-items: end;
+}
+
+.graph-controls-row label {
+  display: grid;
+  gap: 6px;
+  min-width: 150px;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+.graph-controls-row input,
+.graph-controls-row select {
+  min-width: 0;
+}
+
+.graph-toggle-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.graph-toggle-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 0.92rem;
+}
+
+.graph-toggle-pill input {
+  margin: 0;
+}
+
+.graph-canvas-scroll {
+  overflow-x: hidden;
+  overflow-y: hidden;
+  padding-bottom: 6px;
+  width: 100%;
+  max-width: 100%;
+}
+
+.graph-canvas-scroll canvas {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.graph-range-note {
+  margin: 4px 0 0;
+  color: var(--ink-muted);
+  font-size: 0.92rem;
+}
+
 .graph-legend {
   display: flex;
   flex-wrap: wrap;
@@ -1647,19 +1715,14 @@ button:disabled {
   }
 
   .view-switcher {
-    flex-wrap: nowrap;
-    overflow-x: auto;
+    flex-wrap: wrap;
+    overflow-x: visible;
     padding-bottom: 4px;
     margin-top: 14px;
-    scrollbar-width: none;
-  }
-
-  .view-switcher::-webkit-scrollbar {
-    display: none;
   }
 
   .view-tab {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
     min-height: 42px;
     padding: 10px 12px;
   }
