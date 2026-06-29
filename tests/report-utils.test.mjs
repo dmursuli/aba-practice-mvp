@@ -629,6 +629,7 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /handleReportAssessmentUpload/);
   assert.match(appSource, /generatedSectionAutofill/);
   assert.match(appSource, /isLegacyGeneratedSkillAcquisitionSummary/);
+  assert.match(appSource, /isLegacyGeneratedParentTrainingSummary/);
   assert.match(appSource, /report-breakdown-table/);
   assert.match(appSource, /reportAssessmentDocumentRefsFromClient/);
   assert.match(appSource, /safeReportFilePreview\("assessmentGrid", "Assessment grid"\)/);

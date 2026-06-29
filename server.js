@@ -11,6 +11,10 @@ import {
   removeParentGoalPointFromSession,
   removeTargetPointFromSession
 } from "./public/session-utils.js";
+import {
+  normalizeHistoricalImportDataType,
+  validateHistoricalImportRows
+} from "./public/historical-import-utils.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(root, "public");
@@ -303,6 +307,233 @@ function validateSession(payload, db) {
   };
 }
 
+function historicalImportServiceType(dataType) {
+  return dataType === "caregiver_training" ? "parent-training" : "97153";
+}
+
+function findHistoricalImportDuplicateEntry(session, row) {
+  const dataType = normalizeHistoricalImportDataType(row?.dataType);
+  const measurementType = String(row?.measurementType || "");
+  if (dataType === "skill") {
+    const program = (session.programs || []).find((item) => item.programId === row.programId);
+    const target = program?.targets?.find((item) => item.targetId === row.targetId);
+    if (target && String(target.historicalImportMeasurementType || "") === measurementType) {
+      return { kind: "skill", target, program };
+    }
+    return null;
+  }
+  if (dataType === "behavior") {
+    const behavior = (session.behaviors || []).find((item) => (
+      item.behaviorId === row.behaviorId
+      && String(item.historicalImportMeasurementType || "") === measurementType
+    ));
+    return behavior ? { kind: "behavior", behavior } : null;
+  }
+  const goal = (session.parentGoals || []).find((item) => (
+    String(item.goalName || "").trim().toLowerCase() === String(row.goalName || "").trim().toLowerCase()
+    && String(item.targetName || "").trim().toLowerCase() === String(row.targetName || "").trim().toLowerCase()
+    && String(item.historicalImportMeasurementType || "") === measurementType
+  ));
+  return goal ? { kind: "caregiver_training", goal } : null;
+}
+
+function cloneImportEntrySnapshot(entry, kind, programId = "") {
+  if (!entry) return null;
+  return {
+    kind,
+    programId,
+    entry: structuredClone(entry)
+  };
+}
+
+function restoreHistoricalImportEntry(session, snapshot) {
+  if (!session || !snapshot?.entry) return;
+  if (snapshot.kind === "skill") {
+    const program = (session.programs || []).find((item) => item.programId === snapshot.programId);
+    const index = (program?.targets || []).findIndex((item) => item.targetId === snapshot.entry.targetId);
+    if (program && index >= 0) program.targets[index] = structuredClone(snapshot.entry);
+    return;
+  }
+  if (snapshot.kind === "behavior") {
+    const index = (session.behaviors || []).findIndex((item) => item.behaviorId === snapshot.entry.behaviorId);
+    if (index >= 0) session.behaviors[index] = structuredClone(snapshot.entry);
+    return;
+  }
+  const index = (session.parentGoals || []).findIndex((item) => (
+    String(item.goalName || "").trim().toLowerCase() === String(snapshot.entry.goalName || "").trim().toLowerCase()
+    && String(item.targetName || "").trim().toLowerCase() === String(snapshot.entry.targetName || "").trim().toLowerCase()
+  ));
+  if (index >= 0) session.parentGoals[index] = structuredClone(snapshot.entry);
+}
+
+function applyHistoricalImportRowToSession(session, row, metadata) {
+  if (row.dataType === "skill") {
+    let program = (session.programs || []).find((item) => item.programId === row.programId);
+    if (!program) {
+      program = { programId: row.programId, targets: [] };
+      session.programs.push(program);
+    }
+    const target = {
+      targetId: row.targetId,
+      trials: Number(row.trials || row.denominator || 0),
+      correct: Number(row.correct || 0),
+      incorrect: Number(row.incorrect || 0),
+      promptLevel: "historical import",
+      phase: row.phase === "baseline" ? "baseline" : "intervention",
+      independence: Number(row.value || 0),
+      historicalImportMeasurementType: metadata.measurementType,
+      historicalImportRowId: metadata.rowId,
+      historicalImportBatchId: metadata.batchId
+    };
+    program.targets.push(target);
+    return;
+  }
+  if (row.dataType === "behavior") {
+    session.behaviors.push({
+      behaviorId: row.behaviorId,
+      frequency: Number(row.frequency || row.value || 0),
+      duration: "",
+      intensity: "",
+      phase: row.phase === "baseline" ? "baseline" : "intervention",
+      historicalImportMeasurementType: metadata.measurementType,
+      historicalImportRowId: metadata.rowId,
+      historicalImportBatchId: metadata.batchId
+    });
+    return;
+  }
+  session.parentGoals.push({
+    goalName: row.goalName,
+    targetName: row.targetName,
+    opportunities: Number(row.opportunities || row.denominator || 0),
+    independent: Number(row.independent || 0),
+    prompted: Number(row.prompted || 0),
+    promptLevel: "historical import",
+    fidelity: Number(row.value || 0),
+    historicalImportMeasurementType: metadata.measurementType,
+    historicalImportRowId: metadata.rowId,
+    historicalImportBatchId: metadata.batchId
+  });
+}
+
+function updateHistoricalImportEntry(existing, row, metadata) {
+  if (!existing) return;
+  if (existing.kind === "skill") {
+    Object.assign(existing.target, {
+      trials: Number(row.trials || row.denominator || 0),
+      correct: Number(row.correct || 0),
+      incorrect: Number(row.incorrect || 0),
+      phase: row.phase === "baseline" ? "baseline" : "intervention",
+      independence: Number(row.value || 0),
+      historicalImportMeasurementType: metadata.measurementType,
+      historicalImportRowId: metadata.rowId,
+      historicalImportBatchId: metadata.batchId
+    });
+    return;
+  }
+  if (existing.kind === "behavior") {
+    Object.assign(existing.behavior, {
+      frequency: Number(row.frequency || row.value || 0),
+      phase: row.phase === "baseline" ? "baseline" : "intervention",
+      historicalImportMeasurementType: metadata.measurementType,
+      historicalImportRowId: metadata.rowId,
+      historicalImportBatchId: metadata.batchId
+    });
+    return;
+  }
+  Object.assign(existing.goal, {
+    opportunities: Number(row.opportunities || row.denominator || 0),
+    independent: Number(row.independent || 0),
+    prompted: Number(row.prompted || 0),
+    fidelity: Number(row.value || 0),
+    historicalImportMeasurementType: metadata.measurementType,
+    historicalImportRowId: metadata.rowId,
+    historicalImportBatchId: metadata.batchId
+  });
+}
+
+function createHistoricalImportSession({ client, actor, row, batchId, importedAt }) {
+  return {
+    id: crypto.randomUUID(),
+    clientId: client.id,
+    date: row.date,
+    therapist: actor.name || actor.username || "Historical import",
+    startTime: "00:00",
+    endTime: "00:00",
+    setting: row.setting || "Historical import",
+    caregiverPresent: false,
+    affect: "neutral",
+    transitions: "typical",
+    programs: [],
+    behaviors: [],
+    barriers: "none",
+    barrierText: "",
+    caregiverTraining: row.dataType === "caregiver_training",
+    notes: row.notes || "Historical data import",
+    serviceType: historicalImportServiceType(row.dataType),
+    parentTraining: row.dataType === "caregiver_training"
+      ? {
+          caregiverName: "Historical import",
+          trainingFocus: "Pre-app caregiver training data"
+        }
+      : null,
+    parentGoals: [],
+    providerSignature: actor.name || actor.username || "Historical import",
+    providerCredential: String(actor.role || "").toUpperCase(),
+    soapNote: "",
+    finalized: false,
+    agency: normalizeAgency(client.agency),
+    source: "historical_import",
+    historicalImport: {
+      source: "historical_import",
+      batchId,
+      importedAt,
+      importedBy: actor.id,
+      importedByName: actor.name || actor.username || "",
+      dataType: row.dataType
+    },
+    createdAt: importedAt,
+    updatedAt: importedAt
+  };
+}
+
+function selectedHistoricalImportReference(client, dataType, selection = {}) {
+  if (!client) return null;
+  const selectedId = String(selection?.id || selection?.targetId || "").trim();
+  if (dataType === "behavior") {
+    const behavior = (client.behaviors || []).find((item) => item.id === selectedId);
+    return behavior ? { id: behavior.id, behaviorId: behavior.id, behaviorName: behavior.name, label: behavior.name } : null;
+  }
+  if (dataType === "caregiver_training") {
+    return (client.profile?.parentTrainingGoals || [])
+      .map((goal) => ({
+        id: `${goal.goalName}::${goal.targetName}`,
+        goal: goal.goalName,
+        target: goal.targetName,
+        goalName: goal.goalName,
+        targetName: goal.targetName,
+        label: `${goal.goalName} - ${goal.targetName}`
+      }))
+      .find((goal) => goal.id === selectedId) || null;
+  }
+  for (const program of client.programs || []) {
+    const target = (program.targets || []).find((item) => item.id === selectedId);
+    if (target) {
+      return {
+        id: target.id,
+        programId: program.id,
+        programName: program.name,
+        domain: program.domain || "General",
+        targetId: target.id,
+        targetName: target.name,
+        goal: program.name,
+        target: target.name,
+        label: `${program.name} - ${target.name} (${program.domain || "General"})`
+      };
+    }
+  }
+  return null;
+}
+
 async function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const requested = url.pathname === "/" ? "/index.html" : url.pathname;
@@ -398,6 +629,10 @@ function ensureAgencyScoping(db) {
   db.clients = Array.isArray(db.clients) ? db.clients : [];
   db.sessions = Array.isArray(db.sessions) ? db.sessions : [];
   db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
+  if (!Array.isArray(db.historicalImportBatches)) {
+    db.historicalImportBatches = [];
+    changed = true;
+  }
 
   db.users.forEach((user) => {
     const normalizedAgency = normalizeAgency(user.agency);
@@ -442,6 +677,15 @@ function ensureAgencyScoping(db) {
     const normalizedAgency = normalizeAgency(entry.agency || client?.agency);
     if (entry.agency !== normalizedAgency) {
       entry.agency = normalizedAgency;
+      changed = true;
+    }
+  });
+
+  db.historicalImportBatches.forEach((batch) => {
+    const client = db.clients.find((item) => item.id === batch.clientId);
+    const normalizedAgency = normalizeAgency(batch.agency || client?.agency);
+    if (batch.agency !== normalizedAgency) {
+      batch.agency = normalizedAgency;
       changed = true;
     }
   });
@@ -1216,6 +1460,201 @@ export function createAppServer() {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/api/historical-imports") {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const payload = await readBody(req);
+      const client = db.clients.find((item) => item.id === payload.clientId);
+      if (!client || !canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot import historical data for this client."] });
+        return;
+      }
+      const dataType = normalizeHistoricalImportDataType(payload.dataType);
+      const duplicateStrategy = ["skip", "replace", "update", "cancel"].includes(payload.duplicateStrategy)
+        ? payload.duplicateStrategy
+        : "skip";
+      const selectedReference = selectedHistoricalImportReference(client, dataType, payload.selectedReference || {});
+      if (!dataType) {
+        sendJson(res, 400, { errors: ["A valid historical import data type is required."] });
+        return;
+      }
+      const rows = Array.isArray(payload.rows) ? payload.rows : [];
+      const preview = validateHistoricalImportRows({
+        client,
+        sessions: (db.sessions || []).filter((session) => session.clientId === client.id),
+        dataType,
+        measurementType: payload.measurementType,
+        selectedReference,
+        rows,
+        duplicateStrategy,
+        today: new Date()
+      });
+      if (!preview.rows.length) {
+        sendJson(res, 400, { errors: ["Add at least one historical data row before importing."] });
+        return;
+      }
+      if (preview.summary.importableRows === 0) {
+        sendJson(res, 400, { errors: ["No valid historical rows are ready to import."], preview });
+        return;
+      }
+      const importedAt = new Date().toISOString();
+      const batchId = crypto.randomUUID();
+      const createdSessions = new Map();
+      const createdSessionIds = [];
+      const updatedEntries = [];
+      const results = {
+        created: 0,
+        updated: 0,
+        skipped: 0,
+        invalid: 0
+      };
+
+      preview.rows.forEach((previewRow) => {
+        if (previewRow.errors.length || !previewRow.commitShape) {
+          results.invalid += 1;
+          return;
+        }
+        if (previewRow.commitAction === "skip") {
+          results.skipped += 1;
+          return;
+        }
+        const row = previewRow.commitShape;
+        const metadata = {
+          batchId,
+          rowId: crypto.randomUUID(),
+          measurementType: row.measurementType
+        };
+        if (previewRow.commitAction === "update" && previewRow.existingDuplicate?.sessionId) {
+          const existingSession = db.sessions.find((session) => session.id === previewRow.existingDuplicate.sessionId);
+          const existingEntry = existingSession ? findHistoricalImportDuplicateEntry(existingSession, row) : null;
+          if (existingSession && existingEntry) {
+            updatedEntries.push({
+              sessionId: existingSession.id,
+              snapshot: cloneImportEntrySnapshot(
+                existingEntry.kind === "skill" ? existingEntry.target : existingEntry.kind === "behavior" ? existingEntry.behavior : existingEntry.goal,
+                existingEntry.kind,
+                existingEntry.program?.programId || row.programId || ""
+              ),
+              previousUpdatedAt: existingSession.updatedAt || existingSession.createdAt || ""
+            });
+            updateHistoricalImportEntry(existingEntry, row, metadata);
+            existingSession.updatedAt = importedAt;
+            results.updated += 1;
+            return;
+          }
+        }
+
+        const baseGroupKey = [
+          row.date,
+          historicalImportServiceType(row.dataType),
+          row.setting || "Historical import"
+        ].join("::");
+        const groupKey = previewRow.commitAction === "keep-both"
+          ? `${baseGroupKey}::${previewRow.rowNumber}`
+          : baseGroupKey;
+        let session = createdSessions.get(groupKey);
+        if (!session) {
+          session = createHistoricalImportSession({ client, actor, row, batchId, importedAt });
+          createdSessions.set(groupKey, session);
+          createdSessionIds.push(session.id);
+        }
+        applyHistoricalImportRowToSession(session, row, metadata);
+        results.created += 1;
+      });
+
+      db.sessions.unshift(...[...createdSessions.values()]);
+      db.historicalImportBatches = db.historicalImportBatches || [];
+      db.historicalImportBatches.unshift({
+        id: batchId,
+        clientId: client.id,
+        clientName: client.name || "",
+        agency: normalizeAgency(client.agency),
+        dataType,
+        measurementType: payload.measurementType || "",
+        selectedReferenceId: selectedReference?.id || "",
+        selectedReferenceLabel: selectedReference?.label || "",
+        duplicateStrategy,
+        importedAt,
+        importedBy: actor.id,
+        importedByName: actor.name || actor.username || "",
+        rowCount: preview.summary.totalRows,
+        importableRows: preview.summary.importableRows,
+        skippedRows: results.skipped,
+        invalidRows: results.invalid,
+        createdSessionIds,
+        updatedEntries,
+        resultCounts: results,
+        status: "committed"
+      });
+      logAudit(db, req, actor, "historical-import-committed", {
+        clientId: client.id,
+        details: {
+          batchId,
+          dataType,
+          rowCount: preview.summary.totalRows,
+          created: results.created,
+          updated: results.updated,
+          skipped: results.skipped,
+          invalid: results.invalid
+        }
+      });
+      await writeDb(db);
+      sendJson(res, 201, {
+        ok: true,
+        batchId,
+        results,
+        createdSessionIds,
+        preview
+      });
+      return;
+    }
+
+    const historicalImportMatch = url.pathname.match(/^\/api\/historical-imports\/([^/]+)$/);
+    if (req.method === "DELETE" && historicalImportMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const batch = (db.historicalImportBatches || []).find((item) => item.id === historicalImportMatch[1]);
+      if (!batch) {
+        sendJson(res, 404, { errors: ["Historical import batch not found."] });
+        return;
+      }
+      const client = db.clients.find((item) => item.id === batch.clientId);
+      if (!client || !canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot rollback this historical import batch."] });
+        return;
+      }
+      if (batch.status === "rolled_back") {
+        sendJson(res, 400, { errors: ["This historical import batch has already been rolled back."] });
+        return;
+      }
+      const createdSessionIds = new Set(batch.createdSessionIds || []);
+      db.sessions = (db.sessions || []).filter((session) => !createdSessionIds.has(session.id));
+      (batch.updatedEntries || []).slice().reverse().forEach((entry) => {
+        const session = db.sessions.find((item) => item.id === entry.sessionId);
+        if (!session) return;
+        restoreHistoricalImportEntry(session, entry.snapshot);
+        session.updatedAt = entry.previousUpdatedAt || new Date().toISOString();
+      });
+      batch.status = "rolled_back";
+      batch.rolledBackAt = new Date().toISOString();
+      batch.rolledBackBy = actor.id;
+      batch.rolledBackByName = actor.name || actor.username || "";
+      logAudit(db, req, actor, "historical-import-rolled-back", {
+        clientId: client.id,
+        details: {
+          batchId: batch.id,
+          dataType: batch.dataType,
+          removedSessions: (batch.createdSessionIds || []).length,
+          restoredEntries: (batch.updatedEntries || []).length
+        }
+      });
+      await writeDb(db);
+      sendJson(res, 200, { ok: true, batchId: batch.id });
+      return;
+    }
+
     const sessionMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)$/);
     if (req.method === "DELETE" && sessionMatch) {
       const db = await readDbWithUsers();
@@ -1916,6 +2355,11 @@ function visibleAuditLog(db, user) {
   });
 }
 
+function visibleHistoricalImportBatches(db, user) {
+  const clientIds = new Set(visibleClients(db, user).map((client) => client.id));
+  return (db.historicalImportBatches || []).filter((batch) => clientIds.has(batch.clientId));
+}
+
 function publicUser(user) {
   return {
     id: user.id,
@@ -1940,7 +2384,8 @@ function redactDb(db, user) {
   return {
     ...publicDb,
     clients: visibleClients(db, user),
-    sessions: visibleSessions(db, user)
+    sessions: visibleSessions(db, user),
+    historicalImportBatches: visibleHistoricalImportBatches(db, user)
   };
 }
 
@@ -1953,6 +2398,7 @@ function practiceBackupPayload(db) {
     data: {
       clients: db.clients || [],
       sessions: db.sessions || [],
+      historicalImportBatches: db.historicalImportBatches || [],
       auditLog: db.auditLog || [],
       users: (db.users || []).map(publicUser)
     }
@@ -1963,7 +2409,7 @@ function restorePracticeBackup(currentDb, backup) {
   if (!backup || backup.app !== "ABA Practice MVP" || !backup.data) {
     throw new Error("That file is not a valid ABA Practice MVP backup.");
   }
-  const { clients, sessions, auditLog } = backup.data;
+  const { clients, sessions, historicalImportBatches, auditLog } = backup.data;
   if (!Array.isArray(clients) || !Array.isArray(sessions)) {
     throw new Error("Backup must include clients and sessions.");
   }
@@ -1971,6 +2417,7 @@ function restorePracticeBackup(currentDb, backup) {
     ...currentDb,
     clients,
     sessions,
+    historicalImportBatches: Array.isArray(historicalImportBatches) ? historicalImportBatches : [],
     auditLog: Array.isArray(auditLog) ? auditLog : [],
     users: currentDb.users || []
   };
@@ -2312,20 +2759,28 @@ function sanitizeFunderReport(payload) {
   const customPhaseLines = (() => {
     const source = payload.customPhaseLines;
     if (!source || typeof source !== "object" || Array.isArray(source)) return {};
+    const allowedPhaseTypes = new Set(["environmentalChange", "userTreatmentOverride"]);
     return Object.entries(source).reduce((result, [graphKey, values]) => {
       const key = text(graphKey);
       if (!key || !Array.isArray(values)) return result;
       const lines = values.reduce((entries, line) => {
+        const phaseType = allowedPhaseTypes.has(text(line?.phaseType))
+          ? text(line?.phaseType)
+          : "environmentalChange";
         const date = text(line?.date);
-        const label = text(line?.label);
-        if (!date || !label) return entries;
+        const hidden = Boolean(line?.hidden);
+        const label = text(line?.label) || (phaseType === "userTreatmentOverride" ? "Treatment" : "");
+        if ((phaseType === "environmentalChange" && (!date || !label)) || (phaseType === "userTreatmentOverride" && !hidden && !date)) {
+          return entries;
+        }
         entries.push({
-          id: text(line?.id) || `${key}:${date}:${label.toLowerCase()}`,
+          id: text(line?.id) || (phaseType === "userTreatmentOverride" ? `${key}:treatment-override` : `${key}:${date}:${label.toLowerCase()}`),
           date,
           label,
           lineStyle: text(line?.lineStyle) === "solid" ? "solid" : "dashed",
           note: text(line?.note),
-          phaseType: "environmentalChange"
+          phaseType,
+          hidden
         });
         return entries;
       }, []);

@@ -1,7 +1,8 @@
-import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, setupVerificationEmail, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
-import { buildGraphAnalysis, buildLegendItems, drawLineChart, filterSeriesPointsByDateRange, formatGraphDate } from "./charts.js";
+import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setupVerificationEmail, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
-import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
+import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
+import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
 import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, isLegacyGeneratedSkillAcquisitionSummary, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, summarizeSkillAcquisitionReport } from "./report-utils.js";
 import { generateSoapNote } from "./soap.js";
 import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms } from "./session-utils.js";
@@ -49,6 +50,8 @@ const state = {
     assessmentGrid: [],
     standardizedAssessmentGrid: []
   },
+  historicalImportRows: [],
+  historicalImportPreview: null,
   reportCustomPhaseLines: {},
   inactivityTimerId: null,
   inactivityWarningTimerId: null,
@@ -56,8 +59,8 @@ const state = {
 };
 
 const roleViews = {
-  admin: ["clients", "users", "session", "intake", "workflow", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
-  bcba: ["clients", "session", "intake", "workflow", "plan", "parent", "graphs", "report", "soap", "billing", "health", "audit"],
+  admin: ["clients", "users", "session", "intake", "workflow", "plan", "parent", "graphs", "import", "report", "soap", "billing", "health", "audit"],
+  bcba: ["clients", "session", "intake", "workflow", "plan", "parent", "graphs", "import", "report", "soap", "billing", "health", "audit"],
   rbt: ["session", "graphs", "soap"],
   "read-only": ["graphs", "report", "soap"]
 };
@@ -141,6 +144,21 @@ const parentTrainingCharts = document.querySelector("#parent-training-charts");
 const graphsClientSummary = document.querySelector("#graphs-client-summary");
 const graphScopeTabs = document.querySelector("#graph-scope-tabs");
 const graphDomainTabs = document.querySelector("#graph-domain-tabs");
+const historicalImportForm = document.querySelector("#historical-import-form");
+const historicalImportClientSelect = document.querySelector("#historical-import-client");
+const historicalImportDataTypeSelect = document.querySelector("#historical-import-data-type");
+const historicalImportMeasurementTypeSelect = document.querySelector("#historical-import-measurement-type");
+const historicalImportReferenceSelect = document.querySelector("#historical-import-reference");
+const historicalImportDuplicateStrategySelect = document.querySelector("#historical-import-duplicate-strategy");
+const historicalImportCsvInput = document.querySelector("#historical-import-csv");
+const historicalImportRows = document.querySelector("#historical-import-rows");
+const historicalImportMessage = document.querySelector("#historical-import-message");
+const historicalImportSummary = document.querySelector("#historical-import-summary");
+const historicalImportPreviewTable = document.querySelector("#historical-import-preview-table");
+const historicalImportBatches = document.querySelector("#historical-import-batches");
+const historicalImportTemplateButton = document.querySelector("#historical-import-template");
+const historicalImportAddRowButton = document.querySelector("#historical-import-add-row");
+const historicalImportPreviewButton = document.querySelector("#historical-import-preview");
 const reportClientSummary = document.querySelector("#report-client-summary");
 const workflowBoard = document.querySelector("#workflow-board");
 const workflowClientSummary = document.querySelector("#workflow-client-summary");
@@ -547,6 +565,28 @@ function bindEvents() {
   workspaceClientSelect.addEventListener("change", () => setActiveClient(workspaceClientSelect.value));
   managementClientSelect.addEventListener("change", () => setActiveClient(managementClientSelect.value));
   clientSelect.addEventListener("change", () => setActiveClient(clientSelect.value));
+  historicalImportClientSelect?.addEventListener("change", () => setActiveClient(historicalImportClientSelect.value));
+  historicalImportDataTypeSelect?.addEventListener("change", handleHistoricalImportTypeChange);
+  historicalImportMeasurementTypeSelect?.addEventListener("change", () => {
+    state.historicalImportPreview = null;
+    renderHistoricalImport();
+  });
+  historicalImportReferenceSelect?.addEventListener("change", () => {
+    state.historicalImportPreview = null;
+    renderHistoricalImport();
+  });
+  historicalImportDuplicateStrategySelect?.addEventListener("change", () => {
+    state.historicalImportPreview = null;
+    renderHistoricalImport();
+  });
+  historicalImportAddRowButton?.addEventListener("click", handleAddHistoricalImportRow);
+  historicalImportPreviewButton?.addEventListener("click", handlePreviewHistoricalImport);
+  historicalImportTemplateButton?.addEventListener("click", handleDownloadHistoricalImportTemplate);
+  historicalImportCsvInput?.addEventListener("change", handleHistoricalImportCsvSelected);
+  historicalImportRows?.addEventListener("input", handleHistoricalImportRowInput);
+  historicalImportRows?.addEventListener("change", handleHistoricalImportRowInput);
+  historicalImportRows?.addEventListener("click", handleHistoricalImportRowClick);
+  historicalImportBatches?.addEventListener("click", handleHistoricalImportBatchClick);
   form.addEventListener("input", (event) => {
     const row = event.target.closest(".program-row");
     if (row) updateProgramIndependence(row);
@@ -604,6 +644,7 @@ function bindEvents() {
     const row = event.target.closest(".parent-goal-row");
     if (row) updateParentGoalScore(row);
   });
+  historicalImportForm?.addEventListener("submit", handleCommitHistoricalImport);
   parentTrainingForm.addEventListener("submit", handleParentTrainingSubmit);
   bcbaSessionForm.elements.rbtPresent.addEventListener("change", toggleRbtFeedbackSection);
   rbtFeedbackSection.addEventListener("change", updateRbtFidelityScore);
@@ -765,6 +806,158 @@ async function handleCancelAuthFlow() {
   showLogin();
 }
 
+function handleHistoricalImportTypeChange() {
+  populateHistoricalImportMeasurementSelect();
+  populateHistoricalImportReferenceSelect();
+  state.historicalImportRows = [blankHistoricalImportRow(currentHistoricalImportDataType())];
+  state.historicalImportPreview = null;
+  renderHistoricalImport();
+}
+
+function handleAddHistoricalImportRow() {
+  state.historicalImportRows.push(blankHistoricalImportRow(currentHistoricalImportDataType()));
+  state.historicalImportPreview = null;
+  renderHistoricalImport();
+}
+
+function handleHistoricalImportRowInput(event) {
+  const rowNode = event.target.closest("[data-historical-row]");
+  if (!rowNode) return;
+  const row = state.historicalImportRows.find((item) => item.id === rowNode.dataset.historicalRow);
+  if (!row) return;
+  row[event.target.dataset.importField] = event.target.value;
+  state.historicalImportPreview = null;
+}
+
+function handleHistoricalImportRowClick(event) {
+  const removeButton = event.target.closest("[data-import-remove]");
+  if (!removeButton) return;
+  state.historicalImportRows = state.historicalImportRows.filter((row) => row.id !== removeButton.dataset.importRemove);
+  if (!state.historicalImportRows.length) {
+    state.historicalImportRows = [blankHistoricalImportRow(currentHistoricalImportDataType())];
+  }
+  state.historicalImportPreview = null;
+  renderHistoricalImport();
+}
+
+async function handleHistoricalImportCsvSelected(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  historicalImportMessage.textContent = "";
+  try {
+    const parsedRows = parseHistoricalImportCsv(await file.text());
+    if (!parsedRows.length) {
+      historicalImportMessage.textContent = "That CSV file did not include any import rows.";
+      return;
+    }
+    state.historicalImportRows = parsedRows.map((row) => ({
+      id: crypto.randomUUID(),
+      rowNumber: row.__rowNumber,
+      date: row.date || "",
+      value: row.value || "",
+      denominator: row.denominator || "",
+      phase: row.phase || "",
+      setting: row.setting || currentClient()?.defaultSetting || "",
+      notes: row.notes || ""
+    }));
+    if (!state.historicalImportRows.length) {
+      state.historicalImportRows = [blankHistoricalImportRow(currentHistoricalImportDataType())];
+    }
+    state.historicalImportPreview = null;
+    renderHistoricalImport();
+    historicalImportMessage.textContent = `Loaded ${parsedRows.length} row${parsedRows.length === 1 ? "" : "s"} from ${file.name}. Preview before importing.`;
+  } catch (error) {
+    historicalImportMessage.textContent = error.message || "Could not read that CSV file.";
+  } finally {
+    historicalImportCsvInput.value = "";
+  }
+}
+
+function handleDownloadHistoricalImportTemplate() {
+  const csv = buildHistoricalImportCsvTemplate(currentHistoricalImportDataType());
+  downloadFile(`historical-import-template-${currentHistoricalImportDataType()}.csv`, csv, "text/csv");
+}
+
+function handlePreviewHistoricalImport() {
+  const preview = validateHistoricalImportRows({
+    client: currentClient(),
+    sessions: currentSessions(),
+    dataType: currentHistoricalImportDataType(),
+    measurementType: currentHistoricalImportMeasurementType(),
+    selectedReference: currentHistoricalImportReference(),
+    rows: historicalImportRowsToPayload(),
+    duplicateStrategy: historicalImportDuplicateStrategySelect.value,
+    today: new Date()
+  });
+  state.historicalImportPreview = preview;
+  renderHistoricalImport();
+  historicalImportMessage.textContent = preview.summary.errorRows
+    ? "Review the blocked rows below before importing."
+    : `Preview ready. ${preview.summary.importableRows} row${preview.summary.importableRows === 1 ? "" : "s"} can be imported.`;
+}
+
+async function handleCommitHistoricalImport(event) {
+  event.preventDefault();
+  const preview = validateHistoricalImportRows({
+    client: currentClient(),
+    sessions: currentSessions(),
+    dataType: currentHistoricalImportDataType(),
+    measurementType: currentHistoricalImportMeasurementType(),
+    selectedReference: currentHistoricalImportReference(),
+    rows: historicalImportRowsToPayload(),
+    duplicateStrategy: historicalImportDuplicateStrategySelect.value,
+    today: new Date()
+  });
+  state.historicalImportPreview = preview;
+  renderHistoricalImport();
+  if (preview.summary.importableRows === 0) {
+    historicalImportMessage.textContent = preview.summary.errorRows
+      ? "No valid rows are ready to import yet."
+      : "Nothing is ready to import yet.";
+    return;
+  }
+  if (historicalImportDuplicateStrategySelect.value === "cancel" && preview.rows.some((row) => row.existingDuplicate)) {
+    historicalImportMessage.textContent = "Duplicates were found. Choose Skip duplicates or Replace duplicates, or cancel the import.";
+    return;
+  }
+  try {
+    const payload = await importHistoricalData({
+      clientId: currentClient()?.id,
+      dataType: currentHistoricalImportDataType(),
+      measurementType: currentHistoricalImportMeasurementType(),
+      selectedReference: currentHistoricalImportReference(),
+      duplicateStrategy: historicalImportDuplicateStrategySelect.value,
+      rows: historicalImportRowsToPayload()
+    });
+    await refreshData();
+    state.historicalImportRows = [blankHistoricalImportRow(currentHistoricalImportDataType())];
+    state.historicalImportPreview = null;
+    render();
+    historicalImportMessage.textContent = `Historical import saved. Imported ${payload.results?.created || 0}, replaced ${payload.results?.updated || 0}, skipped ${payload.results?.skipped || 0}, errors ${payload.results?.invalid || 0}.`;
+  } catch (error) {
+    state.historicalImportPreview = error.details?.preview || state.historicalImportPreview;
+    renderHistoricalImport();
+    historicalImportMessage.textContent = error.message;
+  }
+}
+
+async function handleHistoricalImportBatchClick(event) {
+  const rollbackButton = event.target.closest("[data-import-rollback]");
+  if (!rollbackButton) return;
+  if (!window.confirm("Rollback this historical import batch? This will remove created rows and restore any updated imported values.")) {
+    return;
+  }
+  try {
+    await rollbackHistoricalImport(rollbackButton.dataset.importRollback);
+    await refreshData();
+    state.historicalImportPreview = null;
+    render();
+    historicalImportMessage.textContent = "Historical import batch rolled back.";
+  } catch (error) {
+    historicalImportMessage.textContent = error.message;
+  }
+}
+
 function showAuthStep(step, details = {}) {
   state.authFlow = step;
   loginScreen.classList.remove("hidden");
@@ -810,6 +1003,8 @@ function resetSensitiveState() {
   state.authChallenge = null;
   state.authFlow = "password";
   state.draftCache = { intake: {}, session: {} };
+  state.historicalImportRows = [];
+  state.historicalImportPreview = null;
   state.lastSessionTouchAt = 0;
   currentUserLabel.textContent = "";
   clearSensitiveDom();
@@ -1056,7 +1251,8 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
     managementClientSelect,
     bcbaClientSelect,
     parentClientSelect,
-    intakeClientSelect
+    intakeClientSelect,
+    historicalImportClientSelect
   ].forEach((select) => {
     if (select) select.value = clientId;
   });
@@ -1066,6 +1262,8 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
     state.activeDomain = "";
     state.activePlanDomain = "";
     state.activeGraphDomain = "";
+    state.historicalImportRows = [];
+    state.historicalImportPreview = null;
     syncSettingFromClient();
     resetRows();
   }
@@ -2193,6 +2391,7 @@ function render() {
   renderSoapSummary();
   renderDomainTabs();
   renderGraphsSummary();
+  renderHistoricalImport();
   renderReportSummary();
   renderPlanReview();
   renderParentSummary();
@@ -2223,6 +2422,347 @@ function syncParentTrainingDefaults() {
   if (client && !parentTrainingForm.elements.setting.value) {
     parentTrainingForm.elements.setting.value = client.defaultSetting;
   }
+}
+
+function currentHistoricalImportDataType() {
+  return historicalImportDataTypeSelect?.value || "skill";
+}
+
+function historicalImportMeasurementOptions(dataType = currentHistoricalImportDataType()) {
+  if (dataType === "behavior") {
+    return [
+      { id: "frequency", name: "Frequency" },
+      { id: "duration", name: "Duration" },
+      { id: "rate", name: "Rate" },
+      { id: "percentage", name: "Percentage" }
+    ];
+  }
+  if (dataType === "caregiver_training") return [{ id: "fidelity", name: "Fidelity" }];
+  return [{ id: "percentage", name: "Percentage / Independence" }];
+}
+
+function currentHistoricalImportMeasurementType() {
+  const options = historicalImportMeasurementOptions();
+  return historicalImportMeasurementTypeSelect?.value || options[0]?.id || "percentage";
+}
+
+function populateHistoricalImportMeasurementSelect() {
+  if (!historicalImportMeasurementTypeSelect) return;
+  const options = historicalImportMeasurementOptions();
+  const current = options.some((option) => option.id === historicalImportMeasurementTypeSelect.value)
+    ? historicalImportMeasurementTypeSelect.value
+    : options[0]?.id;
+  historicalImportMeasurementTypeSelect.innerHTML = options.map((option) => (
+    `<option value="${escapeHtml(option.id)}" ${option.id === current ? "selected" : ""}>${escapeHtml(option.name)}</option>`
+  )).join("");
+}
+
+function skillImportOptions() {
+  return clientPrograms().flatMap((program) => (
+    (program.targets || []).map((target) => ({
+      id: target.id,
+      domain: program.domain || "General",
+      goal: program.name,
+      target: target.name,
+      label: `${program.name} - ${target.name} (${program.domain || "General"})`
+    }))
+  ));
+}
+
+function behaviorImportOptions() {
+  return clientBehaviors().map((behavior) => ({
+    id: behavior.id,
+    label: behavior.name
+  }));
+}
+
+function caregiverImportOptions() {
+  return currentParentTrainingGoals().map((goal) => ({
+    id: `${goal.goalName}::${goal.targetName}`,
+    goal: goal.goalName,
+    target: goal.targetName,
+    label: `${goal.goalName} - ${goal.targetName}`
+  }));
+}
+
+function findSkillImportOption(targetId = "") {
+  return skillImportOptions().find((option) => option.id === targetId) || null;
+}
+
+function findBehaviorImportOption(behaviorId = "") {
+  return behaviorImportOptions().find((option) => option.id === behaviorId) || null;
+}
+
+function findCaregiverImportOption(compositeId = "") {
+  return caregiverImportOptions().find((option) => option.id === compositeId) || null;
+}
+
+function historicalImportReferenceOptions(dataType = currentHistoricalImportDataType()) {
+  if (dataType === "behavior") return behaviorImportOptions();
+  if (dataType === "caregiver_training") return caregiverImportOptions();
+  return skillImportOptions();
+}
+
+function populateHistoricalImportReferenceSelect() {
+  if (!historicalImportReferenceSelect) return;
+  const options = historicalImportReferenceOptions();
+  const current = options.some((option) => option.id === historicalImportReferenceSelect.value)
+    ? historicalImportReferenceSelect.value
+    : options[0]?.id;
+  historicalImportReferenceSelect.innerHTML = options.map((option) => (
+    `<option value="${escapeHtml(option.id)}" ${option.id === current ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+  )).join("");
+}
+
+function currentHistoricalImportReference() {
+  const dataType = currentHistoricalImportDataType();
+  const referenceId = historicalImportReferenceSelect?.value || "";
+  if (dataType === "behavior") return findBehaviorImportOption(referenceId);
+  if (dataType === "caregiver_training") return findCaregiverImportOption(referenceId);
+  return findSkillImportOption(referenceId);
+}
+
+function currentHistoricalImportReferenceLabel() {
+  const reference = currentHistoricalImportReference();
+  if (!reference) return "No target selected";
+  if (currentHistoricalImportDataType() === "behavior") return reference.label;
+  if (currentHistoricalImportDataType() === "caregiver_training") return `${reference.goal} - ${reference.target}`;
+  return `${reference.goal} - ${reference.target}`;
+}
+
+function historicalImportValueLabel(measurementType = currentHistoricalImportMeasurementType()) {
+  return {
+    frequency: "Frequency",
+    duration: "Duration",
+    rate: "Rate",
+    percentage: "Percentage",
+    fidelity: "Fidelity",
+    percentage_independence: "Percentage / Independence"
+  }[measurementType] || "Value";
+}
+
+function blankHistoricalImportRow(dataType = currentHistoricalImportDataType()) {
+  const today = new Date().toISOString().slice(0, 10);
+  const client = currentClient();
+  return {
+    id: crypto.randomUUID(),
+    date: today,
+    value: "",
+    denominator: dataType === "behavior" ? "" : "10",
+    phase: "",
+    setting: client?.defaultSetting || "",
+    notes: ""
+  };
+}
+
+function ensureHistoricalImportRows() {
+  if (state.historicalImportRows.length) return;
+  state.historicalImportRows = [blankHistoricalImportRow()];
+}
+
+function renderHistoricalImportRows() {
+  if (!historicalImportRows) return;
+  ensureHistoricalImportRows();
+  const dataType = currentHistoricalImportDataType();
+  const measurementType = currentHistoricalImportMeasurementType();
+  const measurementLabel = historicalImportValueLabel(measurementType);
+  historicalImportRows.innerHTML = state.historicalImportRows.map((row) => `
+    <tr data-historical-row="${escapeHtml(row.id)}">
+      <td><input type="date" data-import-field="date" value="${escapeHtml(row.date || "")}"></td>
+      <td><input type="number" min="0" step="0.01" data-import-field="value" value="${escapeHtml(row.value || "")}" placeholder="${escapeHtml(measurementLabel)}"></td>
+      <td>
+        <strong>${escapeHtml(measurementLabel)}</strong>
+        ${dataType === "behavior" ? "" : `<input type="number" min="1" step="1" data-import-field="denominator" value="${escapeHtml(row.denominator || "")}" placeholder="Denominator">`}
+      </td>
+      <td>
+        <select data-import-field="phase">
+          <option value="" ${!row.phase ? "selected" : ""}>Auto</option>
+          <option value="baseline" ${row.phase === "baseline" ? "selected" : ""}>Baseline</option>
+          <option value="intervention" ${row.phase === "intervention" ? "selected" : ""}>Treatment</option>
+        </select>
+      </td>
+      <td><input type="text" data-import-field="setting" value="${escapeHtml(row.setting || "")}" placeholder="home, clinic, school"></td>
+      <td><textarea rows="2" data-import-field="notes" placeholder="Historical source notes">${escapeHtml(row.notes || "")}</textarea></td>
+      <td><button type="button" class="danger-button" data-import-remove="${escapeHtml(row.id)}">Remove</button></td>
+    </tr>
+  `).join("");
+}
+
+function historicalImportRowsToPayload() {
+  const dataType = currentHistoricalImportDataType();
+  const measurementType = currentHistoricalImportMeasurementType();
+  const reference = currentHistoricalImportReference();
+  return state.historicalImportRows.map((row) => {
+    if (dataType === "skill") {
+      return {
+        date: row.date,
+        dataType,
+        domain: reference?.domain || "",
+        goal: reference?.goal || "",
+        target: reference?.target || "",
+        targetId: reference?.id || "",
+        measurementType,
+        value: row.value,
+        denominator: row.denominator,
+        phase: row.phase,
+        setting: row.setting,
+        notes: row.notes,
+        rowNumber: row.rowNumber || ""
+      };
+    }
+    if (dataType === "behavior") {
+      return {
+        date: row.date,
+        dataType,
+        goal: reference?.label || "",
+        target: reference?.label || "",
+        targetId: reference?.id || "",
+        measurementType,
+        value: row.value,
+        phase: row.phase,
+        setting: row.setting,
+        notes: row.notes,
+        rowNumber: row.rowNumber || ""
+      };
+    }
+    return {
+      date: row.date,
+      dataType,
+      goal: reference?.goal || "",
+      target: reference?.target || "",
+      measurementType,
+      value: row.value,
+      denominator: row.denominator,
+      phase: row.phase,
+      setting: row.setting,
+      notes: row.notes,
+      rowNumber: row.rowNumber || ""
+    };
+  });
+}
+
+function renderHistoricalImportSummary() {
+  if (!historicalImportSummary) return;
+  const preview = state.historicalImportPreview;
+  if (!preview) {
+    historicalImportSummary.innerHTML = `
+      <div><strong>${state.historicalImportRows.length}</strong><span>Rows staged</span></div>
+      <div><strong>${escapeHtml(currentHistoricalImportReferenceLabel())}</strong><span>Selected target</span></div>
+      <div><strong>${(state.historicalImportBatches || []).filter((batch) => batch.clientId === currentClient()?.id && batch.status === "committed").length}</strong><span>Committed batches</span></div>
+    `;
+    return;
+  }
+  historicalImportSummary.innerHTML = `
+    <div><strong>${preview.summary.totalRows}</strong><span>Rows reviewed</span></div>
+    <div><strong>${preview.summary.importableRows}</strong><span>Rows ready to import</span></div>
+    <div><strong>${preview.summary.warningRows}</strong><span>Rows with warnings</span></div>
+    <div><strong>${preview.summary.errorRows}</strong><span>Rows with errors</span></div>
+    <div><strong>${escapeHtml(currentHistoricalImportReferenceLabel())}</strong><span>Selected target</span></div>
+  `;
+}
+
+function renderHistoricalImportPreview() {
+  if (!historicalImportPreviewTable) return;
+  const preview = state.historicalImportPreview;
+  if (!preview) {
+    historicalImportPreviewTable.innerHTML = '<p class="muted">Preview staged rows to review validation, warnings, duplicates, and commit actions.</p>';
+    return;
+  }
+  historicalImportPreviewTable.innerHTML = `
+    <p><strong>Selected ${currentHistoricalImportDataType() === "behavior" ? "Behavior" : currentHistoricalImportDataType() === "caregiver_training" ? "Caregiver Target" : "Skill Target"}:</strong> ${escapeHtml(currentHistoricalImportReferenceLabel())}</p>
+    <div class="report-table-wrap">
+      <table class="fade-plan-table">
+        <thead>
+          <tr>
+            <th>Row</th>
+            <th>Date</th>
+            <th>Value</th>
+            <th>Status</th>
+            <th>Warnings / errors</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${preview.rows.map((row) => {
+            const issueBadges = [
+              ...row.errors.map((message) => `<div class="import-badge import-badge--error">${escapeHtml(message)}</div>`),
+              ...row.warnings.map((message) => `<div class="import-badge import-badge--warning">${escapeHtml(message)}</div>`)
+            ].join(" ");
+            const statusLabel = row.errors.length
+              ? "Error"
+              : row.commitAction === "skip"
+                ? "Duplicate skipped"
+                : row.commitAction === "update"
+                  ? "Replace duplicate"
+                  : "Ready";
+            return `
+              <tr>
+                <td>${row.rowNumber}</td>
+                <td>${escapeHtml(formatDate(row.raw.date))}</td>
+                <td>${escapeHtml(row.raw.value)}</td>
+                <td><span class="import-badge ${row.errors.length ? "import-badge--error" : row.commitAction === "skip" ? "import-badge--warning" : "import-badge--success"}">${escapeHtml(statusLabel)}</span></td>
+                <td>${issueBadges || '<span class="muted">No issues detected.</span>'}</td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderHistoricalImportBatches() {
+  if (!historicalImportBatches) return;
+  const clientId = currentClient()?.id;
+  const batches = (state.historicalImportBatches || []).filter((batch) => batch.clientId === clientId);
+  if (!batches.length) {
+    historicalImportBatches.innerHTML = '<p class="muted">No historical import batches have been saved for this client yet.</p>';
+    return;
+  }
+  historicalImportBatches.innerHTML = `
+    <div class="report-table-wrap">
+      <table class="fade-plan-table">
+        <thead>
+          <tr>
+            <th>Imported</th>
+            <th>Type</th>
+            <th>Rows</th>
+            <th>Results</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${batches.map((batch) => `
+            <tr>
+              <td>${escapeHtml(formatDate(batch.importedAt))}<br><span class="muted">${escapeHtml(batch.importedByName || "")}</span></td>
+              <td>${escapeHtml(capitalize(batch.dataType.replace(/_/g, " ")))}</td>
+              <td>${Number(batch.rowCount || 0)}</td>
+              <td>
+                Created ${Number(batch.resultCounts?.created || 0)}<br>
+                Updated ${Number(batch.resultCounts?.updated || 0)}<br>
+                Skipped ${Number(batch.resultCounts?.skipped || 0)}
+              </td>
+              <td>${escapeHtml(capitalize(batch.status || "committed"))}</td>
+              <td>${batch.status === "committed" ? `<button type="button" class="secondary-button" data-import-rollback="${escapeHtml(batch.id)}">Rollback batch</button>` : ""}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderHistoricalImport() {
+  if (!historicalImportForm) return;
+  const availableClients = workflowClients();
+  populateSelect(historicalImportClientSelect, availableClients, state.activeClientId);
+  populateHistoricalImportMeasurementSelect();
+  populateHistoricalImportReferenceSelect();
+  ensureHistoricalImportRows();
+  renderHistoricalImportRows();
+  renderHistoricalImportSummary();
+  renderHistoricalImportPreview();
+  renderHistoricalImportBatches();
 }
 
 function currentParentTrainingGoals() {
@@ -3597,15 +4137,37 @@ function renderReportAssessmentDraftFiles() {
   });
 }
 
-function customPhaseLinesForGraph(graphKey) {
+function storedPhaseLinesForGraph(graphKey) {
   return sanitizeCustomPhaseLines(state.reportCustomPhaseLines)[graphKey] || [];
 }
 
+function customPhaseLinesForGraph(graphKey) {
+  return storedPhaseLinesForGraph(graphKey).filter((line) => line.phaseType === "environmentalChange");
+}
+
+function treatmentPhaseOverrideForGraph(graphKey) {
+  return storedPhaseLinesForGraph(graphKey).find((line) => line.phaseType === "userTreatmentOverride") || null;
+}
+
 function setCustomPhaseLinesForGraph(graphKey, lines) {
+  const treatmentOverride = treatmentPhaseOverrideForGraph(graphKey);
   state.reportCustomPhaseLines = {
     ...sanitizeCustomPhaseLines(state.reportCustomPhaseLines),
-    [graphKey]: sanitizeCustomPhaseLines({ [graphKey]: lines })[graphKey] || []
+    [graphKey]: sanitizeCustomPhaseLines({
+      [graphKey]: [
+        ...(Array.isArray(lines) ? lines : []),
+        ...(treatmentOverride ? [treatmentOverride] : [])
+      ]
+    })[graphKey] || []
   };
+}
+
+function setTreatmentPhaseOverrideForGraph(graphKey, line) {
+  const nextLines = [
+    ...customPhaseLinesForGraph(graphKey),
+    ...(line ? [line] : [])
+  ];
+  setCustomPhaseLinesForGraph(graphKey, nextLines);
 }
 
 function graphSeriesDateRange(series = []) {
@@ -3623,14 +4185,63 @@ function graphPhaseMarkers(graphKey, automaticMarkers = []) {
   ];
 }
 
+function graphPhaseConfig(graphKey, series = [], automaticMarkers = []) {
+  return {
+    treatmentPhaseLine: graphTreatmentPhaseLine(graphKey, series),
+    phaseMarkers: graphPhaseMarkers(graphKey, automaticMarkers)
+  };
+}
+
+function graphTreatmentPhaseLine(graphKey, series = []) {
+  const override = treatmentPhaseOverrideForGraph(graphKey);
+  const dates = [...new Set((series || []).flatMap((item) => (item.points || []).map((point) => point.x)).filter(Boolean))].sort();
+  if (override?.hidden) {
+    return {
+      id: override.id,
+      date: override.date || dates[1] || "",
+      label: override.label || "Treatment",
+      lineStyle: override.lineStyle === "dashed" ? "dashed" : "solid",
+      note: override.note || "",
+      hidden: true,
+      sourceType: "userTreatmentOverride",
+      phaseType: "baselineToTreatment"
+    };
+  }
+  if (override?.date) {
+    return {
+      id: override.id,
+      date: override.date,
+      label: override.label || "Treatment",
+      lineStyle: override.lineStyle === "dashed" ? "dashed" : "solid",
+      note: override.note || "",
+      hidden: false,
+      sourceType: "userTreatmentOverride",
+      phaseType: "baselineToTreatment"
+    };
+  }
+  if (dates.length < 2) return null;
+  return {
+    id: `${graphKey}:auto-treatment`,
+    date: dates[1],
+    label: "Treatment",
+    lineStyle: "solid",
+    note: "",
+    hidden: false,
+    sourceType: "autoTreatment",
+    phaseType: "baselineToTreatment"
+  };
+}
+
 function renderCustomPhaseLineManager(graphKey, series, options = {}) {
   const range = graphSeriesDateRange(series);
   const lines = customPhaseLinesForGraph(graphKey);
+  const treatmentLine = graphTreatmentPhaseLine(graphKey, series);
   const editingId = options.editingId || "";
   const editingLine = editingId ? lines.find((line) => line.id === editingId) : null;
+  const editingTreatment = options.editingTreatment === true;
   const submitLabel = editingLine ? "Save phase line" : "Add phase line";
-  const actionLabel = options.readOnly ? "Phase lines" : "Environmental phase lines";
-  if (options.readOnly && !lines.length) return "";
+  const actionLabel = options.readOnly ? "Environmental phase lines" : "Environmental phase lines";
+  if (options.readOnly && !lines.length && !treatmentLine) return "";
   const listMarkup = lines.length
     ? `
       <div class="graph-phase-line-list">
@@ -3653,9 +4264,65 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
     `
     : `<p class="muted">No custom environmental phase lines saved for this graph.</p>`;
 
+  const treatmentSummary = !treatmentLine
+    ? `<p class="muted">Treatment phase line unavailable; baseline/treatment analysis may be limited.</p>`
+    : treatmentLine.hidden
+      ? `<p class="muted">Treatment phase line hidden. Baseline/treatment analysis may be limited.</p>`
+      : `
+        <div class="graph-phase-line-item graph-phase-line-item-treatment">
+          <div>
+            <strong>${escapeHtml(treatmentLine.label || "Treatment")}</strong>
+            <span>${escapeHtml(formatGraphDate(treatmentLine.date))} - ${escapeHtml(treatmentLine.lineStyle)}</span>
+            ${treatmentLine.note ? `<p class="graph-phase-line-note">${escapeHtml(treatmentLine.note)}</p>` : ""}
+          </div>
+          ${options.readOnly ? "" : `
+            <div class="graph-phase-line-actions">
+              <button type="button" class="secondary-button" data-edit-treatment-phase-line="${escapeHtml(graphKey)}">Edit</button>
+              <button type="button" class="delete-button" data-hide-treatment-phase-line="${escapeHtml(graphKey)}">Hide</button>
+              ${treatmentLine.sourceType === "userTreatmentOverride" ? `<button type="button" class="secondary-button" data-reset-treatment-phase-line="${escapeHtml(graphKey)}">Reset to default</button>` : ""}
+            </div>
+          `}
+        </div>
+      `;
+
+  const treatmentFormMarkup = !options.readOnly && editingTreatment && treatmentLine
+    ? `
+      <form class="graph-phase-line-form" data-phase-line-form="${escapeHtml(graphKey)}" data-phase-line-kind="treatment" data-start-date="${escapeHtml(range.startDate)}" data-end-date="${escapeHtml(range.endDate)}">
+        <input type="hidden" name="phaseLineId" value="${escapeHtml(treatmentLine.id || `${graphKey}:treatment-override`)}">
+        <label>
+          Treatment start date
+          <input type="date" name="phaseLineDate" value="${escapeHtml(treatmentLine.date || "")}" required>
+        </label>
+        <label>
+          Label
+          <input type="text" name="phaseLineLabel" value="${escapeHtml(treatmentLine.label || "Treatment")}" maxlength="80" required>
+        </label>
+        <label>
+          Line style
+          <select name="phaseLineStyle">
+            <option value="solid" ${treatmentLine.lineStyle !== "dashed" ? "selected" : ""}>Solid</option>
+            <option value="dashed" ${treatmentLine.lineStyle === "dashed" ? "selected" : ""}>Dashed</option>
+          </select>
+        </label>
+        <label>
+          Note
+          <textarea name="phaseLineNote" rows="2" placeholder="Optional clinical note">${escapeHtml(treatmentLine.note || "")}</textarea>
+        </label>
+        <div class="graph-phase-line-form-actions">
+          <button type="submit" class="primary-button">Save treatment phase line</button>
+          <button type="button" class="secondary-button" data-cancel-treatment-phase-line="${escapeHtml(graphKey)}">Cancel</button>
+        </div>
+      </form>
+    `
+    : "";
+
   if (options.readOnly) {
     return `
       <section class="graph-phase-line-panel graph-phase-line-panel-readonly" aria-label="${escapeHtml(actionLabel)}">
+        <div class="graph-analysis-toolbar">
+          <strong>Treatment phase line</strong>
+        </div>
+        ${treatmentSummary}
         <div class="graph-analysis-toolbar">
           <strong>${escapeHtml(actionLabel)}</strong>
         </div>
@@ -3667,10 +4334,15 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
   return `
     <section class="graph-phase-line-panel" data-phase-line-panel="${escapeHtml(graphKey)}">
       <div class="graph-analysis-toolbar">
+        <strong>Treatment phase line</strong>
+      </div>
+      ${treatmentSummary}
+      ${treatmentFormMarkup}
+      <div class="graph-analysis-toolbar">
         <strong>${escapeHtml(actionLabel)}</strong>
       </div>
       ${listMarkup}
-      <form class="graph-phase-line-form" data-phase-line-form="${escapeHtml(graphKey)}" data-start-date="${escapeHtml(range.startDate)}" data-end-date="${escapeHtml(range.endDate)}">
+      <form class="graph-phase-line-form" data-phase-line-form="${escapeHtml(graphKey)}" data-phase-line-kind="environmental" data-start-date="${escapeHtml(range.startDate)}" data-end-date="${escapeHtml(range.endDate)}">
         <input type="hidden" name="phaseLineId" value="${escapeHtml(editingLine?.id || "")}">
         <label>
           Date
@@ -3875,6 +4547,8 @@ function applyFunderReportDraft(draft = {}) {
     if (typeof restoredAutofill === "string" && restoredAutofill) {
       field.dataset.autofillValue = restoredAutofill;
     } else if (field.name === "skillAcquisitionSummary" && isLegacyGeneratedSkillAcquisitionSummary(field.value || "")) {
+      field.dataset.autofillValue = String(field.value || "");
+    } else if (field.name === "parentTrainingSummary" && isLegacyGeneratedParentTrainingSummary(field.value || "")) {
       field.dataset.autofillValue = String(field.value || "");
     } else {
       delete field.dataset.autofillValue;
@@ -4894,7 +5568,7 @@ function openProgramGraphModal(programId) {
   if (!program) return;
   const chart = buildProgramSkillChart(program, currentSessions().slice().reverse());
   const graphKey = graphTrendKey("skill", programId);
-  const phaseMarkers = graphPhaseMarkers(graphKey, masteryMarkersForProgram(program.id));
+  const phaseConfig = graphPhaseConfig(graphKey, chart.series, masteryMarkersForProgram(program.id));
   programGraphModalTitle.textContent = program.name;
   programGraphModalSubtitle.textContent = `${program.domain || "General"}${chart.series.length ? ` - ${chart.series.length} target graph${chart.series.length === 1 ? "" : "s"}` : ""}`;
   programGraphModal.classList.remove("hidden");
@@ -4905,7 +5579,8 @@ function openProgramGraphModal(programId) {
       yStep: 10,
       yLabel: "% independence",
       emptyMessage: "No target data for this program",
-      phaseMarkers,
+      phaseMarkers: phaseConfig.phaseMarkers,
+      treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
       graphType: "skill",
       showTrendLine: trendLineEnabled(graphKey)
     });
@@ -4918,7 +5593,8 @@ function openProgramGraphModal(programId) {
       programGraphModalAnalysis.innerHTML = renderGraphAnalysisMarkup(
         buildGraphAnalysis(chart.series, {
           graphType: "skill",
-          phaseMarkers
+          phaseMarkers: phaseConfig.phaseMarkers,
+          treatmentPhaseLine: phaseConfig.treatmentPhaseLine
         }),
         graphKey,
         { reportField: "progressSummary" }
@@ -5057,6 +5733,7 @@ function openBehaviorGraphModal(behaviorId) {
   const chart = buildBehaviorChart(behaviorId, currentSessions().slice().reverse());
   if (!chart) return;
   const graphKey = graphTrendKey("behavior", behaviorId);
+  const phaseConfig = graphPhaseConfig(graphKey, chart.series);
   programGraphModalTitle.textContent = chart.behavior.name;
   programGraphModalSubtitle.textContent = "Behavior reduction - frequency";
   programGraphModal.classList.remove("hidden");
@@ -5066,7 +5743,8 @@ function openBehaviorGraphModal(behaviorId) {
       yStep: 1,
       yLabel: "frequency",
       emptyMessage: "No behavior data for this behavior",
-      phaseMarkers: graphPhaseMarkers(graphKey),
+      phaseMarkers: phaseConfig.phaseMarkers,
+      treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
       graphType: "behavior",
       showTrendLine: trendLineEnabled(graphKey)
     });
@@ -5079,7 +5757,8 @@ function openBehaviorGraphModal(behaviorId) {
       programGraphModalAnalysis.innerHTML = renderGraphAnalysisMarkup(
         buildGraphAnalysis(chart.series, {
           graphType: "behavior",
-          phaseMarkers: graphPhaseMarkers(graphKey)
+          phaseMarkers: phaseConfig.phaseMarkers,
+          treatmentPhaseLine: phaseConfig.treatmentPhaseLine
         }),
         graphKey,
         { reportField: "progressSummary" }
@@ -6003,6 +6682,18 @@ function handleGraphAnalysisClick(event) {
 }
 
 function handleGraphPhaseLineClick(event) {
+  const editTreatment = event.target.closest("[data-edit-treatment-phase-line]");
+  if (editTreatment) {
+    const graphKey = editTreatment.dataset.editTreatmentPhaseLine;
+    const panel = event.currentTarget;
+    const mount = panel?.querySelector?.(`[data-phase-line-panel="${CSS.escape(graphKey)}"]`);
+    if (!mount) return;
+    const chartPanel = mount.closest(".chart-panel");
+    const series = phaseLineSeriesFromPanel(chartPanel);
+    mount.outerHTML = renderCustomPhaseLineManager(graphKey, series, { editingTreatment: true });
+    return;
+  }
+
   const edit = event.target.closest("[data-edit-phase-line]");
   if (edit) {
     const graphKey = edit.dataset.editPhaseLine;
@@ -6028,6 +6719,51 @@ function handleGraphPhaseLineClick(event) {
     return;
   }
 
+  const cancelTreatment = event.target.closest("[data-cancel-treatment-phase-line]");
+  if (cancelTreatment) {
+    const graphKey = cancelTreatment.dataset.cancelTreatmentPhaseLine;
+    const panel = event.currentTarget;
+    const mount = panel?.querySelector?.(`[data-phase-line-panel="${CSS.escape(graphKey)}"]`);
+    const chartPanel = mount?.closest(".chart-panel");
+    if (!mount || !chartPanel) return;
+    mount.outerHTML = renderCustomPhaseLineManager(graphKey, phaseLineSeriesFromPanel(chartPanel));
+    return;
+  }
+
+  const hideTreatment = event.target.closest("[data-hide-treatment-phase-line]");
+  if (hideTreatment) {
+    const graphKey = hideTreatment.dataset.hideTreatmentPhaseLine;
+    const currentLine = graphTreatmentPhaseLine(graphKey, phaseLineSeriesFromPanel(hideTreatment.closest(".chart-panel")));
+    if (!currentLine) return;
+    if (!window.confirm(`Hide the "${currentLine.label || "Treatment"}" phase line for this graph?`)) return;
+    setTreatmentPhaseOverrideForGraph(graphKey, {
+      id: `${graphKey}:treatment-override`,
+      date: currentLine.date,
+      label: currentLine.label || "Treatment",
+      lineStyle: currentLine.lineStyle === "dashed" ? "dashed" : "solid",
+      note: currentLine.note || "",
+      phaseType: "userTreatmentOverride",
+      hidden: true
+    });
+    markReportDraftDirty();
+    graphsMessage.textContent = "Treatment phase line hidden for this graph.";
+    funderExportStatus.textContent = graphsMessage.textContent;
+    rerenderGraphSurfaces();
+    return;
+  }
+
+  const resetTreatment = event.target.closest("[data-reset-treatment-phase-line]");
+  if (resetTreatment) {
+    const graphKey = resetTreatment.dataset.resetTreatmentPhaseLine;
+    if (!window.confirm("Reset the treatment phase line to the default baseline-to-treatment rule?")) return;
+    setTreatmentPhaseOverrideForGraph(graphKey, null);
+    markReportDraftDirty();
+    graphsMessage.textContent = "Treatment phase line reset to default.";
+    funderExportStatus.textContent = graphsMessage.textContent;
+    rerenderGraphSurfaces();
+    return;
+  }
+
   const remove = event.target.closest("[data-delete-phase-line]");
   if (!remove) return;
   const graphKey = remove.dataset.deletePhaseLine;
@@ -6046,6 +6782,7 @@ async function handleGraphPhaseLineSubmit(event) {
   if (!form) return;
   event.preventDefault();
   const graphKey = form.dataset.phaseLineForm;
+  const formKind = form.dataset.phaseLineKind || "environmental";
   const values = new FormData(form);
   const date = String(values.get("phaseLineDate") || "").trim();
   const label = String(values.get("phaseLineLabel") || "").trim();
@@ -6060,6 +6797,27 @@ async function handleGraphPhaseLineSubmit(event) {
   }
   if ((startDate && date < startDate) || (endDate && date > endDate)) {
     graphsMessage.textContent = `Phase line date must be between ${formatGraphDate(startDate)} and ${formatGraphDate(endDate)} for this graph.`;
+    return;
+  }
+  if (formKind === "treatment") {
+    const seriesDates = [...new Set(phaseLineSeriesFromPanel(form.closest(".chart-panel")).flatMap((item) => (item.points || []).map((point) => point.x)).filter(Boolean))].sort();
+    if (seriesDates.length >= 2 && date <= seriesDates[0]) {
+      graphsMessage.textContent = `Treatment phase line must occur after the first baseline date (${formatGraphDate(seriesDates[0])}).`;
+      return;
+    }
+    setTreatmentPhaseOverrideForGraph(graphKey, {
+      id: existingId || `${graphKey}:treatment-override`,
+      date,
+      label,
+      lineStyle,
+      note,
+      phaseType: "userTreatmentOverride",
+      hidden: false
+    });
+    markReportDraftDirty();
+    graphsMessage.textContent = `Updated treatment phase line "${label}".`;
+    funderExportStatus.textContent = graphsMessage.textContent;
+    rerenderGraphSurfaces();
     return;
   }
 
@@ -6448,16 +7206,19 @@ function drawFunderReportCharts(sessions) {
   const behaviorSeries = behaviorChartSeries(sessions);
   const allBehaviorSeries = behaviorChartSeries(currentSessions().slice().reverse());
   const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
+  const behaviorOverviewPhaseConfig = graphPhaseConfig(behaviorOverviewGraphKey, behaviorSeries);
   drawLineChart(behaviorCanvas, behaviorSeries, {
     yStep: 1,
     yLabel: "frequency",
     emptyMessage: "No behavior data in this report range",
-    phaseMarkers: graphPhaseMarkers(behaviorOverviewGraphKey),
+    phaseMarkers: behaviorOverviewPhaseConfig.phaseMarkers,
+    treatmentPhaseLine: behaviorOverviewPhaseConfig.treatmentPhaseLine,
     graphType: "behavior",
     showTrendLine: trendLineEnabled(behaviorOverviewGraphKey),
     showPointMarkers: true,
     suppressAutoTreatmentBoundary: anySeriesDataBeforeRange(allBehaviorSeries, reportForm.elements.startDate.value)
   });
+  behaviorCanvas.parentElement?.classList.remove("is-scrollable");
   const behaviorPanel = behaviorCanvas.closest(".chart-panel");
   if (behaviorPanel) {
     behaviorPanel.querySelector(".graph-phase-line-panel")?.remove();
@@ -6524,13 +7285,15 @@ function renderCharts() {
     includeSeriesIds: visibleBehaviorIds()
   });
   const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
+  const behaviorOverviewPhaseConfig = graphPhaseConfig(behaviorOverviewGraphKey, behaviorSeries);
   const behaviorOverviewAnalysis = buildGraphAnalysis(
     state.behaviorGraphAnalyzeAllData
       ? allBehaviorSeries.filter((series) => visibleBehaviorIds().includes(series.meta?.behaviorId))
       : behaviorSeries,
     {
       graphType: "behavior",
-      phaseMarkers: graphPhaseMarkers(behaviorOverviewGraphKey),
+      phaseMarkers: behaviorOverviewPhaseConfig.phaseMarkers,
+      treatmentPhaseLine: behaviorOverviewPhaseConfig.treatmentPhaseLine,
       rangeLabel: state.behaviorGraphAnalyzeAllData ? "All data" : range.label
     }
   );
@@ -6538,12 +7301,15 @@ function renderCharts() {
     yStep: 1,
     yLabel: "frequency",
     emptyMessage: "Save a session to graph behavior frequency",
-    phaseMarkers: graphPhaseMarkers(behaviorOverviewGraphKey),
+    phaseMarkers: behaviorOverviewPhaseConfig.phaseMarkers,
+    treatmentPhaseLine: behaviorOverviewPhaseConfig.treatmentPhaseLine,
     graphType: "behavior",
     showTrendLine: trendLineEnabled(behaviorOverviewGraphKey),
     showPointMarkers: state.behaviorGraphShowPoints,
     suppressAutoTreatmentBoundary: anySeriesDataBeforeRange(allBehaviorSeries, range.startDate)
   });
+  const behaviorOverviewScrollWrap = document.querySelector("#behavior-chart")?.parentElement;
+  behaviorOverviewScrollWrap?.classList.remove("is-scrollable");
   const behaviorChartContainer = document.querySelector("#behavior-chart")?.closest(".chart-panel");
   renderGraphLegend(behaviorChartContainer, behaviorSeries, {
     showTrendLine: trendLineEnabled(behaviorOverviewGraphKey)
@@ -6554,7 +7320,11 @@ function renderCharts() {
     behaviorChartContainer.insertAdjacentHTML("beforeend", renderGraphAnalysisMarkup(
       behaviorOverviewAnalysis,
       behaviorOverviewGraphKey,
-      { reportField: "progressSummary" }
+      {
+        reportField: "progressSummary",
+        rangeLabel: state.behaviorGraphAnalyzeAllData ? "All data" : range.label,
+        treatmentBeforeRange: anySeriesDataBeforeRange(allBehaviorSeries, range.startDate)
+      }
     ));
     behaviorChartContainer.insertAdjacentHTML("beforeend", renderCustomPhaseLineManager(
       behaviorOverviewGraphKey,
@@ -6714,13 +7484,14 @@ function renderSkillCharts(sessions) {
 
   visibleGroups.flatMap((group) => group.charts).forEach((chart) => {
     const graphKey = graphTrendKey("skill", chart.program.id);
-    const phaseMarkers = graphPhaseMarkers(graphKey, masteryMarkersForProgram(chart.program.id));
+    const phaseConfig = graphPhaseConfig(graphKey, chart.series, masteryMarkersForProgram(chart.program.id));
     drawLineChart(skillCharts.querySelector(`[data-program-chart="${chart.program.id}"]`), chart.series, {
       maxY: 100,
       yStep: 10,
       yLabel: "% independence",
       emptyMessage: "No target data for this program",
-      phaseMarkers,
+      phaseMarkers: phaseConfig.phaseMarkers,
+      treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
       graphType: "skill",
       showTrendLine: trendLineEnabled(graphKey)
     });
@@ -6728,7 +7499,8 @@ function renderSkillCharts(sessions) {
     if (analysisMount) {
       const analysis = buildGraphAnalysis(chart.series, {
         graphType: "skill",
-        phaseMarkers
+        phaseMarkers: phaseConfig.phaseMarkers,
+        treatmentPhaseLine: phaseConfig.treatmentPhaseLine
       });
       analysisMount.innerHTML = `
         ${renderGraphAnalysisMarkup(analysis, graphKey, {
@@ -6767,7 +7539,8 @@ function buildProgramSkillChart(program, sessions) {
         phase: entry.phase || "intervention",
         sessionId: session.id,
         programId: program.id,
-        targetId: target.id
+        targetId: target.id,
+        note: session.notes || ""
       }] : [];
     })
   })).filter((item) => item.points.length);
@@ -6803,7 +7576,8 @@ function buildParentTrainingChartModels(sessions) {
           phase: "intervention",
           sessionId: session.id,
           goalName,
-          targetName
+          targetName,
+          note: session.notes || ""
         }] : [];
       })
     })).filter((item) => item.points.length);
@@ -6901,6 +7675,9 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
           <span>Show trend line</span>
         </label>
       </div>
+      <p class="graph-analysis-note">Analysis based on ${escapeHtml(options.rangeLabel || analysis.rangeLabel || "selected date range")}.</p>
+      ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">Treatment phase line unavailable; baseline/treatment analysis may be limited.</p>' : ""}
+      ${options.treatmentBeforeRange ? '<p class="graph-analysis-note">Treatment phase began before selected range.</p>' : ""}
       ${showTrendLine && analysis.trendLineMessage ? `<p class="graph-analysis-note">${escapeHtml(analysis.trendLineMessage)}</p>` : ""}
       ${analysis.analyses.map((entry) => `
         <article class="graph-analysis-series">
@@ -6941,10 +7718,12 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
   `;
 }
 
-function renderReportGraphAnalysisMarkup(analysis) {
+function renderReportGraphAnalysisMarkup(analysis, options = {}) {
   if (!analysis?.analyses?.length) return "";
   return `
     <section class="report-graph-analysis" aria-label="Graph Analysis">
+      <p class="graph-analysis-note">Analysis based on ${escapeHtml(options.rangeLabel || analysis.rangeLabel || "selected date range")}.</p>
+      ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">Treatment phase line unavailable; baseline/treatment analysis may be limited.</p>' : ""}
       ${analysis.analyses.map((entry) => `
         <p class="report-graph-analysis-line">
           <strong>${escapeHtml(entry.label)}:</strong>
@@ -7152,13 +7931,14 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
 
   charts.forEach((chart) => {
     const graphKey = graphTrendKey("skill", chart.program.id);
-    const phaseMarkers = graphPhaseMarkers(graphKey, masteryMarkersForProgram(chart.program.id));
+    const phaseConfig = graphPhaseConfig(graphKey, chart.series, masteryMarkersForProgram(chart.program.id));
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${chart.program.id}"]`), chart.series, {
       maxY: 100,
       yStep: 10,
       yLabel: "% independence",
       emptyMessage: "No target data for this program",
-      phaseMarkers,
+      phaseMarkers: phaseConfig.phaseMarkers,
+      treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
       graphType: "skill",
       showTrendLine: trendLineEnabled(graphKey)
     });
@@ -7167,7 +7947,8 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
       if (analysisMount) {
         const analysis = buildGraphAnalysis(chart.series, {
           graphType: "skill",
-          phaseMarkers
+          phaseMarkers: phaseConfig.phaseMarkers,
+          treatmentPhaseLine: phaseConfig.treatmentPhaseLine
         });
         analysisMount.innerHTML = `
           ${renderReportGraphAnalysisMarkup(analysis)}
@@ -7192,7 +7973,8 @@ function behaviorChartSeries(sessions) {
         y: Number(target.frequency || 0),
         phase: target.phase || "intervention",
         sessionId: session.id,
-        behaviorId: behavior.id
+        behaviorId: behavior.id,
+        note: target.note || session.notes || ""
       }] : [];
     })
   })).filter((series) => series.points.length);
@@ -7230,12 +8012,13 @@ function drawBehaviorChartSet(sessions, container, chartAttribute, options = {})
 
   charts.forEach((chart, index) => {
     const graphKey = graphTrendKey("behavior", chart.behaviorId);
-    const phaseMarkers = graphPhaseMarkers(graphKey);
+    const phaseConfig = graphPhaseConfig(graphKey, chart.series);
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${index}"]`), chart.series, {
       yStep: 1,
       yLabel: "frequency",
       emptyMessage: "No behavior data for this behavior",
-      phaseMarkers,
+      phaseMarkers: phaseConfig.phaseMarkers,
+      treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
       graphType: "behavior",
       showTrendLine: trendLineEnabled(graphKey),
       showPointMarkers: isReportChart ? true : state.behaviorGraphShowPoints,
@@ -7251,17 +8034,24 @@ function drawBehaviorChartSet(sessions, container, chartAttribute, options = {})
         : chart.series;
       const analysis = buildGraphAnalysis(analysisSeries, {
         graphType: "behavior",
-        phaseMarkers,
+        phaseMarkers: phaseConfig.phaseMarkers,
+        treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
+        phaseMarkers: phaseConfig.phaseMarkers,
         rangeLabel: state.behaviorGraphAnalyzeAllData && !isReportChart ? "All data" : range.label
       });
       analysisMount.innerHTML = isReportChart
         ? `
-            ${renderReportGraphAnalysisMarkup(analysis)}
+            ${renderReportGraphAnalysisMarkup(analysis, { rangeLabel: range.label })}
             ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true })}
           `
         : `
             ${renderGraphAnalysisMarkup(analysis, graphKey, {
-              reportField: "progressSummary"
+              reportField: "progressSummary",
+              rangeLabel: state.behaviorGraphAnalyzeAllData ? "All data" : range.label,
+              treatmentBeforeRange: anySeriesDataBeforeRange(
+                allSeries.filter((series) => series.meta?.behaviorId === chart.behaviorId),
+                range.startDate
+              )
             })}
             ${renderCustomPhaseLineManager(graphKey, chart.series)}
           `;
@@ -7292,21 +8082,23 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute, options
 
   charts.forEach((chart, index) => {
     const graphKey = graphTrendKey("parent", chart.goalKey);
-    const phaseMarkers = graphPhaseMarkers(graphKey);
+    const phaseConfig = graphPhaseConfig(graphKey, chart.series);
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${index}"]`), chart.series, {
       maxY: 100,
       yStep: 10,
       yLabel: "caregiver fidelity %",
       emptyMessage: "No parent training data for this goal",
       graphType: "skill",
-      phaseMarkers,
+      phaseMarkers: phaseConfig.phaseMarkers,
+      treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
       showTrendLine: trendLineEnabled(graphKey)
     });
     const analysisMount = container.querySelector(`[data-parent-training-analysis="${escapeHtml(chart.goalKey)}"]`);
     if (analysisMount) {
       const analysis = buildGraphAnalysis(chart.series, {
         graphType: "skill",
-        phaseMarkers
+        phaseMarkers: phaseConfig.phaseMarkers,
+        treatmentPhaseLine: phaseConfig.treatmentPhaseLine
       });
       analysisMount.innerHTML = isReadOnly
         ? `

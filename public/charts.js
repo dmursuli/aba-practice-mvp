@@ -149,7 +149,7 @@ export function drawLineChart(canvas, series, options = {}) {
 export function buildClinicalGraphModel(series, options = {}) {
   const allPoints = series.flatMap((item) => item.points || []);
   const dates = [...new Set(allPoints.map((point) => point.x))].sort();
-  const phaseBoundary = buildBaselineToTreatmentBoundary(dates);
+  const phaseBoundary = resolveTreatmentPhaseBoundary(dates, options.treatmentPhaseLine, options.suppressAutoTreatmentBoundary);
   const phaseMarkers = normalizePhaseMarkers(options.phaseMarkers || [], dates, phaseBoundary);
   return {
     dates,
@@ -395,12 +395,39 @@ function analyzeSingleSeries(series, options) {
 export function buildBaselineToTreatmentBoundary(dates) {
   if (!Array.isArray(dates) || dates.length < 2) return null;
   return {
+    date: dates[1],
     label: "Treatment",
     leftIndex: 0,
     rightIndex: 1,
     lineStyle: "solid",
-    phaseType: "baselineToTreatment"
+    phaseType: "baselineToTreatment",
+    sourceType: "autoTreatment"
   };
+}
+
+export function resolveTreatmentPhaseBoundary(dates, treatmentPhaseLine = null, suppressAutoTreatmentBoundary = false) {
+  if (!Array.isArray(dates) || dates.length < 2) return null;
+  if (treatmentPhaseLine?.hidden) return null;
+  if (treatmentPhaseLine?.sourceType === "autoTreatment" && suppressAutoTreatmentBoundary) return null;
+  if (treatmentPhaseLine?.date) {
+    const rightIndex = dates.findIndex((date) => date >= treatmentPhaseLine.date);
+    if (rightIndex > 0) {
+      return {
+        date: dates[rightIndex],
+        configuredDate: treatmentPhaseLine.date,
+        label: treatmentPhaseLine.label || "Treatment",
+        leftIndex: rightIndex - 1,
+        rightIndex,
+        lineStyle: treatmentPhaseLine.lineStyle === "dashed" ? "dashed" : "solid",
+        note: treatmentPhaseLine.note || "",
+        phaseType: "baselineToTreatment",
+        sourceType: treatmentPhaseLine.phaseType || "userTreatmentOverride"
+      };
+    }
+    return null;
+  }
+  if (suppressAutoTreatmentBoundary) return null;
+  return buildBaselineToTreatmentBoundary(dates);
 }
 
 export function normalizePhaseMarkers(markers = [], dates = [], phaseBoundary = null) {
@@ -817,9 +844,21 @@ function buildInterpretation(context) {
   }
   if (graphType === "behavior") {
     const limitedConfidence = baselineValues.length < 3 || treatmentValues.length < 3;
-    const reductionClause = baselineAverage === 0
-      ? `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${roundMetric(difference, 1)}-point absolute decrease from baseline.`
-      : `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${percentReduction} reduction from baseline.`;
+    let reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, indicating no change from baseline.`;
+    if (baselineAverage === 0) {
+      if (treatmentAverage > baselineAverage) {
+        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${roundMetric(treatmentAverage - baselineAverage, 1)}-point absolute increase from baseline.`;
+      } else if (treatmentAverage < baselineAverage) {
+        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${roundMetric(baselineAverage - treatmentAverage, 1)}-point absolute decrease from baseline.`;
+      }
+    } else {
+      const percentChangeValue = roundMetric((((treatmentAverage ?? 0) - baselineAverage) / baselineAverage) * 100, 1);
+      if (percentChangeValue > 0) {
+        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${Math.abs(percentChangeValue)}% increase from baseline.`;
+      } else if (percentChangeValue < 0) {
+        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${Math.abs(percentChangeValue)}% reduction from baseline.`;
+      }
+    }
     const trendClause = trend.direction === "Unavailable"
       ? "Additional data are needed to establish a stable trend."
       : `Data show a ${trend.direction} trend.`;
@@ -903,7 +942,11 @@ function bindCanvasTooltip(canvas, points) {
       return best;
     }, null);
     canvas.title = nearest
-      ? `${nearest.point.label}: ${nearest.point.value} on ${formatGraphDate(nearest.point.date)}`
+      ? [
+          `${nearest.point.label}: ${nearest.point.value} on ${formatGraphDate(nearest.point.date)}`,
+          `Phase: ${nearest.point.phase === "baseline" ? "Baseline" : "Treatment"}`,
+          nearest.point.source?.note ? `Notes: ${nearest.point.source.note}` : ""
+        ].filter(Boolean).join("\n")
       : "";
   };
   canvas.onmouseleave = () => {

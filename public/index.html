@@ -72,6 +72,7 @@
           <button type="button" class="view-tab" data-view-button="plan">Treatment plan</button>
           <button type="button" class="view-tab" data-view-button="parent">Parent Training</button>
           <button type="button" class="view-tab" data-view-button="graphs">Graphs</button>
+          <button type="button" class="view-tab" data-view-button="import">Historical Import</button>
           <button type="button" class="view-tab" data-view-button="report">Funder Report</button>
           <button type="button" class="view-tab" data-view-button="soap">SOAP Notes</button>
           <button type="button" class="view-tab" data-view-button="billing">Billing</button>
@@ -1057,6 +1058,89 @@
           <div id="behavior-charts" class="chart-zone"></div>
           <div id="parent-training-charts" class="chart-zone"></div>
         </div>
+      </section>
+    </main>
+
+    <main class="client-shell hidden" data-view-panel="import">
+      <section class="client-panel import-panel" aria-labelledby="historical-import-title">
+        <div class="section-heading">
+          <p class="eyebrow">Pre-app data</p>
+          <h2 id="historical-import-title">Bulk historical data import</h2>
+        </div>
+        <form id="historical-import-form" class="session-form">
+          <div class="form-grid">
+            <label>
+              Client
+              <select id="historical-import-client" name="clientId"></select>
+            </label>
+            <label>
+              Data type
+              <select id="historical-import-data-type" name="dataType">
+                <option value="skill">Skill acquisition</option>
+                <option value="behavior">Behavior reduction</option>
+                <option value="caregiver_training">Caregiver training</option>
+              </select>
+            </label>
+            <label>
+              Measurement type
+              <select id="historical-import-measurement-type" name="measurementType"></select>
+            </label>
+            <label>
+              Selected graph / target
+              <select id="historical-import-reference" name="referenceId"></select>
+            </label>
+            <label>
+              Duplicate handling
+              <select id="historical-import-duplicate-strategy" name="duplicateStrategy">
+                <option value="skip">Skip existing imported duplicates</option>
+                <option value="replace">Replace existing imported duplicates</option>
+                <option value="cancel">Cancel if duplicates are found</option>
+              </select>
+            </label>
+            <label>
+              Upload CSV
+              <input type="file" id="historical-import-csv" accept=".csv,text/csv">
+            </label>
+          </div>
+          <div class="button-row">
+            <button type="button" class="secondary-button" id="historical-import-template">Download CSV template</button>
+            <button type="button" class="secondary-button" id="historical-import-add-row">Add row</button>
+            <button type="button" class="secondary-button" id="historical-import-preview">Preview import</button>
+            <button type="submit" class="primary-button" id="historical-import-commit">Import validated rows</button>
+          </div>
+          <p id="historical-import-message" class="form-message" role="status"></p>
+          <div id="historical-import-summary" class="summary-strip"></div>
+          <div class="report-table-wrap">
+            <table class="fade-plan-table import-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Value</th>
+                  <th>Measurement</th>
+                  <th>Phase</th>
+                  <th>Setting</th>
+                  <th>Notes</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="historical-import-rows"></tbody>
+            </table>
+          </div>
+        </form>
+        <section class="import-preview-panel">
+          <div class="section-heading">
+            <p class="eyebrow">Validation</p>
+            <h3>Preview</h3>
+          </div>
+          <div id="historical-import-preview-table" class="audit-log-table"></div>
+        </section>
+        <section class="import-preview-panel">
+          <div class="section-heading">
+            <p class="eyebrow">Review</p>
+            <h3>Imported batches</h3>
+          </div>
+          <div id="historical-import-batches" class="audit-log-table"></div>
+        </section>
       </section>
     </main>
 

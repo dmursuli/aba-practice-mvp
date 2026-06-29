@@ -13,6 +13,19 @@ export function parentTrainingGoalLabel(goal = {}) {
   return goalName || targetName || "Parent training goal";
 }
 
+export function parentTrainingGoalGroupIdentity(goal = {}) {
+  return cleanParentText(goal.goalName).toLowerCase() || parentTrainingGoalIdentity(goal);
+}
+
+function parentTrainingDomainName(goal = {}) {
+  return cleanParentText(goal.domain || goal.trainingFocus || "General caregiver training") || "General caregiver training";
+}
+
+function parentTrainingPercent(numerator = 0, denominator = 0) {
+  if (!denominator) return "0%";
+  return `${Math.round((Number(numerator || 0) / Number(denominator || 0)) * 100)}%`;
+}
+
 export function parentTrainingGoalIdentity(goal = {}) {
   return goal.parentTrainingGoalId
     || goal.goalId
@@ -53,6 +66,7 @@ export function summarizeParentTrainingReport({
       targetName: cleanParentText(goal.targetName),
       fidelity: Number(goal.fidelity || 0),
       date: session.date,
+      domain: cleanParentText(goal.domain || session.parentTraining?.trainingFocus || "General caregiver training"),
       caregiverName: cleanParentText(session.parentTraining?.caregiverName),
       trainingFocus: cleanParentText(session.parentTraining?.trainingFocus)
     }))
@@ -67,7 +81,8 @@ export function summarizeParentTrainingReport({
   currentGoals.forEach((goal) => {
     const normalizedGoal = {
       goalName: cleanParentText(goal.goalName),
-      targetName: cleanParentText(goal.targetName)
+      targetName: cleanParentText(goal.targetName),
+      domain: cleanParentText(goal.domain || goal.trainingFocus || "General caregiver training")
     };
     const key = parentTrainingGoalKey(normalizedGoal);
     if (!key || key === "::") return;
@@ -81,7 +96,8 @@ export function summarizeParentTrainingReport({
     if (!sessionGoalMap.has(key)) {
       sessionGoalMap.set(key, {
         goalName: goal.goalName,
-        targetName: goal.targetName
+        targetName: goal.targetName,
+        domain: cleanParentText(goal.domain || goal.trainingFocus || "General caregiver training")
       });
     }
   });
@@ -95,6 +111,15 @@ export function summarizeParentTrainingReport({
     if (state === "mastered") masteredGoals.push(summaryGoal);
     else activeGoals.push(summaryGoal);
   });
+
+  const domainBreakdown = buildParentTrainingDomainBreakdown({
+    activeGoals,
+    masteredGoalsDuringPeriod,
+    goalSource: [...goalSourceMap.values()],
+    sessionGoalEntries
+  });
+  const masteredTargetsDuringPeriod = filterMasteredGoalsForPeriod(masteredGoalsDuringPeriod);
+  const activeTargets = activeGoals;
 
   const sessionCount = normalizedSessions.length;
   const performanceLevel = summarizePerformance(averageFidelity);
@@ -132,14 +157,142 @@ export function summarizeParentTrainingReport({
     activeGoals,
     masteredGoals,
     masteredGoalsDuringPeriod,
+    masteredTargetsDuringPeriod,
+    activeTargets,
+    domainBreakdown,
+    totals: {
+      masteredGoals: uniqueParentGoalGroups(masteredGoalsDuringPeriod).length,
+      activeGoals: uniqueParentGoalGroups(activeGoals).length,
+      onHoldGoals: 0,
+      masteredTargets: masteredTargetsDuringPeriod.length,
+      activeTargets: activeTargets.length,
+      onHoldTargets: 0,
+      totalTargets: masteredTargetsDuringPeriod.length + activeTargets.length
+    },
     summaryText,
     recommendationText
   };
 }
 
+function uniqueParentGoalGroups(goals = []) {
+  const map = new Map();
+  (goals || []).forEach((goal) => {
+    const key = parentTrainingGoalGroupIdentity(goal);
+    if (!key) return;
+    if (!map.has(key)) map.set(key, goal);
+  });
+  return [...map.values()];
+}
+
+function buildParentTrainingDomainBreakdown({
+  activeGoals = [],
+  masteredGoalsDuringPeriod = [],
+  goalSource = [],
+  sessionGoalEntries = []
+} = {}) {
+  const domainMap = new Map();
+  const ensureDomain = (domain) => {
+    const label = parentTrainingDomainName({ domain });
+    const key = label.toLowerCase();
+    if (!domainMap.has(key)) {
+      domainMap.set(key, {
+        domain: label,
+        activeGoalIds: new Set(),
+        masteredGoalIds: new Set(),
+        activeTargetIds: new Set(),
+        masteredTargetIds: new Set()
+      });
+    }
+    return domainMap.get(key);
+  };
+
+  const targetDomainMap = new Map();
+  (sessionGoalEntries || []).forEach((goal) => {
+    const targetKey = parentTrainingGoalIdentity(goal);
+    if (!targetKey) return;
+    if (!targetDomainMap.has(targetKey)) targetDomainMap.set(targetKey, parentTrainingDomainName(goal));
+  });
+
+  const goalDomainMap = new Map();
+  (goalSource || []).forEach((goal) => {
+    const goalKey = parentTrainingGoalGroupIdentity(goal);
+    if (!goalKey) return;
+    if (!goalDomainMap.has(goalKey)) goalDomainMap.set(goalKey, parentTrainingDomainName(goal));
+  });
+
+  (activeGoals || []).forEach((goal) => {
+    const goalKey = parentTrainingGoalGroupIdentity(goal);
+    const targetKey = parentTrainingGoalIdentity(goal);
+    const domain = parentTrainingDomainName({
+      domain: goal.domain || goal.trainingFocus || goalDomainMap.get(goalKey) || targetDomainMap.get(targetKey)
+    });
+    const bucket = ensureDomain(domain);
+    if (goalKey) bucket.activeGoalIds.add(goalKey);
+    if (targetKey) bucket.activeTargetIds.add(targetKey);
+  });
+
+  filterMasteredGoalsForPeriod(masteredGoalsDuringPeriod).forEach((goal) => {
+    const goalKey = parentTrainingGoalGroupIdentity(goal);
+    const targetKey = parentTrainingGoalIdentity(goal);
+    const domain = parentTrainingDomainName({
+      domain: goal.domain || goal.trainingFocus || goalDomainMap.get(goalKey) || targetDomainMap.get(targetKey)
+    });
+    const bucket = ensureDomain(domain);
+    if (goalKey) bucket.masteredGoalIds.add(goalKey);
+    if (targetKey) bucket.masteredTargetIds.add(targetKey);
+  });
+
+  return [...domainMap.values()].map((entry) => {
+    const activeGoalCount = entry.activeGoalIds.size;
+    const masteredGoalCount = entry.masteredGoalIds.size;
+    const activeTargetCount = entry.activeTargetIds.size;
+    const masteredTargetCount = entry.masteredTargetIds.size;
+    return {
+      domain: entry.domain,
+      activeGoals: activeGoalCount,
+      masteredGoals: masteredGoalCount,
+      onHoldGoals: 0,
+      percentGoalsMastered: parentTrainingPercent(masteredGoalCount, activeGoalCount + masteredGoalCount),
+      activeTargets: activeTargetCount,
+      masteredTargets: masteredTargetCount,
+      onHoldTargets: 0,
+      percentTargetsMastered: parentTrainingPercent(masteredTargetCount, activeTargetCount + masteredTargetCount)
+    };
+  }).sort((a, b) => a.domain.localeCompare(b.domain));
+}
+
 export function buildEditableParentTrainingSummary(model = {}) {
   const masteredGoals = filterMasteredGoalsForPeriod(model.masteredGoalsDuringPeriod || []);
+  const masteredTargets = Array.isArray(model.masteredTargetsDuringPeriod) ? model.masteredTargetsDuringPeriod : masteredGoals;
+  const domainBreakdown = Array.isArray(model.domainBreakdown) ? model.domainBreakdown : [];
+  const totals = model.totals || {
+    masteredGoals: uniqueParentGoalGroups(masteredGoals).length,
+    activeGoals: uniqueParentGoalGroups(model.activeGoals || []).length,
+    onHoldGoals: 0,
+    masteredTargets: masteredTargets.length,
+    activeTargets: Array.isArray(model.activeTargets) ? model.activeTargets.length : 0,
+    onHoldTargets: 0,
+    totalTargets: masteredTargets.length + (Array.isArray(model.activeTargets) ? model.activeTargets.length : 0)
+  };
   const lines = [cleanParentText(model.summaryText)];
+  lines.push("");
+  lines.push("Status Summary:");
+  lines.push(`- Goals mastered during authorization period: ${totals.masteredGoals || 0}`);
+  lines.push(`- Mastered caregiver-training targets: ${totals.masteredTargets || 0}`);
+  lines.push(`- Active caregiver-training goals: ${totals.activeGoals || 0}`);
+  lines.push(`- Active caregiver-training targets: ${totals.activeTargets || 0}`);
+  lines.push(`- Caregiver-training goals on hold: ${totals.onHoldGoals || 0}`);
+  lines.push(`- Caregiver-training targets on hold: ${totals.onHoldTargets || 0}`);
+  lines.push(`- Total caregiver-training targets reviewed: ${totals.totalTargets || 0}`);
+  if (domainBreakdown.length) {
+    lines.push("");
+    lines.push("Domain Breakdown:");
+    lines.push("| Domain | Active Goals | Mastered Goals | On-Hold Goals | % Goals Mastered | Active Targets | Mastered Targets | On-Hold Targets | % Targets Mastered |");
+    lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+    domainBreakdown.forEach((row) => {
+      lines.push(`| ${row.domain} | ${row.activeGoals} | ${row.masteredGoals} | ${row.onHoldGoals} | ${row.percentGoalsMastered} | ${row.activeTargets} | ${row.masteredTargets} | ${row.onHoldTargets} | ${row.percentTargetsMastered} |`);
+    });
+  }
   lines.push("");
   lines.push("Mastered Parent Training Goals During Authorization Period:");
   if (masteredGoals.length) {
@@ -150,4 +303,12 @@ export function buildEditableParentTrainingSummary(model = {}) {
     lines.push("No parent-training goals were mastered during this authorization period.");
   }
   return lines.join("\n").trim();
+}
+
+export function isLegacyGeneratedParentTrainingSummary(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return text.includes("Mastered Parent Training Goals During Authorization Period:")
+    && !text.includes("Status Summary:")
+    && !text.includes("Domain Breakdown:");
 }

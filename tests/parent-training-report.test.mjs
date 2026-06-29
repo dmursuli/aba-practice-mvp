@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, parentTrainingGoalIdentity, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from '../public/parent-training-report.js';
+import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingGoalIdentity, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from '../public/parent-training-report.js';
 import { removeParentGoalPointFromSession } from '../public/session-utils.js';
 
 test('parent-training summary deduplicates goals and caregivers across sessions', () => {
@@ -100,6 +100,164 @@ test('editable parent-training summary includes mastered goals from the authoriz
   assert.match(text, /- Caregiver will prompt toilet routine consistently - Deliver visual prompt before transition/);
   assert.equal((text.match(/- Caregiver will prompt toilet routine consistently - Deliver visual prompt before transition/g) || []).length, 1);
   assert.doesNotMatch(text, /Ariana|80%|6\/1\/2026/);
+});
+
+test('parent-training summary includes a domain breakdown with goal and target counts', () => {
+  const model = summarizeParentTrainingReport({
+    parentSessions: [
+      {
+        date: '2026-06-01',
+        parentTraining: { caregiverName: 'Ariana', trainingFocus: 'daily living routines' },
+        parentGoals: [
+          { goalName: 'Caregiver will run first-then routine independently', targetName: 'Use first-then board before verbal prompting', fidelity: 80 }
+        ]
+      },
+      {
+        date: '2026-06-08',
+        parentTraining: { caregiverName: 'Ariana', trainingFocus: 'daily living routines' },
+        parentGoals: [
+          { goalName: 'Caregiver will prompt toilet routine consistently', targetName: 'Deliver visual prompt before transition', fidelity: 90 }
+        ]
+      },
+      {
+        date: '2026-06-10',
+        parentTraining: { caregiverName: 'Ariana', trainingFocus: 'community safety practice' },
+        parentGoals: [
+          { goalName: 'Caregiver will support safe store transitions', targetName: 'Use visual checklist before entering store', fidelity: 100 }
+        ]
+      }
+    ],
+    currentGoals: [
+      { goalName: 'Caregiver will run first-then routine independently', targetName: 'Use first-then board before verbal prompting', domain: 'daily living routines' },
+      { goalName: 'Caregiver will prompt toilet routine consistently', targetName: 'Deliver visual prompt before transition', domain: 'daily living routines' },
+      { goalName: 'Caregiver will support safe store transitions', targetName: 'Use visual checklist before entering store', domain: 'community safety practice' }
+    ],
+    goalReviewsByKey: {
+      [parentTrainingGoalKey({ goalName: 'Caregiver will run first-then routine independently', targetName: 'Use first-then board before verbal prompting' })]: 'active',
+      [parentTrainingGoalKey({ goalName: 'Caregiver will prompt toilet routine consistently', targetName: 'Deliver visual prompt before transition' })]: 'mastered',
+      [parentTrainingGoalKey({ goalName: 'Caregiver will support safe store transitions', targetName: 'Use visual checklist before entering store' })]: 'mastered'
+    },
+    masteredGoalsDuringPeriod: [
+      { parentTrainingGoalId: 'goal-1', goalName: 'Caregiver will prompt toilet routine consistently', targetName: 'Deliver visual prompt before transition', domain: 'daily living routines', masteredDate: '2026-06-08' },
+      { parentTrainingGoalId: 'goal-2', goalName: 'Caregiver will support safe store transitions', targetName: 'Use visual checklist before entering store', domain: 'community safety practice', masteredDate: '2026-06-10' }
+    ]
+  });
+
+  assert.deepEqual(model.domainBreakdown, [
+    {
+      domain: 'community safety practice',
+      activeGoals: 0,
+      masteredGoals: 1,
+      onHoldGoals: 0,
+      percentGoalsMastered: '100%',
+      activeTargets: 0,
+      masteredTargets: 1,
+      onHoldTargets: 0,
+      percentTargetsMastered: '100%'
+    },
+    {
+      domain: 'daily living routines',
+      activeGoals: 1,
+      masteredGoals: 1,
+      onHoldGoals: 0,
+      percentGoalsMastered: '50%',
+      activeTargets: 1,
+      masteredTargets: 1,
+      onHoldTargets: 0,
+      percentTargetsMastered: '50%'
+    }
+  ]);
+  assert.deepEqual(model.totals, {
+    masteredGoals: 2,
+    activeGoals: 1,
+    onHoldGoals: 0,
+    masteredTargets: 2,
+    activeTargets: 1,
+    onHoldTargets: 0,
+    totalTargets: 3
+  });
+});
+
+test('editable parent-training summary renders status summary and domain breakdown table', () => {
+  const text = buildEditableParentTrainingSummary({
+    summaryText: '2 parent-training sessions were completed during this reporting period. 1 active parent-training goal remains in progress.',
+    totals: {
+      masteredGoals: 1,
+      activeGoals: 1,
+      onHoldGoals: 0,
+      masteredTargets: 1,
+      activeTargets: 1,
+      onHoldTargets: 0,
+      totalTargets: 2
+    },
+    masteredGoalsDuringPeriod: [
+      {
+        parentTrainingGoalId: 'goal-1',
+        goalName: 'Caregiver will prompt toilet routine consistently',
+        targetName: 'Deliver visual prompt before transition',
+        domain: 'daily living routines'
+      }
+    ],
+    masteredTargetsDuringPeriod: [
+      {
+        parentTrainingGoalId: 'goal-1',
+        goalName: 'Caregiver will prompt toilet routine consistently',
+        targetName: 'Deliver visual prompt before transition',
+        domain: 'daily living routines'
+      }
+    ],
+    activeGoals: [
+      {
+        goalName: 'Caregiver will run first-then routine independently',
+        targetName: 'Use first-then board before verbal prompting',
+        domain: 'daily living routines'
+      }
+    ],
+    activeTargets: [
+      {
+        goalName: 'Caregiver will run first-then routine independently',
+        targetName: 'Use first-then board before verbal prompting',
+        domain: 'daily living routines'
+      }
+    ],
+    domainBreakdown: [
+      {
+        domain: 'daily living routines',
+        activeGoals: 1,
+        masteredGoals: 1,
+        onHoldGoals: 0,
+        percentGoalsMastered: '50%',
+        activeTargets: 1,
+        masteredTargets: 1,
+        onHoldTargets: 0,
+        percentTargetsMastered: '50%'
+      }
+    ]
+  });
+
+  assert.match(text, /Status Summary:/);
+  assert.match(text, /- Goals mastered during authorization period: 1/);
+  assert.match(text, /- Mastered caregiver-training targets: 1/);
+  assert.match(text, /- Active caregiver-training goals: 1/);
+  assert.match(text, /Domain Breakdown:/);
+  assert.match(text, /\| daily living routines \| 1 \| 1 \| 0 \| 50% \| 1 \| 1 \| 0 \| 50% \|/);
+  assert.match(text, /Mastered Parent Training Goals During Authorization Period:/);
+});
+
+test('legacy generated parent-training summaries are detected for backward-compatible refresh', () => {
+  assert.equal(isLegacyGeneratedParentTrainingSummary(`2 parent-training sessions were completed during this reporting period. 1 active parent-training goal remains in progress.
+
+Mastered Parent Training Goals During Authorization Period:
+- Caregiver will prompt toilet routine consistently - Deliver visual prompt before transition`), true);
+  assert.equal(isLegacyGeneratedParentTrainingSummary(`2 parent-training sessions were completed during this reporting period.
+
+Status Summary:
+- Goals mastered during authorization period: 1
+
+Domain Breakdown:
+| Domain | Active Goals |
+| --- | ---: |
+| daily living routines | 1 |`), false);
 });
 
 test('editable parent-training summary shows empty-state sentence when no goals were mastered in range', () => {

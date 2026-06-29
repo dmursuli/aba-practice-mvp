@@ -5,11 +5,11 @@ import {
   buildChartLayout,
   buildDateTicks,
   buildClinicalGraphModel,
-  filterSeriesPointsByDateRange,
   buildGraphAnalysis,
   buildLegendItems,
   buildMovingAverageSeriesSet,
   derivedPointPhase,
+  filterSeriesPointsByDateRange,
   formatGraphDate
 } from '../public/charts.js';
 
@@ -188,6 +188,52 @@ for (const [label, make] of [['skill acquisition', skillLikeSeries], ['behavior 
     assert.equal(derivedPointPhase(0, model.phaseBoundary), 'baseline');
     assert.equal(derivedPointPhase(1, model.phaseBoundary), 'intervention');
   });
+
+  test(`${label}: editable treatment phase line can shift the baseline-treatment split`, () => {
+    const model = buildClinicalGraphModel(
+      make([
+        { x: '2026-06-01', y: 5 },
+        { x: '2026-06-03', y: 15 },
+        { x: '2026-06-05', y: 25 }
+      ]),
+      {
+        treatmentPhaseLine: {
+          date: '2026-06-05',
+          label: 'Treatment starts later',
+          lineStyle: 'dashed',
+          phaseType: 'userTreatmentOverride'
+        }
+      }
+    );
+
+    assert.ok(model.phaseBoundary);
+    assert.equal(model.phaseBoundary.rightIndex, 2);
+    assert.equal(model.phaseBoundary.label, 'Treatment starts later');
+    assert.equal(model.phaseBoundary.lineStyle, 'dashed');
+    assert.equal(derivedPointPhase(1, model.phaseBoundary), 'baseline');
+    assert.equal(derivedPointPhase(2, model.phaseBoundary), 'intervention');
+  });
+
+  test(`${label}: hidden treatment phase override suppresses the automatic boundary`, () => {
+    const model = buildClinicalGraphModel(
+      make([
+        { x: '2026-06-01', y: 5 },
+        { x: '2026-06-03', y: 15 },
+        { x: '2026-06-05', y: 25 }
+      ]),
+      {
+        treatmentPhaseLine: {
+          hidden: true,
+          label: 'Treatment',
+          phaseType: 'userTreatmentOverride'
+        }
+      }
+    );
+
+    assert.equal(model.phaseBoundary, null);
+    assert.equal(derivedPointPhase(0, model.phaseBoundary), 'baseline');
+    assert.equal(derivedPointPhase(1, model.phaseBoundary), 'baseline');
+  });
 }
 
 test('grid configuration stays disabled while axes and phase model remain available', () => {
@@ -220,21 +266,58 @@ test('graph date labels include the year in M/D/YYYY format', () => {
   assert.equal(formatGraphDate('2026-05-21'), '5/21/2026');
 });
 
-test('dense graphs thin x-axis labels while keeping the first and last dates', () => {
-  const series = [{
-    name: 'Aggression',
+test('all date labels can be preserved when the graph explicitly opts into full labeling', () => {
+  const series = behaviorLikeSeries([
+    { x: '2026-03-15', y: 18 },
+    { x: '2026-04-09', y: 0 },
+    { x: '2026-04-10', y: 1 }
+  ]);
+  const ticks = buildDateTicks(series, { showAllDateLabels: true });
+  assert.equal(ticks.length, 3);
+  assert.deepEqual(ticks.map((tick) => tick.date), ['2026-03-15', '2026-04-09', '2026-04-10']);
+});
+
+test('25 sessions render a readable reduced set of x-axis labels while keeping first and last dates', () => {
+  const series = behaviorLikeSeries(Array.from({ length: 25 }, (_, index) => ({
+    x: `2026-03-${String(index + 1).padStart(2, '0')}`,
+    y: index % 5
+  })));
+  const ticks = buildDateTicks(series);
+  assert.equal(ticks[0].date, '2026-03-01');
+  assert.equal(ticks.at(-1).date, '2026-03-25');
+  assert.ok(ticks.length < 25);
+  assert.ok(ticks.length >= 9);
+});
+
+test('75 sessions render approximately 8 to 10 readable x-axis labels while keeping first and last dates', () => {
+  const uniqueSeries = [{
+    name: 'Behavior frequency',
     points: Array.from({ length: 75 }, (_, index) => ({
       x: new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10),
       y: index % 7
     }))
   }];
-  const ticks = buildDateTicks(series);
+  const ticks = buildDateTicks(uniqueSeries);
   assert.equal(ticks[0].date, '2026-01-01');
   assert.equal(ticks.at(-1).date, '2026-03-16');
   assert.ok(ticks.length >= 8 && ticks.length <= 12);
 });
 
-test('all-data chart layout uses the full plot width instead of reserving a phase gap', () => {
+test('200 sessions render approximately 10 to 15 readable x-axis labels while keeping first and last dates', () => {
+  const series = [{
+    name: 'Behavior frequency',
+    points: Array.from({ length: 200 }, (_, index) => ({
+      x: new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10),
+      y: index % 9
+    }))
+  }];
+  const ticks = buildDateTicks(series);
+  assert.equal(ticks[0].date, '2026-01-01');
+  assert.equal(ticks.at(-1).date, '2026-07-19');
+  assert.ok(ticks.length >= 10 && ticks.length <= 16);
+});
+
+test('all-data chart layout uses full plot width without reserving an artificial phase gap', () => {
   const dates = ['2026-04-17', '2026-04-18', '2026-04-20', '2026-04-22', '2026-04-24'];
   const phaseBoundary = {
     date: '2026-04-18',
@@ -242,7 +325,8 @@ test('all-data chart layout uses the full plot width instead of reserving a phas
     rightIndex: 1,
     label: 'Treatment',
     lineStyle: 'solid',
-    phaseType: 'baselineToTreatment'
+    phaseType: 'baselineToTreatment',
+    sourceType: 'autoTreatment'
   };
   const layout = buildChartLayout(dates, 56, 600, phaseBoundary, []);
   const positions = layout.dateXPositions;
@@ -257,7 +341,21 @@ test('all-data chart layout uses the full plot width instead of reserving a phas
   assert.ok(baselineGap < totalSpan * 0.2);
 });
 
-test('date range filtering keeps all source points intact while changing the visible graph series', () => {
+test('phase dates remain visible when labels are thinned', () => {
+  const series = [{
+    name: 'Behavior frequency',
+    points: Array.from({ length: 75 }, (_, index) => ({
+      x: new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10),
+      y: index % 4
+    }))
+  }];
+  const ticks = buildDateTicks(series, {
+    phaseDates: ['2026-02-15']
+  });
+  assert.ok(ticks.some((tick) => tick.date === '2026-02-15'));
+});
+
+test('date range filtering keeps raw points intact while changing the visible data', () => {
   const series = [{
     name: 'Aggression',
     meta: { behaviorId: 'behavior-1' },
@@ -271,27 +369,43 @@ test('date range filtering keeps all source points intact while changing the vis
     startDate: '2026-02-01',
     endDate: '2026-03-01'
   });
-
   assert.equal(series[0].points.length, 3);
   assert.equal(filtered[0].points.length, 2);
   assert.deepEqual(filtered[0].points.map((point) => point.x), ['2026-02-01', '2026-03-01']);
 });
 
-test('graph layout uses responsive width without data-length based canvas sizing', () => {
+test('graph layout uses responsive width without data-length based canvas sizing while preserving caregiver-training graph support', () => {
   const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   const htmlSource = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   const chartSource = fs.readFileSync(new URL('../public/charts.js', import.meta.url), 'utf8');
   const stylesSource = fs.readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 
+  assert.match(appSource, /Caregiver Training/);
+  assert.match(appSource, /drawParentTrainingChartSet\(sessions, parentTrainingCharts, "parent-training-chart"/);
+  assert.match(appSource, /renderCustomPhaseLineManager\(graphKey, chart\.series/);
+  assert.match(appSource, /data-delete-parent-point/);
+  assert.match(appSource, /parentTrainingSummary/);
+  assert.match(appSource, /data-parent-training-analysis/);
+  assert.match(appSource, /report-parent-training-charts/);
   assert.match(appSource, /behaviorGraphRangePreset/);
   assert.match(appSource, /behavior-graph-range-preset/);
+  assert.match(appSource, /behavior-graph-show-points/);
+  assert.match(appSource, /behavior-graph-analyze-all/);
+  assert.match(appSource, /function graphTreatmentPhaseLine/);
+  assert.match(appSource, /data-edit-treatment-phase-line/);
+  assert.match(appSource, /data-hide-treatment-phase-line/);
+  assert.match(appSource, /data-reset-treatment-phase-line/);
+  assert.match(appSource, /data-phase-line-kind=\"treatment\"/);
+  assert.match(appSource, /Treatment phase line unavailable; baseline\/treatment analysis may be limited\./);
   assert.match(appSource, /showPointMarkers: state\.behaviorGraphShowPoints/);
   assert.match(appSource, /<div class="graph-canvas-scroll">/);
-  assert.match(htmlSource, /id="behavior-graph-controls"/);
+  assert.doesNotMatch(appSource, /showAllDateLabels: true/);
   assert.match(chartSource, /canvas\.style\.width = "100%"/);
   assert.match(chartSource, /canvas\.style\.maxWidth = "100%"/);
   assert.doesNotMatch(chartSource, /dateCount \* DENSE_SCROLL_PIXELS_PER_DATE/);
   assert.doesNotMatch(chartSource, /canvas\.style\.width = `\$\{denseWidth\}px`/);
+  assert.match(htmlSource, /id="parent-training-charts"/);
+  assert.match(htmlSource, /id="behavior-graph-controls"/);
   assert.match(stylesSource, /\.graph-canvas-scroll\s*\{[\s\S]*width: 100%;[\s\S]*max-width: 100%;/);
   assert.match(stylesSource, /\.graph-canvas-scroll canvas\s*\{[\s\S]*width: 100%;[\s\S]*max-width: 100%;/);
   assert.match(stylesSource, /\.view-switcher\s*\{[\s\S]*flex-wrap: wrap;[\s\S]*overflow-x: visible;/);
@@ -352,6 +466,50 @@ test('behavior graph analysis reports reduction, overlap, and immediacy metrics'
   assert.equal(analysis.analyses[0].percentReduction, '50%');
   assert.equal(analysis.analyses[0].overlap, '0%');
   assert.match(analysis.analyses[0].immediacy, /Immediate decrease/);
+});
+
+test('behavior interpretation uses increase wording when treatment rises above baseline', () => {
+  const analysis = buildGraphAnalysis([{
+    name: 'Aggression',
+    meta: { behaviorId: 'behavior-1' },
+    points: [
+      { x: '2026-06-01', y: 5 },
+      { x: '2026-06-03', y: 8 },
+      { x: '2026-06-05', y: 9 }
+    ]
+  }], {
+    graphType: 'behavior'
+  });
+
+  assert.match(analysis.analyses[0].interpretation, /increase from baseline/i);
+  assert.doesNotMatch(analysis.analyses[0].interpretation, /-\d+(\.\d+)?% reduction from baseline/i);
+});
+
+test('editing the treatment phase line recalculates behavior baseline and treatment metrics', () => {
+  const series = [{
+    name: 'Aggression',
+    meta: { behaviorId: 'behavior-1' },
+    points: [
+      { x: '2026-06-01', y: 10 },
+      { x: '2026-06-03', y: 8 },
+      { x: '2026-06-05', y: 4 }
+    ]
+  }];
+  const defaultAnalysis = buildGraphAnalysis(series, { graphType: 'behavior' });
+  const shiftedAnalysis = buildGraphAnalysis(series, {
+    graphType: 'behavior',
+    treatmentPhaseLine: {
+      date: '2026-06-05',
+      label: 'Treatment',
+      lineStyle: 'solid',
+      phaseType: 'userTreatmentOverride'
+    }
+  });
+
+  assert.equal(defaultAnalysis.analyses[0].baselineAverage, 10);
+  assert.equal(defaultAnalysis.analyses[0].treatmentAverage, 6);
+  assert.equal(shiftedAnalysis.analyses[0].baselineAverage, 9);
+  assert.equal(shiftedAnalysis.analyses[0].treatmentAverage, 4);
 });
 
 test('graph analysis uses insufficient-data messaging when treatment data are too sparse', () => {
@@ -530,6 +688,14 @@ test('graph analysis panel data remains available when some metrics are unavaila
   assert.equal(analysis.analyses[0].baselineLevel, 45);
   assert.match(analysis.analyses[0].variability, /requires at least 2 data points|low|moderate|high/i);
   assert.match(String(analysis.analyses[0].stability), /requires at least 3 treatment data points/i);
+});
+
+test('filtered range can suppress the auto treatment boundary when treatment began earlier', () => {
+  const model = buildClinicalGraphModel(behaviorLikeSeries([
+    { x: '2026-04-01', y: 4 },
+    { x: '2026-04-15', y: 3 }
+  ]), { suppressAutoTreatmentBoundary: true });
+  assert.equal(model.phaseBoundary, null);
 });
 
 test('skill analysis still calculates baseline level when stored phase labels mark the first point as intervention', () => {

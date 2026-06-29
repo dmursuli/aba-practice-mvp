@@ -622,18 +622,75 @@ button:focus-visible {
 
 .audit-panel,
 .user-panel,
-.client-panel {
+.client-panel,
+.import-panel {
   display: grid;
   gap: 18px;
 }
 
 .audit-panel,
 .user-panel,
-.client-panel {
+.client-panel,
+.import-panel {
   padding: clamp(16px, 2vw, 24px);
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
+}
+
+.import-table textarea {
+  min-height: 44px;
+  resize: vertical;
+}
+
+.import-table input,
+.import-table select,
+.import-table textarea {
+  width: 100%;
+}
+
+.import-preview-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.import-reference-cell strong,
+.import-reference-cell span {
+  display: block;
+}
+
+.import-reference-cell span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.import-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 800;
+  border: 1px solid var(--line);
+  background: #ffffff;
+}
+
+.import-badge--error {
+  color: #8d2b2b;
+  border-color: #efc4c4;
+  background: #fff0f0;
+}
+
+.import-badge--warning {
+  color: #8f6400;
+  border-color: #f3ddb1;
+  background: #fff8e6;
+}
+
+.import-badge--success {
+  color: #1f5b46;
+  border-color: #b9e2d1;
+  background: #eef9f3;
 }
 
 .audit-log-table {

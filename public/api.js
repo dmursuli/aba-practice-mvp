@@ -184,6 +184,22 @@ export async function createSession(session) {
   return parseResponse(response);
 }
 
+export async function importHistoricalData(payload) {
+  const response = await fetch("/api/historical-imports", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function rollbackHistoricalImport(batchId) {
+  const response = await fetch(`/api/historical-imports/${batchId}`, {
+    method: "DELETE"
+  });
+  return parseResponse(response);
+}
+
 export async function updateNote(sessionId, soapNote, finalized) {
   const response = await fetch(`/api/sessions/${sessionId}/note`, {
     method: "PUT",
@@ -232,7 +248,15 @@ export async function updateClientPlan(clientId, plan) {
 }
 
 async function parseResponse(response) {
-  const payload = await response.json();
+  const rawText = await response.text();
+  let payload = {};
+  if (rawText) {
+    try {
+      payload = JSON.parse(rawText);
+    } catch {
+      payload = { errors: [rawText] };
+    }
+  }
   if (!response.ok) {
     const message = payload.errors?.join(" ") || "Request failed.";
     const error = new Error(message);
