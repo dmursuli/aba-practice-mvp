@@ -74,6 +74,23 @@ export async function getData() {
   return parseResponse(response);
 }
 
+export async function getClientSessions(clientId, { startDate = "", endDate = "", serviceType = "", timeoutMs = 15000 } = {}) {
+  const url = new URL(`/api/clients/${clientId}/sessions`, window.location.origin);
+  if (startDate) url.searchParams.set("startDate", startDate);
+  if (endDate) url.searchParams.set("endDate", endDate);
+  if (serviceType) url.searchParams.set("serviceType", serviceType);
+  return fetchWithTimeout(url.pathname + url.search, timeoutMs);
+}
+
+export async function getVisibleSessions({ clientId = "", startDate = "", endDate = "", serviceType = "", timeoutMs = 15000 } = {}) {
+  const url = new URL("/api/sessions", window.location.origin);
+  if (clientId) url.searchParams.set("clientId", clientId);
+  if (startDate) url.searchParams.set("startDate", startDate);
+  if (endDate) url.searchParams.set("endDate", endDate);
+  if (serviceType) url.searchParams.set("serviceType", serviceType);
+  return fetchWithTimeout(url.pathname + url.search, timeoutMs);
+}
+
 export async function getPracticeBackup() {
   const response = await fetch("/api/backup");
   return parseResponse(response);
@@ -273,4 +290,22 @@ async function parseResponse(response) {
     throw error;
   }
   return payload;
+}
+
+async function fetchWithTimeout(path, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(path, { signal: controller.signal });
+    return await parseResponse(response);
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      const timeoutError = new Error("Loading took too long. Please try again.");
+      timeoutError.code = "REQUEST_TIMEOUT";
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }

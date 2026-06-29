@@ -129,7 +129,7 @@ test("admin can import a historical skill batch and roll it back", async () => {
   assert.equal(importResult.response.status, 201);
   assert.equal(importResult.json.results.created, 1);
 
-  const dataResult = await request("/api/data", { cookie });
+  const dataResult = await request("/api/data?includeSessions=visible", { cookie });
   assert.equal(dataResult.response.status, 200);
   assert.equal(dataResult.json.sessions.length, 1);
   assert.equal(dataResult.json.sessions[0].source, "historical_import");
@@ -143,9 +143,45 @@ test("admin can import a historical skill batch and roll it back", async () => {
   });
   assert.equal(rollback.response.status, 200);
 
-  const afterRollback = await request("/api/data", { cookie });
+  const afterRollback = await request("/api/data?includeSessions=visible", { cookie });
   assert.equal(afterRollback.json.sessions.length, 0);
   assert.equal(afterRollback.json.historicalImportBatches[0].status, "rolled_back");
+});
+
+test("bootstrap data omits session payloads while preserving per-client counts", async () => {
+  resetRuntimeState();
+  await resetDb({
+    ...baseDb,
+    sessions: [
+      { id: "s-1", clientId: "client-1", date: "2026-01-15", programs: [], behaviors: [], parentGoals: [] },
+      { id: "s-2", clientId: "client-1", date: "2026-01-16", programs: [], behaviors: [], parentGoals: [] }
+    ]
+  });
+  const cookie = await loginAs();
+  const result = await request("/api/data", { cookie });
+  assert.equal(result.response.status, 200);
+  assert.deepEqual(result.json.sessions, []);
+  assert.equal(result.json.clientSessionCounts["client-1"], 2);
+});
+
+test("client sessions endpoint returns only the requested client's filtered sessions", async () => {
+  resetRuntimeState();
+  await resetDb({
+    ...baseDb,
+    clients: [...baseDb.clients, { ...baseDb.clients[0], id: "client-2", name: "Other Client" }],
+    sessions: [
+      { id: "s-1", clientId: "client-1", date: "2026-01-15", serviceType: "97153", programs: [], behaviors: [], parentGoals: [] },
+      { id: "s-2", clientId: "client-1", date: "2026-03-10", serviceType: "97153", programs: [], behaviors: [], parentGoals: [] },
+      { id: "s-3", clientId: "client-2", date: "2026-03-10", serviceType: "97153", programs: [], behaviors: [], parentGoals: [] }
+    ]
+  });
+  const cookie = await loginAs();
+  const result = await request("/api/clients/client-1/sessions?startDate=2026-03-01&endDate=2026-03-31", { cookie });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.json.scope, "client");
+  assert.equal(result.json.clientId, "client-1");
+  assert.equal(result.json.sessions.length, 1);
+  assert.equal(result.json.sessions[0].id, "s-2");
 });
 
 test("update duplicate strategy edits an existing imported point and rollback restores the prior value", async () => {
@@ -232,7 +268,7 @@ test("update duplicate strategy edits an existing imported point and rollback re
   assert.equal(importResult.response.status, 201);
   assert.equal(importResult.json.results.updated, 1);
 
-  const afterUpdate = await request("/api/data", { cookie });
+  const afterUpdate = await request("/api/data?includeSessions=visible", { cookie });
   assert.equal(afterUpdate.json.sessions.length, 1);
   assert.equal(afterUpdate.json.sessions[0].programs[0].targets[0].independence, 90);
 
@@ -242,7 +278,7 @@ test("update duplicate strategy edits an existing imported point and rollback re
   });
   assert.equal(rollback.response.status, 200);
 
-  const afterRollback = await request("/api/data", { cookie });
+  const afterRollback = await request("/api/data?includeSessions=visible", { cookie });
   assert.equal(afterRollback.json.sessions[0].programs[0].targets[0].independence, 50);
 });
 
@@ -298,7 +334,7 @@ test("behavior import auto-assigns the selected graph to every csv row and skips
   assert.equal(importResult.json.results.invalid, 1);
   assert.equal(importResult.json.preview.summary.importableRows, 2);
 
-  const dataResult = await request("/api/data", { cookie });
+  const dataResult = await request("/api/clients/client-1/sessions", { cookie });
   assert.equal(dataResult.response.status, 200);
   const importedSessions = dataResult.json.sessions.filter((session) => session.source === "historical_import");
   assert.equal(importedSessions.length, 2);

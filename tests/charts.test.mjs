@@ -644,6 +644,15 @@ test('graph UI exposes a trend-line toggle and report insertion action', () => {
   assert.doesNotMatch(appSource, /Behavior reduction graph analysis:/);
 });
 
+test('app bootstrap lazy-loads session-backed graph data instead of rendering charts during the base render pass', () => {
+  const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(appSource, /await switchView\(requested\.view \|\| currentView\(\)\);/);
+  assert.match(appSource, /async function ensureSessionDataForView/);
+  assert.match(appSource, /await getClientSessions\(/);
+  assert.match(appSource, /await getVisibleSessions\(/);
+  assert.doesNotMatch(appSource, /renderHistory\(\);\s+renderCharts\(\);\s+renderNote\(\);/);
+});
+
 test('baseline and treatment comparison calculate with one point in each phase for behavior graphs', () => {
   const analysis = buildGraphAnalysis([{
     name: 'Self-injury',

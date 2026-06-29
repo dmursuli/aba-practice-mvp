@@ -1040,7 +1040,71 @@ export function createAppServer() {
         details: { clientsVisible: visibleClients(db, user).length }
       });
       await writeDb(db);
-      sendJson(res, 200, redactDb(db, user));
+      const includeSessions = ["1", "true", "visible"].includes(String(url.searchParams.get("includeSessions") || "").toLowerCase());
+      sendJson(res, 200, includeSessions ? redactDb(db, user) : bootstrapDb(db, user));
+      return;
+    }
+
+    const clientSessionsMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/sessions$/);
+    if (req.method === "GET" && clientSessionsMatch) {
+      const db = await readDbWithUsers();
+      const state = sessionStatus(req, db);
+      if (state.status !== "ok") {
+        requireAuth(req, res, db, state);
+        return;
+      }
+      const user = state.user;
+      const client = (db.clients || []).find((item) => item.id === clientSessionsMatch[1]);
+      if (!client || !canAccessClient(user, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
+      const startDate = String(url.searchParams.get("startDate") || "");
+      const endDate = String(url.searchParams.get("endDate") || "");
+      const serviceType = String(url.searchParams.get("serviceType") || "");
+      const sessions = filterSessions(visibleSessions(db, user), {
+        clientId: client.id,
+        startDate,
+        endDate,
+        serviceType
+      });
+      sendJson(res, 200, {
+        sessions,
+        scope: "client",
+        clientId: client.id,
+        startDate,
+        endDate,
+        serviceType
+      });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/sessions") {
+      const db = await readDbWithUsers();
+      const state = sessionStatus(req, db);
+      if (state.status !== "ok") {
+        requireAuth(req, res, db, state);
+        return;
+      }
+      const user = state.user;
+      const startDate = String(url.searchParams.get("startDate") || "");
+      const endDate = String(url.searchParams.get("endDate") || "");
+      const serviceType = String(url.searchParams.get("serviceType") || "");
+      const clientId = String(url.searchParams.get("clientId") || "");
+      const sessions = filterSessions(visibleSessions(db, user), {
+        clientId,
+        startDate,
+        endDate,
+        serviceType
+      });
+      sendJson(res, 200, {
+        sessions,
+        scope: clientId ? "client" : "visible",
+        clientId,
+        startDate,
+        endDate,
+        serviceType
+      });
       return;
     }
 
@@ -2340,6 +2404,24 @@ function visibleSessions(db, user) {
   return (db.sessions || []).filter((session) => clientIds.has(session.clientId));
 }
 
+function filterSessions(sessions, { clientId = "", startDate = "", endDate = "", serviceType = "" } = {}) {
+  return (sessions || []).filter((session) => {
+    if (clientId && session.clientId !== clientId) return false;
+    if (startDate && session.date < startDate) return false;
+    if (endDate && session.date > endDate) return false;
+    if (serviceType && String(session.serviceType || "") !== String(serviceType)) return false;
+    return true;
+  });
+}
+
+function visibleSessionCounts(db, user) {
+  const counts = {};
+  visibleSessions(db, user).forEach((session) => {
+    counts[session.clientId] = (counts[session.clientId] || 0) + 1;
+  });
+  return counts;
+}
+
 function visibleUsers(db, user) {
   return isMasterAdmin(user)
     ? (db.users || [])
@@ -2385,6 +2467,17 @@ function redactDb(db, user) {
     ...publicDb,
     clients: visibleClients(db, user),
     sessions: visibleSessions(db, user),
+    historicalImportBatches: visibleHistoricalImportBatches(db, user)
+  };
+}
+
+function bootstrapDb(db, user) {
+  const { users, auditLog, sessions, ...publicDb } = db;
+  return {
+    ...publicDb,
+    clients: visibleClients(db, user),
+    sessions: [],
+    clientSessionCounts: visibleSessionCounts(db, user),
     historicalImportBatches: visibleHistoricalImportBatches(db, user)
   };
 }

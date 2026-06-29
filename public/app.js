@@ -1,4 +1,4 @@
-import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAuditLog, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setupVerificationEmail, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAuditLog, getClientSessions, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setupVerificationEmail, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -12,6 +12,7 @@ const state = {
   programs: [],
   behaviors: [],
   sessions: [],
+  clientSessionCounts: {},
   auditLog: [],
   healthIssues: [],
   users: [],
@@ -53,6 +54,10 @@ const state = {
   historicalImportRows: [],
   historicalImportPreview: null,
   reportCustomPhaseLines: {},
+  sessionsLoadedScope: "none",
+  sessionsLoadedClientId: "",
+  sessionsLoading: false,
+  sessionsLoadError: "",
   inactivityTimerId: null,
   inactivityWarningTimerId: null,
   lastSessionTouchAt: 0
@@ -390,11 +395,7 @@ async function startAuthenticatedApp() {
   preloadFadePlanRows();
   preloadServiceHourRows();
   render();
-  if (requested.view) {
-    switchView(requested.view);
-  } else {
-    syncWorkspaceUrl(currentView());
-  }
+  await switchView(requested.view || currentView());
 }
 
 async function restoreRecoverableDrafts() {
@@ -487,7 +488,14 @@ function maybeTouchAuthenticatedSession() {
 
 async function refreshData() {
   const data = await getData();
-  Object.assign(state, data);
+  Object.assign(state, data, {
+    sessions: [],
+    clientSessionCounts: data.clientSessionCounts || {},
+    sessionsLoadedScope: "none",
+    sessionsLoadedClientId: "",
+    sessionsLoading: false,
+    sessionsLoadError: ""
+  });
   if (!clientSelect.value && state.clients[0]) clientSelect.value = state.clients[0].id;
   populateDomainSelect(addProgramForm.elements.programDomain);
   if (state.currentUser?.role === "admin") {
@@ -496,6 +504,11 @@ async function refreshData() {
   if (["admin", "bcba"].includes(state.currentUser?.role)) {
     await refreshAuditLog(false);
   }
+}
+
+async function refreshDataAndCurrentViewSessions() {
+  await refreshData();
+  await ensureSessionDataForView(currentView(), { force: true });
 }
 
 async function refreshUsers(showMessage = true) {
@@ -541,6 +554,89 @@ function ensureProgramGraphModalAnalysis() {
   node.id = "program-graph-modal-analysis";
   legend.insertAdjacentElement("afterend", node);
   return node;
+}
+
+function viewNeedsClientSessions(view = currentView()) {
+  return ["session", "workflow", "parent", "graphs", "import", "report", "soap"].includes(view);
+}
+
+function viewNeedsAllVisibleSessions(view = currentView()) {
+  return ["billing", "health"].includes(view);
+}
+
+function loadedSessions() {
+  return Array.isArray(state.sessions) ? state.sessions : [];
+}
+
+function rerenderSessionBackedView(view = currentView()) {
+  renderSummary();
+  renderGraphsSummary();
+  renderHistoricalImport();
+  renderReportSummary();
+  renderSoapSummary();
+  renderHistory();
+  renderNote();
+  renderParentSummary();
+  if (view === "workflow") renderWorkflowBoard();
+  if (view === "graphs") renderCharts();
+  if (view === "report") renderFunderReportPreview();
+  if (view === "billing") renderBillingExport();
+  if (view === "health") runDataHealthCheck();
+}
+
+async function ensureClientSessionsLoaded(clientId = state.activeClientId, { force = false } = {}) {
+  if (!clientId) return;
+  if (!force && (state.sessionsLoadedScope === "all" || (state.sessionsLoadedScope === "client" && state.sessionsLoadedClientId === clientId))) {
+    return;
+  }
+  state.sessionsLoading = true;
+  state.sessionsLoadError = "";
+  rerenderSessionBackedView();
+  try {
+    const payload = await getClientSessions(clientId);
+    state.sessions = payload.sessions || [];
+    state.sessionsLoadedScope = "client";
+    state.sessionsLoadedClientId = clientId;
+  } catch (error) {
+    state.sessions = [];
+    state.sessionsLoadedScope = "none";
+    state.sessionsLoadedClientId = "";
+    state.sessionsLoadError = error.message || "We couldn't load session data.";
+  } finally {
+    state.sessionsLoading = false;
+    rerenderSessionBackedView();
+  }
+}
+
+async function ensureAllVisibleSessionsLoaded({ force = false } = {}) {
+  if (!force && state.sessionsLoadedScope === "all") return;
+  state.sessionsLoading = true;
+  state.sessionsLoadError = "";
+  rerenderSessionBackedView();
+  try {
+    const payload = await getVisibleSessions();
+    state.sessions = payload.sessions || [];
+    state.sessionsLoadedScope = "all";
+    state.sessionsLoadedClientId = "";
+  } catch (error) {
+    state.sessions = [];
+    state.sessionsLoadedScope = "none";
+    state.sessionsLoadedClientId = "";
+    state.sessionsLoadError = error.message || "We couldn't load session data.";
+  } finally {
+    state.sessionsLoading = false;
+    rerenderSessionBackedView();
+  }
+}
+
+async function ensureSessionDataForView(view = currentView(), { force = false, clientId = state.activeClientId } = {}) {
+  if (viewNeedsAllVisibleSessions(view)) {
+    await ensureAllVisibleSessionsLoaded({ force });
+    return;
+  }
+  if (viewNeedsClientSessions(view)) {
+    await ensureClientSessionsLoaded(clientId, { force });
+  }
 }
 
 function bindEvents() {
@@ -929,7 +1025,7 @@ async function handleCommitHistoricalImport(event) {
       duplicateStrategy: historicalImportDuplicateStrategySelect.value,
       rows: historicalImportRowsToPayload()
     });
-    await refreshData();
+    await refreshDataAndCurrentViewSessions();
     state.historicalImportRows = [blankHistoricalImportRow(currentHistoricalImportDataType())];
     state.historicalImportPreview = null;
     render();
@@ -949,7 +1045,7 @@ async function handleHistoricalImportBatchClick(event) {
   }
   try {
     await rollbackHistoricalImport(rollbackButton.dataset.importRollback);
-    await refreshData();
+    await refreshDataAndCurrentViewSessions();
     state.historicalImportPreview = null;
     render();
     historicalImportMessage.textContent = "Historical import batch rolled back.";
@@ -990,6 +1086,7 @@ function resetSensitiveState() {
   state.programs = [];
   state.behaviors = [];
   state.sessions = [];
+  state.clientSessionCounts = {};
   state.auditLog = [];
   state.users = [];
   state.selectedSessionId = null;
@@ -1005,6 +1102,10 @@ function resetSensitiveState() {
   state.draftCache = { intake: {}, session: {} };
   state.historicalImportRows = [];
   state.historicalImportPreview = null;
+  state.sessionsLoadedScope = "none";
+  state.sessionsLoadedClientId = "";
+  state.sessionsLoading = false;
+  state.sessionsLoadError = "";
   state.lastSessionTouchAt = 0;
   currentUserLabel.textContent = "";
   clearSensitiveDom();
@@ -1267,7 +1368,13 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
     syncSettingFromClient();
     resetRows();
   }
+  if (state.sessionsLoadedScope === "client" && state.sessionsLoadedClientId !== clientId) {
+    state.sessions = [];
+    state.sessionsLoadedScope = "none";
+    state.sessionsLoadedClientId = "";
+  }
   render();
+  void ensureSessionDataForView(currentView(), { force: true, clientId });
   syncWorkspaceUrl(currentView());
 }
 
@@ -1568,7 +1675,7 @@ async function handleSubmit(event) {
     state.selectedSoapEntryKey = saved.id;
     state.skipNextSessionDraftRestore = true;
     clearSessionDraft(payload.clientId);
-    await refreshData();
+    await refreshDataAndCurrentViewSessions();
     resetRows();
     render();
     formMessage.textContent = "Session saved. Graphs and SOAP note updated.";
@@ -1598,7 +1705,7 @@ async function handleClientProfileSubmit(event) {
 async function handleDeleteClient() {
   const client = currentClient();
   if (!client) return;
-  const sessionCount = state.sessions.filter((session) => session.clientId === client.id).length;
+  const sessionCount = state.clientSessionCounts?.[client.id] || loadedSessions().filter((session) => session.clientId === client.id).length;
   const confirmMessage = `Delete ${client.name}? This will also remove ${sessionCount} session${sessionCount === 1 ? "" : "s"} and any uploaded documents for this client.`;
   if (!window.confirm(confirmMessage)) return;
 
@@ -1773,7 +1880,7 @@ function handleRestorePracticeBackup() {
       }
       clientProfileMessage.textContent = "Restoring practice backup...";
       await restorePracticeBackup(backup);
-      await refreshData();
+      await refreshDataAndCurrentViewSessions();
       if (state.clients.length && !state.clients.some((client) => client.id === clientSelect.value)) clientSelect.value = state.clients[0].id;
       await refreshAuditLog(false);
       render();
@@ -2189,7 +2296,7 @@ async function handleParentTrainingSubmit(event) {
     const saved = await createSession(payload);
     state.selectedSessionId = saved.id;
     parentMessage.textContent = "97156 SOAP note generated and parent training session saved.";
-    await refreshData();
+    await refreshDataAndCurrentViewSessions();
     preloadParentRows();
     render();
   } catch (error) {
@@ -2399,7 +2506,6 @@ function render() {
   render97151Note();
   render97155Note();
   renderHistory();
-  renderCharts();
   renderNote();
   renderAuditFilters();
   renderAuditLog();
@@ -2917,7 +3023,7 @@ function handleViewTabClick(event, view) {
   switchView(view);
 }
 
-function switchView(view) {
+async function switchView(view) {
   if (!allowedViews().includes(view)) {
     view = allowedViews()[0] || "session";
   }
@@ -2927,6 +3033,9 @@ function switchView(view) {
   document.querySelectorAll("[data-view-panel]").forEach((panel) => {
     panel.classList.toggle("hidden", panel.dataset.viewPanel !== view);
   });
+  if (viewNeedsClientSessions(view) || viewNeedsAllVisibleSessions(view)) {
+    await ensureSessionDataForView(view, { clientId: state.activeClientId });
+  }
   if (view === "graphs") renderCharts();
   if (view === "report") renderFunderReportPreview();
   if (view === "billing") renderBillingExport();
@@ -3094,6 +3203,7 @@ function stagnantReviewForTarget(criteria, qualifyingSessions, baseResult) {
 function renderSummary() {
   const client = currentClient();
   const sessions = currentSessions();
+  const sessionCount = sessions.length || state.clientSessionCounts?.[client?.id] || 0;
   const activeTargets = clientPrograms().flatMap((program) => program.targets || []).filter((target) => target.status === "active").length;
   const maintenanceTargets = clientPrograms().flatMap((program) => {
     const programStatus = normalizePlanStatus(program.status || "active");
@@ -3102,7 +3212,7 @@ function renderSummary() {
   document.querySelector("#client-summary").innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
-      <div><strong>${sessions.length}</strong><span>Sessions</span></div>
+      <div><strong>${sessionCount}</strong><span>Sessions</span></div>
       <div><strong>${activeTargets} / ${maintenanceTargets}</strong><span>Active / maintenance targets</span></div>
     `
     : "<p>No client selected.</p>";
@@ -3295,11 +3405,12 @@ function sessionTargetMatchesTab(programStatus, target, tab) {
 function renderGraphsSummary() {
   const client = currentClient();
   const sessions = currentSessions();
+  const sessionCount = sessions.length || state.clientSessionCounts?.[client?.id] || 0;
   const targetCount = clientPrograms().flatMap((program) => program.targets || []).length;
   graphsClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
-      <div><strong>${sessions.length}</strong><span>Sessions graphed</span></div>
+      <div><strong>${sessionCount}</strong><span>Sessions graphed</span></div>
       <div><strong>${targetCount}</strong><span>Total targets</span></div>
     `
     : "";
@@ -3307,6 +3418,16 @@ function renderGraphsSummary() {
 
 function renderBillingExport() {
   if (!billingClientFilter || !billingTable || !billingSummary) return;
+  if (state.sessionsLoading) {
+    billingSummary.innerHTML = `
+      <div><strong>...</strong><span>Sessions</span></div>
+      <div><strong>...</strong><span>Billing-ready</span></div>
+      <div><strong>...</strong><span>Total units</span></div>
+    `;
+    if (billingMessage) billingMessage.textContent = "Loading billing data...";
+    billingTable.innerHTML = '<p class="muted">Loading session data...</p>';
+    return;
+  }
   const clientValue = billingClientFilter.value;
   billingClientFilter.innerHTML = '<option value="">All clients</option>' + state.clients.map((client) => (
     `<option value="${escapeHtml(client.id)}">${escapeHtml(client.name)}</option>`
@@ -3421,7 +3542,7 @@ function renderAuthorizationUsage() {
 
 function authorizationUsageByCode(client) {
   const cycle = currentAuthorizationCycle(client);
-  const timedRows = state.sessions
+  const timedRows = loadedSessions()
     .filter((session) => session.clientId === client.id && dateFallsInCycle(session.date, cycle))
     .map((session) => billingRow(session));
   const services = client.profile?.authorization?.services || {};
@@ -3691,7 +3812,7 @@ function filteredBillingSessions() {
 }
 
 function billingRows() {
-  return state.sessions.map((session) => billingRow(session));
+  return loadedSessions().map((session) => billingRow(session));
 }
 
 function billingRow(session) {
@@ -3797,6 +3918,12 @@ function exportAuditLog(format) {
 }
 
 function runDataHealthCheck() {
+  if (state.sessionsLoading) {
+    state.healthIssues = [];
+    renderDataHealth();
+    if (healthMessage) healthMessage.textContent = "Loading session data...";
+    return;
+  }
   state.healthIssues = buildDataHealthIssues();
   renderDataHealth();
   if (healthMessage) {
@@ -3854,7 +3981,7 @@ function buildDataHealthIssues() {
     issues.push(healthIssue("high", "", "Client management", "No clients are set up.", "Create a client before entering sessions."));
   }
   state.clients.forEach((client) => {
-    const clientSessions = state.sessions.filter((session) => session.clientId === client.id);
+    const clientSessions = loadedSessions().filter((session) => session.clientId === client.id);
     checkClientProfileHealth(client, clientSessions, issues);
     checkTreatmentPlanHealth(client, clientSessions, issues);
     checkSessionHealth(client, clientSessions, issues);
@@ -6572,7 +6699,7 @@ function renderHistory() {
 }
 
 async function handleDeleteSession(sessionId) {
-  const session = state.sessions.find((item) => item.id === sessionId);
+  const session = loadedSessions().find((item) => item.id === sessionId);
   const label = session ? `${formatDate(session.date)} ${session.startTime}-${session.endTime}` : "this session";
   if (!window.confirm(`Delete ${label}? This removes it from history, graphs, and notes.`)) return;
 
@@ -6580,7 +6707,7 @@ async function handleDeleteSession(sessionId) {
     await deleteSession(sessionId);
     if (state.selectedSessionId === sessionId) state.selectedSessionId = null;
     if (state.selectedSoapEntryKey === sessionId) state.selectedSoapEntryKey = "";
-    await refreshData();
+    await refreshDataAndCurrentViewSessions();
     render();
   } catch (error) {
     formMessage.textContent = error.message;
@@ -6604,7 +6731,7 @@ async function handleGraphDataDeleteClick(event) {
         skillDelete.dataset.programId,
         skillDelete.dataset.targetId
       );
-      await refreshData();
+      await refreshDataAndCurrentViewSessions();
       render();
       graphsMessage.textContent = `${label} data for ${date} deleted.`;
       return;
@@ -6619,7 +6746,7 @@ async function handleGraphDataDeleteClick(event) {
         parentDelete.dataset.goalName,
         parentDelete.dataset.targetName
       );
-      await refreshData();
+      await refreshDataAndCurrentViewSessions();
       render();
       graphsMessage.textContent = `${label} data for ${date} deleted.`;
       return;
@@ -6632,7 +6759,7 @@ async function handleGraphDataDeleteClick(event) {
       behaviorDelete.dataset.sessionId,
       behaviorDelete.dataset.behaviorId
     );
-    await refreshData();
+    await refreshDataAndCurrentViewSessions();
     render();
     graphsMessage.textContent = `${label} data for ${date} deleted.`;
   } catch (error) {
@@ -7251,9 +7378,22 @@ function drawFunderReportCharts(sessions) {
 }
 
 function renderCharts() {
+  if (state.sessionsLoading) {
+    renderGraphScopeTabs();
+    skillCharts.innerHTML = '<article class="chart-panel"><p class="muted">Loading graph data...</p></article>';
+    behaviorCharts.innerHTML = "";
+    parentTrainingCharts.innerHTML = "";
+    if (behaviorGraphControls) behaviorGraphControls.innerHTML = '<p class="muted">Loading graph data...</p>';
+    if (graphsMessage) graphsMessage.textContent = "Loading graph data...";
+    return;
+  }
+
   const sessions = currentSessions().slice().reverse();
   const scope = graphScopeVisibility(state.activeGraphTab);
   renderGraphScopeTabs();
+  if (graphsMessage) {
+    graphsMessage.textContent = state.sessionsLoadError || "";
+  }
   behaviorChartPanel?.classList.toggle("hidden", !scope.showBehaviorGraphs);
   behaviorCharts.classList.toggle("hidden", !scope.showBehaviorGraphs);
   parentTrainingCharts.classList.toggle("hidden", !scope.showParentTrainingCharts);
@@ -8256,7 +8396,7 @@ async function handleFinalize() {
   noteStatus.textContent = "";
   try {
     await updateNote(session.id, soapEditor.value, true);
-    await refreshData();
+    await refreshDataAndCurrentViewSessions();
     renderHistory();
     renderNote();
     renderSoapSummary();
@@ -8618,7 +8758,14 @@ function populateDomainSelect(select, selected = clientDomains()[0]) {
 
 function currentSessions() {
   const client = currentClient();
-  return state.sessions.filter((session) => session.clientId === client?.id);
+  if (!client) return [];
+  if (state.sessionsLoadedScope === "all") {
+    return loadedSessions().filter((session) => session.clientId === client.id);
+  }
+  if (state.sessionsLoadedScope === "client" && state.sessionsLoadedClientId === client.id) {
+    return loadedSessions();
+  }
+  return [];
 }
 
 function selectedSession() {
