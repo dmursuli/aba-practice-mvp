@@ -37,9 +37,12 @@ const state = {
   behaviorGraphRangePreset: "default",
   behaviorGraphCustomStart: "",
   behaviorGraphCustomEnd: "",
-  behaviorGraphShowPoints: true,
+  behaviorGraphShowPoints: false,
   behaviorGraphAnalyzeAllData: false,
   hiddenBehaviorSeries: {},
+  graphAnalysisRenderToken: 0,
+  graphAnalysisTaskId: 0,
+  graphDataManagerRows: {},
   draftCache: {
     intake: {},
     session: {}
@@ -754,16 +757,19 @@ function bindEvents() {
   skillCharts.addEventListener("click", handleGraphPhaseLineClick);
   skillCharts.addEventListener("submit", handleGraphPhaseLineSubmit);
   skillCharts.addEventListener("change", handleGraphAnalysisControlChange);
+  skillCharts.addEventListener("toggle", handleGraphDataManagerToggle, true);
   behaviorCharts.addEventListener("click", handleGraphDataDeleteClick);
   behaviorCharts.addEventListener("click", handleGraphPhaseLineClick);
   behaviorCharts.addEventListener("submit", handleGraphPhaseLineSubmit);
   behaviorCharts.addEventListener("change", handleGraphAnalysisControlChange);
+  behaviorCharts.addEventListener("toggle", handleGraphDataManagerToggle, true);
   behaviorCharts.addEventListener("click", handleGraphAnalysisClick);
   skillCharts.addEventListener("click", handleGraphAnalysisClick);
   parentTrainingCharts.addEventListener("click", handleGraphDataDeleteClick);
   parentTrainingCharts.addEventListener("click", handleGraphPhaseLineClick);
   parentTrainingCharts.addEventListener("submit", handleGraphPhaseLineSubmit);
   parentTrainingCharts.addEventListener("change", handleGraphAnalysisControlChange);
+  parentTrainingCharts.addEventListener("toggle", handleGraphDataManagerToggle, true);
   parentTrainingCharts.addEventListener("click", handleGraphAnalysisClick);
   programGraphModal?.addEventListener("change", handleGraphAnalysisControlChange);
   programGraphModal?.addEventListener("click", handleGraphAnalysisClick);
@@ -6767,6 +6773,41 @@ async function handleGraphDataDeleteClick(event) {
   }
 }
 
+function handleGraphDataManagerToggle(event) {
+  const details = event.target.closest(".graph-data-manager");
+  if (!details?.open) return;
+  const managerId = details.dataset.graphDataManagerId;
+  if (!managerId) return;
+  const list = details.querySelector("[data-graph-data-list]");
+  if (!list || list.dataset.hydrated === "true") return;
+  const rows = state.graphDataManagerRows[managerId] || [];
+  list.innerHTML = renderGraphDataManagerRowsMarkup(rows);
+  list.dataset.hydrated = "true";
+}
+
+function renderGraphDataManagerRowsMarkup(rows) {
+  if (!rows.length) {
+    return '<p class="muted">No data points available in this date range.</p>';
+  }
+  return `
+    <div class="graph-data-list">
+      ${rows.map((row) => `
+        <div class="graph-data-row">
+          <div>
+            <strong>${escapeHtml(row.label)}</strong>
+            <span>${escapeHtml(formatGraphDate(row.date))} - ${escapeHtml(row.valueLabel)}</span>
+          </div>
+          <button
+            type="button"
+            class="delete-button"
+            ${row.deleteDataset}
+          >Delete</button>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
 function handleGraphAnalysisControlChange(event) {
   const toggle = event.target.closest("[data-graph-trend-toggle]");
   if (!toggle) return;
@@ -7378,6 +7419,12 @@ function drawFunderReportCharts(sessions) {
 }
 
 function renderCharts() {
+  state.graphAnalysisRenderToken += 1;
+  state.graphDataManagerRows = {};
+  if (state.graphAnalysisTaskId) {
+    window.clearTimeout(state.graphAnalysisTaskId);
+    state.graphAnalysisTaskId = 0;
+  }
   if (state.sessionsLoading) {
     renderGraphScopeTabs();
     skillCharts.innerHTML = '<article class="chart-panel"><p class="muted">Loading graph data...</p></article>';
@@ -7388,7 +7435,9 @@ function renderCharts() {
     return;
   }
 
-  const sessions = currentSessions().slice().reverse();
+  const allSessions = currentSessions().slice().reverse();
+  const range = behaviorGraphRange();
+  const sessions = filterSessionsByGraphRange(allSessions, range);
   const scope = graphScopeVisibility(state.activeGraphTab);
   renderGraphScopeTabs();
   if (graphsMessage) {
@@ -7398,49 +7447,38 @@ function renderCharts() {
   behaviorCharts.classList.toggle("hidden", !scope.showBehaviorGraphs);
   parentTrainingCharts.classList.toggle("hidden", !scope.showParentTrainingCharts);
   graphDomainTabs.classList.toggle("hidden", !scope.showSkillCharts);
-  if (scope.showSkillCharts) {
-    renderSkillCharts(sessions);
-    behaviorCharts.innerHTML = "";
-    parentTrainingCharts.innerHTML = "";
-    return;
-  }
-
-  if (scope.showParentTrainingCharts) {
-    skillCharts.innerHTML = "";
-    behaviorCharts.innerHTML = "";
-    drawParentTrainingChartSet(sessions, parentTrainingCharts, "parent-training-chart", {
-      readOnly: false,
-      reportField: "parentTrainingSummary",
-      emptyMessage: "No caregiver training graph data available."
-    });
-    return;
-  }
-
-  skillCharts.innerHTML = "";
-  parentTrainingCharts.innerHTML = "";
-  renderBehaviorGraphControls();
-  const allBehaviorSeries = behaviorChartSeries(sessions);
-  const range = behaviorGraphRange();
-  const behaviorSeries = filterSeriesPointsByDateRange(allBehaviorSeries, range, {
-    includeSeriesIds: visibleBehaviorIds()
-  });
-  const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
-  const behaviorOverviewPhaseConfig = graphPhaseConfig(behaviorOverviewGraphKey, behaviorSeries);
-  const behaviorOverviewAnalysis = buildGraphAnalysis(
-    state.behaviorGraphAnalyzeAllData
-      ? allBehaviorSeries.filter((series) => visibleBehaviorIds().includes(series.meta?.behaviorId))
-      : behaviorSeries,
-    {
-      graphType: "behavior",
-      phaseMarkers: behaviorOverviewPhaseConfig.phaseMarkers,
-      treatmentPhaseLine: behaviorOverviewPhaseConfig.treatmentPhaseLine,
-      rangeLabel: state.behaviorGraphAnalyzeAllData ? "All data" : range.label
+  try {
+    if (scope.showSkillCharts) {
+      renderSkillCharts(sessions);
+      behaviorCharts.innerHTML = "";
+      parentTrainingCharts.innerHTML = "";
+      return;
     }
-  );
-  drawLineChart(document.querySelector("#behavior-chart"), behaviorSeries, {
-    yStep: 1,
-    yLabel: "frequency",
-    emptyMessage: "Save a session to graph behavior frequency",
+
+    if (scope.showParentTrainingCharts) {
+      skillCharts.innerHTML = "";
+      behaviorCharts.innerHTML = "";
+      drawParentTrainingChartSet(sessions, parentTrainingCharts, "parent-training-chart", {
+        readOnly: false,
+        reportField: "parentTrainingSummary",
+        emptyMessage: "No caregiver training graph data available."
+      });
+      return;
+    }
+
+    skillCharts.innerHTML = "";
+    parentTrainingCharts.innerHTML = "";
+    renderBehaviorGraphControls();
+    const allBehaviorSeries = behaviorChartSeries(allSessions);
+    const behaviorSeries = filterSeriesPointsByDateRange(allBehaviorSeries, range, {
+      includeSeriesIds: visibleBehaviorIds()
+    });
+    const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
+    const behaviorOverviewPhaseConfig = graphPhaseConfig(behaviorOverviewGraphKey, behaviorSeries);
+    drawLineChart(document.querySelector("#behavior-chart"), behaviorSeries, {
+      yStep: 1,
+      yLabel: "frequency",
+      emptyMessage: "Save a session to graph behavior frequency",
     phaseMarkers: behaviorOverviewPhaseConfig.phaseMarkers,
     treatmentPhaseLine: behaviorOverviewPhaseConfig.treatmentPhaseLine,
     graphType: "behavior",
@@ -7448,34 +7486,59 @@ function renderCharts() {
     showPointMarkers: state.behaviorGraphShowPoints,
     suppressAutoTreatmentBoundary: anySeriesDataBeforeRange(allBehaviorSeries, range.startDate)
   });
-  const behaviorOverviewScrollWrap = document.querySelector("#behavior-chart")?.parentElement;
-  behaviorOverviewScrollWrap?.classList.remove("is-scrollable");
-  const behaviorChartContainer = document.querySelector("#behavior-chart")?.closest(".chart-panel");
-  renderGraphLegend(behaviorChartContainer, behaviorSeries, {
-    showTrendLine: trendLineEnabled(behaviorOverviewGraphKey)
-  });
-  if (behaviorChartContainer) {
-    behaviorChartContainer.querySelector(".graph-analysis-panel")?.remove();
-    behaviorChartContainer.querySelector(".graph-phase-line-panel")?.remove();
-    behaviorChartContainer.insertAdjacentHTML("beforeend", renderGraphAnalysisMarkup(
-      behaviorOverviewAnalysis,
-      behaviorOverviewGraphKey,
-      {
-        reportField: "progressSummary",
-        rangeLabel: state.behaviorGraphAnalyzeAllData ? "All data" : range.label,
-        treatmentBeforeRange: anySeriesDataBeforeRange(allBehaviorSeries, range.startDate)
+    const behaviorOverviewScrollWrap = document.querySelector("#behavior-chart")?.parentElement;
+    behaviorOverviewScrollWrap?.classList.remove("is-scrollable");
+    const behaviorChartContainer = document.querySelector("#behavior-chart")?.closest(".chart-panel");
+    renderGraphLegend(behaviorChartContainer, behaviorSeries, {
+      showTrendLine: trendLineEnabled(behaviorOverviewGraphKey)
+    });
+    if (behaviorChartContainer) {
+      behaviorChartContainer.querySelector(".graph-analysis-panel")?.remove();
+      behaviorChartContainer.querySelector(".graph-phase-line-panel")?.remove();
+      behaviorChartContainer.insertAdjacentHTML("beforeend", '<div class="graph-analysis-panel"><p class="muted">Loading graph analysis...</p></div>');
+      behaviorChartContainer.insertAdjacentHTML("beforeend", renderCustomPhaseLineManager(
+        behaviorOverviewGraphKey,
+        behaviorSeries
+      ));
+      const analysisMount = behaviorChartContainer.querySelector('.graph-analysis-panel');
+      if (analysisMount) {
+        void queueGraphAnalysis(() => {
+          const behaviorOverviewAnalysis = buildGraphAnalysis(
+            state.behaviorGraphAnalyzeAllData
+              ? allBehaviorSeries.filter((series) => visibleBehaviorIds().includes(series.meta?.behaviorId))
+              : behaviorSeries,
+            {
+              graphType: "behavior",
+              phaseMarkers: behaviorOverviewPhaseConfig.phaseMarkers,
+              treatmentPhaseLine: behaviorOverviewPhaseConfig.treatmentPhaseLine,
+              rangeLabel: state.behaviorGraphAnalyzeAllData ? "All data" : range.label
+            }
+          );
+          analysisMount.outerHTML = renderGraphAnalysisMarkup(
+            behaviorOverviewAnalysis,
+            behaviorOverviewGraphKey,
+            {
+              reportField: "progressSummary",
+              rangeLabel: state.behaviorGraphAnalyzeAllData ? "All data" : range.label,
+              treatmentBeforeRange: anySeriesDataBeforeRange(allBehaviorSeries, range.startDate)
+            }
+          );
+        });
       }
-    ));
-    behaviorChartContainer.insertAdjacentHTML("beforeend", renderCustomPhaseLineManager(
-      behaviorOverviewGraphKey,
-      behaviorSeries
-    ));
+    }
+    drawBehaviorChartSet(sessions, behaviorCharts, "behavior-single-chart", {
+      range,
+      allSeries: allBehaviorSeries,
+      visibleBehaviorIds: visibleBehaviorIds()
+    });
+  } catch (error) {
+    console.error("Graphs view render failed", error);
+    const fallback = '<article class="chart-panel"><p class="muted">We could not render these graphs yet. Try a smaller date range or reload the page.</p></article>';
+    if (scope.showSkillCharts) skillCharts.innerHTML = fallback;
+    if (scope.showBehaviorGraphs) behaviorCharts.innerHTML = fallback;
+    if (scope.showParentTrainingCharts) parentTrainingCharts.innerHTML = fallback;
+    if (graphsMessage) graphsMessage.textContent = "Graph rendering hit an error. Try a smaller date range or reload the page.";
   }
-  drawBehaviorChartSet(sessions, behaviorCharts, "behavior-single-chart", {
-    range,
-    allSeries: allBehaviorSeries,
-    visibleBehaviorIds: visibleBehaviorIds()
-  });
 }
 
 function renderBehaviorGraphControls() {
@@ -7581,8 +7644,49 @@ function renderGraphScopeTabs() {
   });
 }
 
+function filterSessionsByGraphRange(sessions, range) {
+  if (!Array.isArray(sessions) || !sessions.length) return [];
+  if (!range?.startDate && !range?.endDate) return sessions;
+  return sessions.filter((session) => (
+    (!range.startDate || session.date >= range.startDate)
+    && (!range.endDate || session.date <= range.endDate)
+  ));
+}
+
+function queueGraphAnalysis(task, token = state.graphAnalysisRenderToken) {
+  return new Promise((resolve) => {
+    const run = () => {
+      if (token !== state.graphAnalysisRenderToken) {
+        resolve(false);
+        return;
+      }
+      try {
+        task();
+      } catch (error) {
+        console.error("Graph analysis render failed", error);
+      }
+      resolve(true);
+    };
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => {
+        state.graphAnalysisTaskId = window.setTimeout(run, 0);
+      });
+      return;
+    }
+    state.graphAnalysisTaskId = window.setTimeout(run, 0);
+  });
+}
+
+async function queueGraphAnalysisBatch(tasks, token = state.graphAnalysisRenderToken) {
+  for (const task of tasks) {
+    const shouldContinue = await queueGraphAnalysis(task, token);
+    if (!shouldContinue) return;
+  }
+}
+
 function renderSkillCharts(sessions) {
   const groups = buildSkillChartsByDomain(sessions);
+  const renderToken = state.graphAnalysisRenderToken;
   renderGraphDomainTabs(groups);
 
   if (!groups.length) {
@@ -7622,6 +7726,7 @@ function renderSkillCharts(sessions) {
     </section>
   `).join("");
 
+  const analysisTasks = [];
   visibleGroups.flatMap((group) => group.charts).forEach((chart) => {
     const graphKey = graphTrendKey("skill", chart.program.id);
     const phaseConfig = graphPhaseConfig(graphKey, chart.series, masteryMarkersForProgram(chart.program.id));
@@ -7637,19 +7742,23 @@ function renderSkillCharts(sessions) {
     });
     const analysisMount = skillCharts.querySelector(`[data-program-analysis="${chart.program.id}"]`);
     if (analysisMount) {
-      const analysis = buildGraphAnalysis(chart.series, {
-        graphType: "skill",
-        phaseMarkers: phaseConfig.phaseMarkers,
-        treatmentPhaseLine: phaseConfig.treatmentPhaseLine
+      analysisMount.innerHTML = '<p class="muted">Loading graph analysis...</p>';
+      analysisTasks.push(() => {
+        const analysis = buildGraphAnalysis(chart.series, {
+          graphType: "skill",
+          phaseMarkers: phaseConfig.phaseMarkers,
+          treatmentPhaseLine: phaseConfig.treatmentPhaseLine
+        });
+        analysisMount.innerHTML = `
+          ${renderGraphAnalysisMarkup(analysis, graphKey, {
+            reportField: "progressSummary"
+          })}
+          ${renderCustomPhaseLineManager(graphKey, chart.series)}
+        `;
       });
-      analysisMount.innerHTML = `
-        ${renderGraphAnalysisMarkup(analysis, graphKey, {
-          reportField: "progressSummary"
-        })}
-        ${renderCustomPhaseLineManager(graphKey, chart.series)}
-      `;
     }
   });
+  void queueGraphAnalysisBatch(analysisTasks, renderToken);
 }
 
 function buildSkillChartsByDomain(sessions) {
@@ -7904,36 +8013,26 @@ function graphInterpretationText(analysis, graphKey, seriesLabel = "") {
 
 function renderSkillDataManagerMarkup(chart) {
   const rows = chart.series.flatMap((series) => series.points.map((point) => ({
-    sessionId: point.sessionId,
-    programId: point.programId,
-    targetId: point.targetId,
-    targetName: series.name,
+    label: series.name,
     date: point.x,
-    value: point.y
+    valueLabel: `${point.y}% independence`,
+    deleteDataset: [
+      'data-delete-skill-point="true"',
+      `data-session-id="${escapeHtml(point.sessionId)}"`,
+      `data-program-id="${escapeHtml(point.programId)}"`,
+      `data-target-id="${escapeHtml(point.targetId)}"`,
+      `data-point-label="${escapeHtml(series.name)}"`,
+      `data-point-date="${escapeHtml(point.x)}"`
+    ].join(" ")
   }))).sort((a, b) => b.date.localeCompare(a.date));
   if (!rows.length) return "";
+  const managerId = `skill:${chart.program.id}`;
+  state.graphDataManagerRows[managerId] = rows;
   return `
-    <details class="graph-data-manager">
-      <summary>Manage data points</summary>
-      <div class="graph-data-list">
-        ${rows.map((row) => `
-          <div class="graph-data-row">
-            <div>
-              <strong>${escapeHtml(row.targetName)}</strong>
-              <span>${escapeHtml(formatGraphDate(row.date))} - ${row.value}% independence</span>
-            </div>
-            <button
-              type="button"
-              class="delete-button"
-              data-delete-skill-point="true"
-              data-session-id="${escapeHtml(row.sessionId)}"
-              data-program-id="${escapeHtml(row.programId)}"
-              data-target-id="${escapeHtml(row.targetId)}"
-              data-point-label="${escapeHtml(row.targetName)}"
-              data-point-date="${escapeHtml(row.date)}"
-            >Delete</button>
-          </div>
-        `).join("")}
+    <details class="graph-data-manager" data-graph-data-manager-id="${escapeHtml(managerId)}">
+      <summary>Manage data points (${rows.length})</summary>
+      <div data-graph-data-list="true">
+        <p class="muted">Expand to load data points for this graph.</p>
       </div>
     </details>
   `;
@@ -7941,34 +8040,25 @@ function renderSkillDataManagerMarkup(chart) {
 
 function renderBehaviorDataManagerMarkup(chart) {
   const rows = chart.series.flatMap((series) => series.points.map((point) => ({
-    sessionId: point.sessionId,
-    behaviorId: point.behaviorId,
-    behaviorName: series.name,
+    label: series.name,
     date: point.x,
-    value: point.y
+    valueLabel: `${point.y} frequency`,
+    deleteDataset: [
+      'data-delete-behavior-point="true"',
+      `data-session-id="${escapeHtml(point.sessionId)}"`,
+      `data-behavior-id="${escapeHtml(point.behaviorId)}"`,
+      `data-point-label="${escapeHtml(series.name)}"`,
+      `data-point-date="${escapeHtml(point.x)}"`
+    ].join(" ")
   }))).sort((a, b) => b.date.localeCompare(a.date));
   if (!rows.length) return "";
+  const managerId = `behavior:${chart.series[0]?.meta?.behaviorId || chart.series[0]?.name || "behavior"}`;
+  state.graphDataManagerRows[managerId] = rows;
   return `
-    <details class="graph-data-manager">
-      <summary>Manage data points</summary>
-      <div class="graph-data-list">
-        ${rows.map((row) => `
-          <div class="graph-data-row">
-            <div>
-              <strong>${escapeHtml(row.behaviorName)}</strong>
-              <span>${escapeHtml(formatGraphDate(row.date))} - ${row.value} frequency</span>
-            </div>
-            <button
-              type="button"
-              class="delete-button"
-              data-delete-behavior-point="true"
-              data-session-id="${escapeHtml(row.sessionId)}"
-              data-behavior-id="${escapeHtml(row.behaviorId)}"
-              data-point-label="${escapeHtml(row.behaviorName)}"
-              data-point-date="${escapeHtml(row.date)}"
-            >Delete</button>
-          </div>
-        `).join("")}
+    <details class="graph-data-manager" data-graph-data-manager-id="${escapeHtml(managerId)}">
+      <summary>Manage data points (${rows.length})</summary>
+      <div data-graph-data-list="true">
+        <p class="muted">Expand to load data points for this graph.</p>
       </div>
     </details>
   `;
@@ -7976,36 +8066,26 @@ function renderBehaviorDataManagerMarkup(chart) {
 
 function renderParentTrainingDataManagerMarkup(chart) {
   const rows = chart.series.flatMap((series) => series.points.map((point) => ({
-    sessionId: point.sessionId,
-    goalName: point.goalName || chart.goalName,
-    targetName: point.targetName || series.name,
-    targetLabel: `${chart.goalName}: ${series.name}`,
+    label: `${chart.goalName}: ${series.name}`,
     date: point.x,
-    value: point.y
+    valueLabel: `${point.y}% fidelity`,
+    deleteDataset: [
+      'data-delete-parent-point="true"',
+      `data-session-id="${escapeHtml(point.sessionId)}"`,
+      `data-goal-name="${escapeHtml(point.goalName || chart.goalName)}"`,
+      `data-target-name="${escapeHtml(point.targetName || series.name)}"`,
+      `data-point-label="${escapeHtml(`${chart.goalName}: ${series.name}`)}"`,
+      `data-point-date="${escapeHtml(point.x)}"`
+    ].join(" ")
   }))).sort((a, b) => b.date.localeCompare(a.date));
   if (!rows.length) return "";
+  const managerId = `parent:${chart.goalKey}`;
+  state.graphDataManagerRows[managerId] = rows;
   return `
-    <details class="graph-data-manager">
-      <summary>Manage data points</summary>
-      <div class="graph-data-list">
-        ${rows.map((row) => `
-          <div class="graph-data-row">
-            <div>
-              <strong>${escapeHtml(row.targetLabel)}</strong>
-              <span>${escapeHtml(formatGraphDate(row.date))} - ${row.value}% fidelity</span>
-            </div>
-            <button
-              type="button"
-              class="delete-button"
-              data-delete-parent-point="true"
-              data-session-id="${escapeHtml(row.sessionId)}"
-              data-goal-name="${escapeHtml(row.goalName)}"
-              data-target-name="${escapeHtml(row.targetName)}"
-              data-point-label="${escapeHtml(row.targetLabel)}"
-              data-point-date="${escapeHtml(row.date)}"
-            >Delete</button>
-          </div>
-        `).join("")}
+    <details class="graph-data-manager" data-graph-data-manager-id="${escapeHtml(managerId)}">
+      <summary>Manage data points (${rows.length})</summary>
+      <div data-graph-data-list="true">
+        <p class="muted">Expand to load data points for this graph.</p>
       </div>
     </details>
   `;
@@ -8122,6 +8202,7 @@ function behaviorChartSeries(sessions) {
 
 function drawBehaviorChartSet(sessions, container, chartAttribute, options = {}) {
   const isReportChart = String(chartAttribute || "").startsWith("report-");
+  const renderToken = state.graphAnalysisRenderToken;
   const range = options.range || behaviorGraphRange();
   const allSeries = options.allSeries || behaviorChartSeries(currentSessions().slice().reverse());
   const visibleIds = options.visibleBehaviorIds || visibleBehaviorIds();
@@ -8150,6 +8231,7 @@ function drawBehaviorChartSet(sessions, container, chartAttribute, options = {})
     </article>
   `).join("");
 
+  const analysisTasks = [];
   charts.forEach((chart, index) => {
     const graphKey = graphTrendKey("behavior", chart.behaviorId);
     const phaseConfig = graphPhaseConfig(graphKey, chart.series);
@@ -8169,38 +8251,46 @@ function drawBehaviorChartSet(sessions, container, chartAttribute, options = {})
     });
     const analysisMount = container.querySelector(`[data-behavior-analysis="${escapeHtml(String(chart.behaviorId))}"]`);
     if (analysisMount) {
-      const analysisSeries = state.behaviorGraphAnalyzeAllData && !isReportChart
-        ? allSeries.filter((series) => series.meta?.behaviorId === chart.behaviorId)
-        : chart.series;
-      const analysis = buildGraphAnalysis(analysisSeries, {
-        graphType: "behavior",
-        phaseMarkers: phaseConfig.phaseMarkers,
-        treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
-        phaseMarkers: phaseConfig.phaseMarkers,
-        rangeLabel: state.behaviorGraphAnalyzeAllData && !isReportChart ? "All data" : range.label
+      analysisMount.innerHTML = '<p class="muted">Loading graph analysis...</p>';
+      analysisTasks.push(() => {
+        const analysisSeries = state.behaviorGraphAnalyzeAllData && !isReportChart
+          ? allSeries.filter((series) => series.meta?.behaviorId === chart.behaviorId)
+          : chart.series;
+        const analysis = buildGraphAnalysis(analysisSeries, {
+          graphType: "behavior",
+          phaseMarkers: phaseConfig.phaseMarkers,
+          treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
+          rangeLabel: state.behaviorGraphAnalyzeAllData && !isReportChart ? "All data" : range.label
+        });
+        analysisMount.innerHTML = isReportChart
+          ? `
+              ${renderReportGraphAnalysisMarkup(analysis, { rangeLabel: range.label })}
+              ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true })}
+            `
+          : `
+              ${renderGraphAnalysisMarkup(analysis, graphKey, {
+                reportField: "progressSummary",
+                rangeLabel: state.behaviorGraphAnalyzeAllData ? "All data" : range.label,
+                treatmentBeforeRange: anySeriesDataBeforeRange(
+                  allSeries.filter((series) => series.meta?.behaviorId === chart.behaviorId),
+                  range.startDate
+                )
+              })}
+              ${renderCustomPhaseLineManager(graphKey, chart.series)}
+            `;
       });
-      analysisMount.innerHTML = isReportChart
-        ? `
-            ${renderReportGraphAnalysisMarkup(analysis, { rangeLabel: range.label })}
-            ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true })}
-          `
-        : `
-            ${renderGraphAnalysisMarkup(analysis, graphKey, {
-              reportField: "progressSummary",
-              rangeLabel: state.behaviorGraphAnalyzeAllData ? "All data" : range.label,
-              treatmentBeforeRange: anySeriesDataBeforeRange(
-                allSeries.filter((series) => series.meta?.behaviorId === chart.behaviorId),
-                range.startDate
-              )
-            })}
-            ${renderCustomPhaseLineManager(graphKey, chart.series)}
-          `;
     }
   });
+  if (!isReportChart) {
+    void queueGraphAnalysisBatch(analysisTasks, renderToken);
+  } else {
+    analysisTasks.forEach((task) => task());
+  }
 }
 
 function drawParentTrainingChartSet(sessions, container, chartAttribute, options = {}) {
   const charts = buildParentTrainingChartModels(sessions);
+  const renderToken = state.graphAnalysisRenderToken;
   const isReadOnly = Boolean(options.readOnly);
   const reportField = options.reportField || "parentTrainingSummary";
   const emptyMessage = options.emptyMessage || "No caregiver training graph data available.";
@@ -8220,6 +8310,7 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute, options
     </article>
   `).join("");
 
+  const analysisTasks = [];
   charts.forEach((chart, index) => {
     const graphKey = graphTrendKey("parent", chart.goalKey);
     const phaseConfig = graphPhaseConfig(graphKey, chart.series);
@@ -8235,22 +8326,30 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute, options
     });
     const analysisMount = container.querySelector(`[data-parent-training-analysis="${escapeHtml(chart.goalKey)}"]`);
     if (analysisMount) {
-      const analysis = buildGraphAnalysis(chart.series, {
-        graphType: "skill",
-        phaseMarkers: phaseConfig.phaseMarkers,
-        treatmentPhaseLine: phaseConfig.treatmentPhaseLine
+      analysisMount.innerHTML = '<p class="muted">Loading graph analysis...</p>';
+      analysisTasks.push(() => {
+        const analysis = buildGraphAnalysis(chart.series, {
+          graphType: "skill",
+          phaseMarkers: phaseConfig.phaseMarkers,
+          treatmentPhaseLine: phaseConfig.treatmentPhaseLine
+        });
+        analysisMount.innerHTML = isReadOnly
+          ? `
+              ${renderReportGraphAnalysisMarkup(analysis)}
+              ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true })}
+            `
+          : `
+              ${renderGraphAnalysisMarkup(analysis, graphKey, { reportField })}
+              ${renderCustomPhaseLineManager(graphKey, chart.series)}
+            `;
       });
-      analysisMount.innerHTML = isReadOnly
-        ? `
-            ${renderReportGraphAnalysisMarkup(analysis)}
-            ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true })}
-          `
-        : `
-            ${renderGraphAnalysisMarkup(analysis, graphKey, { reportField })}
-            ${renderCustomPhaseLineManager(graphKey, chart.series)}
-          `;
     }
   });
+  if (!isReadOnly) {
+    void queueGraphAnalysisBatch(analysisTasks, renderToken);
+  } else {
+    analysisTasks.forEach((task) => task());
+  }
 }
 
 function renderReportProgramInfo(program) {

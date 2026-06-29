@@ -653,6 +653,25 @@ test('app bootstrap lazy-loads session-backed graph data instead of rendering ch
   assert.doesNotMatch(appSource, /renderHistory\(\);\s+renderCharts\(\);\s+renderNote\(\);/);
 });
 
+test('graphs view filters all tabs to the selected date range before chart fan-out and defers analysis rendering', () => {
+  const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(appSource, /const sessions = filterSessionsByGraphRange\(allSessions, range\);/);
+  assert.match(appSource, /function filterSessionsByGraphRange\(/);
+  assert.match(appSource, /function queueGraphAnalysis\(/);
+  assert.match(appSource, /function queueGraphAnalysisBatch\(/);
+  assert.match(appSource, /Loading graph analysis\.\.\./);
+  assert.match(appSource, /queueGraphAnalysisBatch\(analysisTasks, renderToken\)/);
+});
+
+test('graph data managers defer large row lists until the details panel is expanded', () => {
+  const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(appSource, /graphDataManagerRows: \{\}/);
+  assert.match(appSource, /addEventListener\("toggle", handleGraphDataManagerToggle, true\)/);
+  assert.match(appSource, /function handleGraphDataManagerToggle\(/);
+  assert.match(appSource, /Expand to load data points for this graph\./);
+  assert.match(appSource, /state\.graphDataManagerRows\[managerId\] = rows;/);
+});
+
 test('baseline and treatment comparison calculate with one point in each phase for behavior graphs', () => {
   const analysis = buildGraphAnalysis([{
     name: 'Self-injury',

@@ -129,7 +129,8 @@ test("custom environmental phase lines are normalized with stable style and type
     label: "New RBT",
     lineStyle: "solid",
     note: "Coverage switch",
-    phaseType: "environmentalChange"
+    phaseType: "environmentalChange",
+    hidden: false
   });
 });
 
