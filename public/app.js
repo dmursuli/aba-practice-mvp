@@ -4444,14 +4444,16 @@ async function persistMissingTreatmentPhaseLines(graphEntries = []) {
     changed = ensurePersistedTreatmentPhaseLine(graphKey, series) || changed;
   });
   if (!changed) return;
-  try {
-    await persistGraphPhaseLinesForCurrentClient();
-  } catch (error) {
-    console.error("Could not persist generated treatment phase lines", error);
-    if (graphsMessage) {
-      graphsMessage.textContent = `Could not save generated treatment phase lines: ${error.message}`;
+  window.setTimeout(async () => {
+    try {
+      await persistGraphPhaseLinesForCurrentClient();
+    } catch (error) {
+      console.error("Could not persist generated treatment phase lines", error);
+      if (graphsMessage) {
+        graphsMessage.textContent = `Could not save generated treatment phase lines: ${error.message}`;
+      }
     }
-  }
+  }, 0);
 }
 
 function renderCustomPhaseLineManager(graphKey, series, options = {}) {
@@ -7653,13 +7655,6 @@ function renderCharts() {
     if (scope.showParentTrainingCharts) {
       skillCharts.innerHTML = "";
       behaviorCharts.innerHTML = "";
-      buildParentTrainingChartModels(allSessions).forEach((chart) => {
-        graphEntriesNeedingPersistence.push({
-          graphKey: graphTrendKey("parent", chart.goalKey),
-          series: chart.series
-        });
-      });
-      void persistMissingTreatmentPhaseLines(graphEntriesNeedingPersistence);
       drawParentTrainingChartSet(sessions, parentTrainingCharts, "parent-training-chart", {
         readOnly: false,
         reportField: "parentTrainingSummary",
@@ -7672,19 +7667,22 @@ function renderCharts() {
     parentTrainingCharts.innerHTML = "";
     renderBehaviorGraphControls();
     const allBehaviorSeries = behaviorChartSeries(allSessions);
+    const visibleIds = visibleBehaviorIds();
     graphEntriesNeedingPersistence.push({
       graphKey: graphTrendKey("behavior", "overview"),
-      series: allBehaviorSeries
+      series: allBehaviorSeries.filter((series) => visibleIds.includes(series.meta?.behaviorId))
     });
-    allBehaviorSeries.forEach((series) => {
+    allBehaviorSeries
+      .filter((series) => visibleIds.includes(series.meta?.behaviorId))
+      .forEach((series) => {
       graphEntriesNeedingPersistence.push({
         graphKey: graphTrendKey("behavior", series.meta?.behaviorId || series.name),
         series: [series]
       });
-    });
+      });
     void persistMissingTreatmentPhaseLines(graphEntriesNeedingPersistence);
     const behaviorSeries = filterSeriesPointsByDateRange(allBehaviorSeries, range, {
-      includeSeriesIds: visibleBehaviorIds()
+      includeSeriesIds: visibleIds
     });
     const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
     const behaviorOverviewPhaseConfig = graphPhaseConfig(behaviorOverviewGraphKey, behaviorSeries);
@@ -7899,7 +7897,6 @@ async function queueGraphAnalysisBatch(tasks, token = state.graphAnalysisRenderT
 
 function renderSkillCharts(sessions) {
   const groups = buildSkillChartsByDomain(sessions);
-  const allGroups = buildSkillChartsByDomain(currentSessions().slice().reverse());
   const renderToken = state.graphAnalysisRenderToken;
   renderGraphDomainTabs(groups);
 
@@ -7920,7 +7917,7 @@ function renderSkillCharts(sessions) {
   }
 
   const visibleGroups = groups.filter((group) => !state.activeGraphDomain || group.domain === state.activeGraphDomain);
-  const graphEntriesNeedingPersistence = allGroups
+  const graphEntriesNeedingPersistence = visibleGroups
     .flatMap((group) => group.charts)
     .map((chart) => ({
       graphKey: graphTrendKey("skill", chart.program.id),
@@ -8517,9 +8514,8 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute, options
   const emptyMessage = options.emptyMessage || "No caregiver training graph data available.";
 
   if (!isReadOnly) {
-    const allCharts = buildParentTrainingChartModels(currentSessions().slice().reverse());
     void persistMissingTreatmentPhaseLines(
-      allCharts.map((chart) => ({
+      charts.map((chart) => ({
         graphKey: graphTrendKey("parent", chart.goalKey),
         series: chart.series
       }))
