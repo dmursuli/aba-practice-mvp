@@ -94,37 +94,73 @@ export function sanitizeAssessmentDocumentRefs(source = {}) {
 export function sanitizeCustomPhaseLines(source = {}) {
   if (!source || typeof source !== "object" || Array.isArray(source)) return {};
   const allowedPhaseTypes = new Set([
+    "treatment",
+    "environmental",
+    "objective",
+    "mastered",
+    "baselineConditionChange",
     "environmentalChange",
+    "objectiveChange",
+    "targetMastered",
     "userTreatmentOverride"
   ]);
+  const allowedSources = new Set(["auto", "user", "autoTreatment"]);
   return Object.entries(source).reduce((result, [graphKey, lines]) => {
     const key = sanitizeText(graphKey);
     if (!key || !Array.isArray(lines)) return result;
     const normalized = lines.reduce((entries, line) => {
       const phaseType = allowedPhaseTypes.has(sanitizeText(line?.phaseType))
         ? sanitizeText(line?.phaseType)
-        : "environmentalChange";
+        : "environmental";
       const date = sanitizeText(line?.date);
       const hidden = Boolean(line?.hidden);
+      const deleted = Boolean(line?.deleted);
       const label = sanitizeText(line?.label) || (phaseType === "userTreatmentOverride" ? "Treatment" : "");
-      if ((phaseType === "environmentalChange" && (!date || !label)) || (phaseType === "userTreatmentOverride" && !hidden && !date)) {
+      const normalizedPhaseType = phaseType === "userTreatmentOverride"
+        ? "treatment"
+        : phaseType === "environmentalChange"
+          ? "environmental"
+          : phaseType === "objectiveChange"
+            ? "objective"
+            : phaseType === "targetMastered"
+              ? "mastered"
+              : phaseType;
+      const source = allowedSources.has(sanitizeText(line?.source))
+        ? sanitizeText(line?.source)
+        : phaseType === "userTreatmentOverride"
+          ? "user"
+          : "user";
+      if (
+        (normalizedPhaseType === "environmental" && !deleted && (!date || !label))
+        || (normalizedPhaseType === "treatment" && !hidden && !deleted && !date)
+      ) {
         return entries;
       }
       entries.push({
-        id: sanitizeText(line?.id) || (phaseType === "userTreatmentOverride" ? `${key}:treatment-override` : `${key}:${date}:${label.toLowerCase()}`),
+        id: sanitizeText(line?.id) || (normalizedPhaseType === "treatment" ? `${key}:treatment` : `${key}:${date}:${label.toLowerCase()}`),
+        graphId: key,
+        graphType: sanitizeText(line?.graphType) || key.split(":")[0] || "",
+        targetId: sanitizeText(line?.targetId),
+        behaviorId: sanitizeText(line?.behaviorId),
+        caregiverTargetId: sanitizeText(line?.caregiverTargetId),
         date,
         label,
         lineStyle: sanitizeText(line?.lineStyle) === "solid" ? "solid" : "dashed",
         note: sanitizeText(line?.note),
-        phaseType,
-        hidden
+        phaseType: normalizedPhaseType,
+        source,
+        editable: line?.editable !== false,
+        hidden,
+        deleted,
+        createdAt: sanitizeText(line?.createdAt),
+        updatedAt: sanitizeText(line?.updatedAt)
       });
       return entries;
     }, []);
     if (normalized.length) {
       result[key] = normalized.sort((a, b) => {
         if (a.phaseType !== b.phaseType) {
-          return a.phaseType === "userTreatmentOverride" ? -1 : 1;
+          return a.phaseType === "treatment" ? -1 : 1;
         }
         return (a.date || "").localeCompare(b.date || "") || a.label.localeCompare(b.label);
       });

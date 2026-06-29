@@ -81,7 +81,7 @@ test("structured funder draft record stores editable sections and settings but n
   assert.equal(draft.settings.displaySettings.compactGraphAnalysis, true);
   assert.equal(draft.assessmentDocuments.assessmentGrid[0].fileId, "doc-1");
   assert.equal(draft.assessmentDocuments.assessmentGrid[0].contentType, "application/pdf");
-  assert.equal(draft.customPhaseLines["skill:program-1"][0].phaseType, "environmentalChange");
+  assert.equal(draft.customPhaseLines["skill:program-1"][0].phaseType, "environmental");
   assert.equal(draft.customPhaseLines["skill:program-1"][0].lineStyle, "solid");
   assert.equal(draftContainsLargeArtifacts(draft), false);
 });
@@ -125,12 +125,22 @@ test("custom environmental phase lines are normalized with stable style and type
 
   assert.deepEqual(lines["behavior:aggression"][0], {
     id: "behavior:aggression:2026-05-21:new rbt",
+    graphId: "behavior:aggression",
+    graphType: "behavior",
+    targetId: "",
+    behaviorId: "",
+    caregiverTargetId: "",
     date: "2026-05-21",
     label: "New RBT",
     lineStyle: "solid",
     note: "Coverage switch",
-    phaseType: "environmentalChange",
-    hidden: false
+    phaseType: "environmental",
+    source: "user",
+    editable: true,
+    hidden: false,
+    deleted: false,
+    createdAt: "",
+    updatedAt: ""
   });
 });
 
@@ -616,6 +626,7 @@ test("non-numbered discharge text stays as a single objective item instead of be
 
 test("report workflow source wires draft save, preview rendering, and compact analysis placement", () => {
   const appSource = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  const apiSource = fs.readFileSync(new URL("../public/api.js", import.meta.url), "utf8");
   const htmlSource = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   const cssSource = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
   const serverSource = fs.readFileSync(new URL("../server.js", import.meta.url), "utf8");
@@ -642,7 +653,11 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /data-remove-report-attachment/);
   assert.match(appSource, /renderCustomPhaseLineManager/);
   assert.match(appSource, /data-phase-line-form=/);
-  assert.match(appSource, /phaseType:\s*"environmentalChange"/);
+  assert.match(appSource, /phaseType:\s*"environmental"/);
+  assert.match(appSource, /graphPhaseLines: structuredClone\(client\?\.profile\?\.graphPhaseLines \|\| \{\}\)/);
+  assert.match(appSource, /function persistGraphPhaseLinesForCurrentClient\(/);
+  assert.match(apiSource, /\/api\/clients\/\$\{clientId\}\/graph-phase-lines/);
+  assert.match(serverSource, /graph-phase-lines-updated/);
   assert.match(appSource, /syncSkillAcquisitionSummaryField/);
   assert.match(appSource, /skillAcquisitionSummary/);
   assert.match(appSource, /Skill Acquisition Goal and Target Summary/);

@@ -160,6 +160,15 @@ export async function updateClientProfile(clientId, profile) {
   return parseResponse(response);
 }
 
+export async function updateClientGraphPhaseLines(clientId, graphPhaseLines) {
+  const response = await fetch(`/api/clients/${clientId}/graph-phase-lines`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ graphPhaseLines })
+  });
+  return parseResponse(response);
+}
+
 export async function updateClientWorkflow(clientId, workflowBoard) {
   const response = await fetch(`/api/clients/${clientId}/workflow`, {
     method: "PUT",

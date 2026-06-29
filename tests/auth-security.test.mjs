@@ -340,6 +340,57 @@ test('recoverable drafts can be preserved server-side and restored after re-logi
   assert.deepEqual(emptyResult.json.session, {});
 });
 
+test('graph phase line updates persist server-side and survive a fresh data load', async () => {
+  resetRuntimeState();
+  await resetDb();
+  const { cookie } = await loginPasswordOnly();
+  const createClientResult = await request('/api/clients', {
+    method: 'POST',
+    cookie,
+    body: {
+      name: 'Phase Line Client',
+      agency: 'Triumph ABA'
+    }
+  });
+  assert.equal(createClientResult.response.status, 201);
+  const clientId = createClientResult.json.id;
+
+  const graphPhaseLines = {
+    'behavior:aggression': [{
+      id: 'behavior:aggression:treatment',
+      graphId: 'behavior:aggression',
+      graphType: 'behavior',
+      targetId: '',
+      behaviorId: 'aggression',
+      caregiverTargetId: '',
+      date: '2026-04-15',
+      label: 'Treatment',
+      lineStyle: 'solid',
+      note: 'Introduced treatment package',
+      phaseType: 'treatment',
+      source: 'auto',
+      editable: true,
+      hidden: false,
+      deleted: false,
+      createdAt: '2026-06-29T10:00:00.000Z',
+      updatedAt: '2026-06-29T10:00:00.000Z'
+    }]
+  };
+
+  const updateResult = await request(`/api/clients/${clientId}/graph-phase-lines`, {
+    method: 'PUT',
+    cookie,
+    body: { graphPhaseLines }
+  });
+  assert.equal(updateResult.response.status, 200);
+  assert.deepEqual(updateResult.json.profile.graphPhaseLines, graphPhaseLines);
+
+  const reloadResult = await request('/api/data', { cookie });
+  assert.equal(reloadResult.response.status, 200);
+  const reloadedClient = reloadResult.json.clients.find((client) => client.id === clientId);
+  assert.deepEqual(reloadedClient.profile.graphPhaseLines, graphPhaseLines);
+});
+
 test('absolute session expiration requires re-login even with activity', async () => {
   resetRuntimeState();
   await resetDb();

@@ -1372,6 +1372,39 @@ export function createAppServer() {
       return;
     }
 
+    const graphPhaseLineMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/graph-phase-lines$/);
+    if (req.method === "PUT" && graphPhaseLineMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const payload = await readBody(req);
+      const actor = currentUser(req, db);
+      const client = db.clients.find((item) => item.id === graphPhaseLineMatch[1]);
+      if (!client) {
+        sendJson(res, 404, { errors: ["Client not found."] });
+        return;
+      }
+      if (!canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
+      const nextGraphPhaseLines = sanitizeGraphPhaseLines(payload.graphPhaseLines || {});
+      client.profile = {
+        ...(client.profile || {}),
+        graphPhaseLines: nextGraphPhaseLines
+      };
+      client.updatedAt = new Date().toISOString();
+      logAudit(db, req, actor, "graph-phase-lines-updated", {
+        clientId: client.id,
+        details: {
+          graphCount: Object.keys(nextGraphPhaseLines).length,
+          phaseLineCount: Object.values(nextGraphPhaseLines).reduce((count, lines) => count + (Array.isArray(lines) ? lines.length : 0), 0)
+        }
+      });
+      await writeDb(db);
+      sendJson(res, 200, client);
+      return;
+    }
+
     const documentCollectionMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/documents$/);
     if (req.method === "POST" && documentCollectionMatch) {
       const db = await readDbWithUsers();
@@ -2810,10 +2843,82 @@ function sanitizeClientProfile(payload) {
       stagnantConsecutiveSessions: sanitizeNumber(payload.stagnantConsecutiveSessions, 3, 2, 10),
       stagnantMinimumGain: sanitizeNumber(payload.stagnantMinimumGain, 5, 1, 50)
     },
+    graphPhaseLines: sanitizeGraphPhaseLines(payload.graphPhaseLines || {}),
     parentTrainingGoals: sanitizeParentGoals(payload.parentTrainingGoals || []),
     intakeInterview: sanitizeIntakeInterview(payload.intakeInterview || {}),
     documents: Array.isArray(payload.documents) ? payload.documents : []
   };
+}
+
+function sanitizeGraphPhaseLines(source) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return {};
+  const allowedPhaseTypes = new Set([
+    "treatment",
+    "environmental",
+    "objective",
+    "mastered",
+    "baselineConditionChange",
+    "environmentalChange",
+    "objectiveChange",
+    "targetMastered",
+    "userTreatmentOverride"
+  ]);
+  const allowedSources = new Set(["auto", "user", "autoTreatment"]);
+  return Object.entries(source).reduce((result, [graphKey, values]) => {
+    const key = text(graphKey);
+    if (!key || !Array.isArray(values)) return result;
+    const lines = values.reduce((entries, line) => {
+      const rawPhaseType = allowedPhaseTypes.has(text(line?.phaseType))
+        ? text(line?.phaseType)
+        : "environmental";
+      const phaseType = rawPhaseType === "userTreatmentOverride"
+        ? "treatment"
+        : rawPhaseType === "environmentalChange"
+          ? "environmental"
+          : rawPhaseType === "objectiveChange"
+            ? "objective"
+            : rawPhaseType === "targetMastered"
+              ? "mastered"
+              : rawPhaseType;
+      const sourceType = allowedSources.has(text(line?.source))
+        ? text(line?.source)
+        : rawPhaseType === "userTreatmentOverride"
+          ? "user"
+          : "user";
+      const date = text(line?.date);
+      const hidden = Boolean(line?.hidden);
+      const deleted = Boolean(line?.deleted);
+      const label = text(line?.label) || (phaseType === "treatment" ? "Treatment" : "");
+      if (
+        (phaseType === "environmental" && !deleted && (!date || !label))
+        || (phaseType === "treatment" && !hidden && !deleted && !date)
+      ) {
+        return entries;
+      }
+      entries.push({
+        id: text(line?.id) || (phaseType === "treatment" ? `${key}:treatment` : `${key}:${date}:${label.toLowerCase()}`),
+        graphId: key,
+        graphType: text(line?.graphType) || key.split(":")[0] || "",
+        targetId: text(line?.targetId),
+        behaviorId: text(line?.behaviorId),
+        caregiverTargetId: text(line?.caregiverTargetId),
+        date,
+        label,
+        lineStyle: text(line?.lineStyle) === "solid" ? "solid" : "dashed",
+        note: text(line?.note),
+        phaseType,
+        source: sourceType,
+        editable: line?.editable !== false,
+        hidden,
+        deleted,
+        createdAt: text(line?.createdAt),
+        updatedAt: text(line?.updatedAt)
+      });
+      return entries;
+    }, []);
+    if (lines.length) result[key] = lines;
+    return result;
+  }, {});
 }
 
 function sanitizeFunderReport(payload) {
@@ -2850,36 +2955,7 @@ function sanitizeFunderReport(payload) {
     };
   })();
   const customPhaseLines = (() => {
-    const source = payload.customPhaseLines;
-    if (!source || typeof source !== "object" || Array.isArray(source)) return {};
-    const allowedPhaseTypes = new Set(["environmentalChange", "userTreatmentOverride"]);
-    return Object.entries(source).reduce((result, [graphKey, values]) => {
-      const key = text(graphKey);
-      if (!key || !Array.isArray(values)) return result;
-      const lines = values.reduce((entries, line) => {
-        const phaseType = allowedPhaseTypes.has(text(line?.phaseType))
-          ? text(line?.phaseType)
-          : "environmentalChange";
-        const date = text(line?.date);
-        const hidden = Boolean(line?.hidden);
-        const label = text(line?.label) || (phaseType === "userTreatmentOverride" ? "Treatment" : "");
-        if ((phaseType === "environmentalChange" && (!date || !label)) || (phaseType === "userTreatmentOverride" && !hidden && !date)) {
-          return entries;
-        }
-        entries.push({
-          id: text(line?.id) || (phaseType === "userTreatmentOverride" ? `${key}:treatment-override` : `${key}:${date}:${label.toLowerCase()}`),
-          date,
-          label,
-          lineStyle: text(line?.lineStyle) === "solid" ? "solid" : "dashed",
-          note: text(line?.note),
-          phaseType,
-          hidden
-        });
-        return entries;
-      }, []);
-      if (lines.length) result[key] = lines;
-      return result;
-    }, {});
+    return sanitizeGraphPhaseLines(payload.customPhaseLines);
   })();
   return {
     metadata: {

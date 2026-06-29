@@ -1,4 +1,4 @@
-import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAuditLog, getClientSessions, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setupVerificationEmail, touchSession, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAuditLog, getClientSessions, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setupVerificationEmail, touchSession, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -1311,7 +1311,7 @@ function resetFunderReportForm() {
   if (!reportForm) return;
   reportForm.reset();
   state.reportAssessmentDocuments = sanitizeAssessmentDocumentRefs({});
-  state.reportCustomPhaseLines = sanitizeCustomPhaseLines({});
+  syncGraphPhaseLineState();
   const range = defaultReportDateRange();
   reportForm.elements.startDate.value = range.startDate;
   reportForm.elements.endDate.value = range.endDate;
@@ -1379,6 +1379,7 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
     state.sessionsLoadedScope = "none";
     state.sessionsLoadedClientId = "";
   }
+  syncGraphPhaseLineState(currentClient());
   render();
   void ensureSessionDataForView(currentView(), { force: true, clientId });
   syncWorkspaceUrl(currentView());
@@ -4274,16 +4275,24 @@ function storedPhaseLinesForGraph(graphKey) {
   return sanitizeCustomPhaseLines(state.reportCustomPhaseLines)[graphKey] || [];
 }
 
-function customPhaseLinesForGraph(graphKey) {
-  return storedPhaseLinesForGraph(graphKey).filter((line) => line.phaseType === "environmentalChange");
+function graphPhaseLineStoreForClient(client = currentClient()) {
+  return sanitizeCustomPhaseLines(client?.profile?.graphPhaseLines || {});
 }
 
-function treatmentPhaseOverrideForGraph(graphKey) {
-  return storedPhaseLinesForGraph(graphKey).find((line) => line.phaseType === "userTreatmentOverride") || null;
+function syncGraphPhaseLineState(client = currentClient()) {
+  state.reportCustomPhaseLines = graphPhaseLineStoreForClient(client);
+}
+
+function customPhaseLinesForGraph(graphKey) {
+  return storedPhaseLinesForGraph(graphKey).filter((line) => line.phaseType === "environmental" && !line.deleted);
+}
+
+function treatmentPhaseRecordForGraph(graphKey) {
+  return storedPhaseLinesForGraph(graphKey).find((line) => line.phaseType === "treatment") || null;
 }
 
 function setCustomPhaseLinesForGraph(graphKey, lines) {
-  const treatmentOverride = treatmentPhaseOverrideForGraph(graphKey);
+  const treatmentOverride = treatmentPhaseRecordForGraph(graphKey);
   state.reportCustomPhaseLines = {
     ...sanitizeCustomPhaseLines(state.reportCustomPhaseLines),
     [graphKey]: sanitizeCustomPhaseLines({
@@ -4301,6 +4310,48 @@ function setTreatmentPhaseOverrideForGraph(graphKey, line) {
     ...(line ? [line] : [])
   ];
   setCustomPhaseLinesForGraph(graphKey, nextLines);
+}
+
+function graphPhaseLineMeta(graphKey) {
+  const [graphType, scopedId = ""] = String(graphKey || "").split(":");
+  return {
+    graphId: graphKey,
+    graphType,
+    targetId: graphType === "skill" ? scopedId : "",
+    behaviorId: graphType === "behavior" && scopedId !== "overview" ? scopedId : "",
+    caregiverTargetId: graphType === "parent" ? scopedId : ""
+  };
+}
+
+function buildTreatmentPhaseLineRecord(graphKey, values = {}) {
+  const now = new Date().toISOString();
+  const existing = treatmentPhaseRecordForGraph(graphKey);
+  return sanitizeCustomPhaseLines({
+    [graphKey]: [{
+      id: existing?.id || values.id || `${graphKey}:treatment`,
+      ...graphPhaseLineMeta(graphKey),
+      date: values.date || existing?.date || "",
+      label: values.label || existing?.label || "Treatment",
+      lineStyle: values.lineStyle === "dashed" ? "dashed" : "solid",
+      note: values.note ?? existing?.note ?? "",
+      phaseType: "treatment",
+      source: values.source || existing?.source || "user",
+      editable: true,
+      hidden: values.hidden ?? existing?.hidden ?? false,
+      deleted: values.deleted ?? existing?.deleted ?? false,
+      createdAt: existing?.createdAt || values.createdAt || now,
+      updatedAt: now
+    }]
+  })[graphKey]?.[0] || null;
+}
+
+async function persistGraphPhaseLinesForCurrentClient() {
+  const client = currentClient();
+  if (!client) return null;
+  const updated = await updateClientGraphPhaseLines(client.id, sanitizeCustomPhaseLines(state.reportCustomPhaseLines));
+  replaceClient(updated);
+  syncGraphPhaseLineState(updated);
+  return updated;
 }
 
 function graphSeriesDateRange(series = []) {
@@ -4326,8 +4377,9 @@ function graphPhaseConfig(graphKey, series = [], automaticMarkers = []) {
 }
 
 function graphTreatmentPhaseLine(graphKey, series = []) {
-  const override = treatmentPhaseOverrideForGraph(graphKey);
+  const override = treatmentPhaseRecordForGraph(graphKey);
   const dates = [...new Set((series || []).flatMap((item) => (item.points || []).map((point) => point.x)).filter(Boolean))].sort();
+  if (override?.deleted) return null;
   if (override?.hidden) {
     return {
       id: override.id,
@@ -4336,7 +4388,7 @@ function graphTreatmentPhaseLine(graphKey, series = []) {
       lineStyle: override.lineStyle === "dashed" ? "dashed" : "solid",
       note: override.note || "",
       hidden: true,
-      sourceType: "userTreatmentOverride",
+      sourceType: override.source === "auto" ? "autoTreatment" : "userTreatmentOverride",
       phaseType: "baselineToTreatment"
     };
   }
@@ -4348,13 +4400,13 @@ function graphTreatmentPhaseLine(graphKey, series = []) {
       lineStyle: override.lineStyle === "dashed" ? "dashed" : "solid",
       note: override.note || "",
       hidden: false,
-      sourceType: "userTreatmentOverride",
+      sourceType: override.source === "auto" ? "autoTreatment" : "userTreatmentOverride",
       phaseType: "baselineToTreatment"
     };
   }
   if (dates.length < 2) return null;
   return {
-    id: `${graphKey}:auto-treatment`,
+    id: `${graphKey}:treatment`,
     date: dates[1],
     label: "Treatment",
     lineStyle: "solid",
@@ -4365,10 +4417,48 @@ function graphTreatmentPhaseLine(graphKey, series = []) {
   };
 }
 
+function ensurePersistedTreatmentPhaseLine(graphKey, series = []) {
+  const existing = treatmentPhaseRecordForGraph(graphKey);
+  if (existing) return false;
+  const dates = [...new Set((series || []).flatMap((item) => (item.points || []).map((point) => point.x)).filter(Boolean))].sort();
+  if (dates.length < 2) return false;
+  const autoLine = buildTreatmentPhaseLineRecord(graphKey, {
+    date: dates[1],
+    label: "Treatment",
+    lineStyle: "solid",
+    note: "",
+    source: "auto",
+    hidden: false,
+    deleted: false
+  });
+  if (!autoLine) return false;
+  setTreatmentPhaseOverrideForGraph(graphKey, autoLine);
+  return true;
+}
+
+async function persistMissingTreatmentPhaseLines(graphEntries = []) {
+  const client = currentClient();
+  if (!client || !graphEntries.length) return;
+  let changed = false;
+  graphEntries.forEach(({ graphKey, series }) => {
+    changed = ensurePersistedTreatmentPhaseLine(graphKey, series) || changed;
+  });
+  if (!changed) return;
+  try {
+    await persistGraphPhaseLinesForCurrentClient();
+  } catch (error) {
+    console.error("Could not persist generated treatment phase lines", error);
+    if (graphsMessage) {
+      graphsMessage.textContent = `Could not save generated treatment phase lines: ${error.message}`;
+    }
+  }
+}
+
 function renderCustomPhaseLineManager(graphKey, series, options = {}) {
   const range = graphSeriesDateRange(series);
   const lines = customPhaseLinesForGraph(graphKey);
   const treatmentLine = graphTreatmentPhaseLine(graphKey, series);
+  const treatmentRecord = treatmentPhaseRecordForGraph(graphKey);
   const editingId = options.editingId || "";
   const editingLine = editingId ? lines.find((line) => line.id === editingId) : null;
   const editingTreatment = options.editingTreatment === true;
@@ -4397,10 +4487,40 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
     `
     : `<p class="muted">No custom environmental phase lines saved for this graph.</p>`;
 
-  const treatmentSummary = !treatmentLine
-    ? `<p class="muted">Treatment phase line unavailable; baseline/treatment analysis may be limited.</p>`
+  const treatmentSummary = treatmentRecord?.deleted
+    ? `
+        <div class="graph-phase-line-item graph-phase-line-item-treatment">
+          <div>
+            <strong>${escapeHtml(treatmentRecord.label || "Treatment")}</strong>
+            <span>Deleted - baseline/treatment analysis may be limited.</span>
+            ${treatmentRecord.note ? `<p class="graph-phase-line-note">${escapeHtml(treatmentRecord.note)}</p>` : ""}
+          </div>
+          ${options.readOnly ? "" : `
+            <div class="graph-phase-line-actions">
+              <button type="button" class="secondary-button" data-reset-treatment-phase-line="${escapeHtml(graphKey)}">Reset to default</button>
+            </div>
+          `}
+        </div>
+      `
+    : !treatmentLine
+      ? `<p class="muted">Treatment phase line unavailable; baseline/treatment analysis may be limited.</p>`
     : treatmentLine.hidden
-      ? `<p class="muted">Treatment phase line hidden. Baseline/treatment analysis may be limited.</p>`
+      ? `
+        <div class="graph-phase-line-item graph-phase-line-item-treatment">
+          <div>
+            <strong>${escapeHtml(treatmentLine.label || "Treatment")}</strong>
+            <span>Hidden - baseline/treatment analysis may be limited.</span>
+            ${treatmentLine.note ? `<p class="graph-phase-line-note">${escapeHtml(treatmentLine.note)}</p>` : ""}
+          </div>
+          ${options.readOnly ? "" : `
+            <div class="graph-phase-line-actions">
+              <button type="button" class="secondary-button" data-edit-treatment-phase-line="${escapeHtml(graphKey)}">Edit</button>
+              <button type="button" class="delete-button" data-delete-treatment-phase-line="${escapeHtml(graphKey)}">Delete</button>
+              <button type="button" class="secondary-button" data-reset-treatment-phase-line="${escapeHtml(graphKey)}">Reset to default</button>
+            </div>
+          `}
+        </div>
+      `
       : `
         <div class="graph-phase-line-item graph-phase-line-item-treatment">
           <div>
@@ -4412,34 +4532,36 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
             <div class="graph-phase-line-actions">
               <button type="button" class="secondary-button" data-edit-treatment-phase-line="${escapeHtml(graphKey)}">Edit</button>
               <button type="button" class="delete-button" data-hide-treatment-phase-line="${escapeHtml(graphKey)}">Hide</button>
-              ${treatmentLine.sourceType === "userTreatmentOverride" ? `<button type="button" class="secondary-button" data-reset-treatment-phase-line="${escapeHtml(graphKey)}">Reset to default</button>` : ""}
+              <button type="button" class="delete-button" data-delete-treatment-phase-line="${escapeHtml(graphKey)}">Delete</button>
+              <button type="button" class="secondary-button" data-reset-treatment-phase-line="${escapeHtml(graphKey)}">Reset to default</button>
             </div>
           `}
         </div>
       `;
 
-  const treatmentFormMarkup = !options.readOnly && editingTreatment && treatmentLine
+  const treatmentEditableLine = treatmentLine || treatmentRecord;
+  const treatmentFormMarkup = !options.readOnly && editingTreatment && treatmentEditableLine
     ? `
       <form class="graph-phase-line-form" data-phase-line-form="${escapeHtml(graphKey)}" data-phase-line-kind="treatment" data-start-date="${escapeHtml(range.startDate)}" data-end-date="${escapeHtml(range.endDate)}">
-        <input type="hidden" name="phaseLineId" value="${escapeHtml(treatmentLine.id || `${graphKey}:treatment-override`)}">
+        <input type="hidden" name="phaseLineId" value="${escapeHtml(treatmentEditableLine.id || `${graphKey}:treatment`)}">
         <label>
           Treatment start date
-          <input type="date" name="phaseLineDate" value="${escapeHtml(treatmentLine.date || "")}" required>
+          <input type="date" name="phaseLineDate" value="${escapeHtml(treatmentEditableLine.date || "")}" required>
         </label>
         <label>
           Label
-          <input type="text" name="phaseLineLabel" value="${escapeHtml(treatmentLine.label || "Treatment")}" maxlength="80" required>
+          <input type="text" name="phaseLineLabel" value="${escapeHtml(treatmentEditableLine.label || "Treatment")}" maxlength="80" required>
         </label>
         <label>
           Line style
           <select name="phaseLineStyle">
-            <option value="solid" ${treatmentLine.lineStyle !== "dashed" ? "selected" : ""}>Solid</option>
-            <option value="dashed" ${treatmentLine.lineStyle === "dashed" ? "selected" : ""}>Dashed</option>
+            <option value="solid" ${treatmentEditableLine.lineStyle !== "dashed" ? "selected" : ""}>Solid</option>
+            <option value="dashed" ${treatmentEditableLine.lineStyle === "dashed" ? "selected" : ""}>Dashed</option>
           </select>
         </label>
         <label>
           Note
-          <textarea name="phaseLineNote" rows="2" placeholder="Optional clinical note">${escapeHtml(treatmentLine.note || "")}</textarea>
+          <textarea name="phaseLineNote" rows="2" placeholder="Optional clinical note">${escapeHtml(treatmentEditableLine.note || "")}</textarea>
         </label>
         <div class="graph-phase-line-form-actions">
           <button type="submit" class="primary-button">Save treatment phase line</button>
@@ -4655,6 +4777,7 @@ function applyFunderReportDraft(draft = {}) {
   const graphPreferences = draft.settings?.graphPreferences || {};
   const generatedSectionAutofill = draft.metadata?.generatedSectionAutofill || {};
   const restoredAssessmentDocuments = sanitizeAssessmentDocumentRefs(draft.assessmentDocuments || {});
+  const persistedPhaseLines = graphPhaseLineStoreForClient(currentClient());
   state.reportAssessmentDocuments = {
     assessmentGrid: restoredAssessmentDocuments.assessmentGrid.length
       ? restoredAssessmentDocuments.assessmentGrid
@@ -4663,7 +4786,9 @@ function applyFunderReportDraft(draft = {}) {
       ? restoredAssessmentDocuments.standardizedAssessmentGrid
       : reportAssessmentDocumentRefsFromClient("standardizedAssessmentGrid")
   };
-  state.reportCustomPhaseLines = sanitizeCustomPhaseLines(draft.customPhaseLines || {});
+  state.reportCustomPhaseLines = Object.keys(persistedPhaseLines).length
+    ? persistedPhaseLines
+    : sanitizeCustomPhaseLines(draft.customPhaseLines || {});
   reportGraphPreferenceKeys().forEach((key) => {
     if (Object.hasOwn(graphPreferences, key)) {
       state.graphTrendVisibility[key] = Boolean(graphPreferences[key]);
@@ -6904,19 +7029,22 @@ function handleGraphPhaseLineClick(event) {
     const currentLine = graphTreatmentPhaseLine(graphKey, phaseLineSeriesFromPanel(hideTreatment.closest(".chart-panel")));
     if (!currentLine) return;
     if (!window.confirm(`Hide the "${currentLine.label || "Treatment"}" phase line for this graph?`)) return;
-    setTreatmentPhaseOverrideForGraph(graphKey, {
-      id: `${graphKey}:treatment-override`,
+    setTreatmentPhaseOverrideForGraph(graphKey, buildTreatmentPhaseLineRecord(graphKey, {
       date: currentLine.date,
       label: currentLine.label || "Treatment",
       lineStyle: currentLine.lineStyle === "dashed" ? "dashed" : "solid",
       note: currentLine.note || "",
-      phaseType: "userTreatmentOverride",
-      hidden: true
-    });
+      source: "user",
+      hidden: true,
+      deleted: false
+    }));
     markReportDraftDirty();
     graphsMessage.textContent = "Treatment phase line hidden for this graph.";
     funderExportStatus.textContent = graphsMessage.textContent;
     rerenderGraphSurfaces();
+    void persistGraphPhaseLinesForCurrentClient().catch((error) => {
+      graphsMessage.textContent = `Could not save treatment phase line changes: ${error.message}`;
+    });
     return;
   }
 
@@ -6924,11 +7052,54 @@ function handleGraphPhaseLineClick(event) {
   if (resetTreatment) {
     const graphKey = resetTreatment.dataset.resetTreatmentPhaseLine;
     if (!window.confirm("Reset the treatment phase line to the default baseline-to-treatment rule?")) return;
-    setTreatmentPhaseOverrideForGraph(graphKey, null);
+    const series = phaseLineSeriesFromPanel(resetTreatment.closest(".chart-panel"));
+    const dates = [...new Set(series.flatMap((item) => (item.points || []).map((point) => point.x)).filter(Boolean))].sort();
+    if (dates.length < 2) {
+      graphsMessage.textContent = "Not enough graph data are available to reset the treatment phase line.";
+      return;
+    }
+    setTreatmentPhaseOverrideForGraph(graphKey, buildTreatmentPhaseLineRecord(graphKey, {
+      date: dates[1],
+      label: "Treatment",
+      lineStyle: "solid",
+      note: "",
+      source: "auto",
+      hidden: false,
+      deleted: false
+    }));
     markReportDraftDirty();
     graphsMessage.textContent = "Treatment phase line reset to default.";
     funderExportStatus.textContent = graphsMessage.textContent;
     rerenderGraphSurfaces();
+    void persistGraphPhaseLinesForCurrentClient().catch((error) => {
+      graphsMessage.textContent = `Could not save treatment phase line changes: ${error.message}`;
+    });
+    return;
+  }
+
+  const deleteTreatment = event.target.closest("[data-delete-treatment-phase-line]");
+  if (deleteTreatment) {
+    const graphKey = deleteTreatment.dataset.deleteTreatmentPhaseLine;
+    const currentLine = graphTreatmentPhaseLine(graphKey, phaseLineSeriesFromPanel(deleteTreatment.closest(".chart-panel")))
+      || treatmentPhaseRecordForGraph(graphKey);
+    if (!currentLine) return;
+    if (!window.confirm(`Delete the "${currentLine.label || "Treatment"}" treatment phase line for this graph?`)) return;
+    setTreatmentPhaseOverrideForGraph(graphKey, buildTreatmentPhaseLineRecord(graphKey, {
+      date: currentLine.date || "",
+      label: currentLine.label || "Treatment",
+      lineStyle: currentLine.lineStyle === "dashed" ? "dashed" : "solid",
+      note: currentLine.note || "",
+      source: "user",
+      hidden: false,
+      deleted: true
+    }));
+    markReportDraftDirty();
+    graphsMessage.textContent = "Treatment phase line deleted for this graph.";
+    funderExportStatus.textContent = graphsMessage.textContent;
+    rerenderGraphSurfaces();
+    void persistGraphPhaseLinesForCurrentClient().catch((error) => {
+      graphsMessage.textContent = `Could not save treatment phase line changes: ${error.message}`;
+    });
     return;
   }
 
@@ -6943,6 +7114,9 @@ function handleGraphPhaseLineClick(event) {
   markReportDraftDirty();
   funderExportStatus.textContent = `Removed phase line "${line.label}".`;
   rerenderGraphSurfaces();
+  void persistGraphPhaseLinesForCurrentClient().catch((error) => {
+    graphsMessage.textContent = `Could not save phase line changes: ${error.message}`;
+  });
 }
 
 async function handleGraphPhaseLineSubmit(event) {
@@ -6974,18 +7148,26 @@ async function handleGraphPhaseLineSubmit(event) {
       return;
     }
     setTreatmentPhaseOverrideForGraph(graphKey, {
-      id: existingId || `${graphKey}:treatment-override`,
-      date,
-      label,
-      lineStyle,
-      note,
-      phaseType: "userTreatmentOverride",
-      hidden: false
+      ...buildTreatmentPhaseLineRecord(graphKey, {
+        id: existingId || `${graphKey}:treatment`,
+        date,
+        label,
+        lineStyle,
+        note,
+        source: "user",
+        hidden: false,
+        deleted: false
+      })
     });
     markReportDraftDirty();
     graphsMessage.textContent = `Updated treatment phase line "${label}".`;
     funderExportStatus.textContent = graphsMessage.textContent;
     rerenderGraphSurfaces();
+    try {
+      await persistGraphPhaseLinesForCurrentClient();
+    } catch (error) {
+      graphsMessage.textContent = `Could not save treatment phase line changes: ${error.message}`;
+    }
     return;
   }
 
@@ -6993,11 +7175,18 @@ async function handleGraphPhaseLineSubmit(event) {
     ...customPhaseLinesForGraph(graphKey).filter((line) => line.id !== existingId),
     {
       id: existingId || cryptoId(),
+      ...graphPhaseLineMeta(graphKey),
       date,
       label,
       lineStyle,
       note,
-      phaseType: "environmentalChange"
+      phaseType: "environmental",
+      source: "user",
+      editable: true,
+      hidden: false,
+      deleted: false,
+      createdAt: customPhaseLinesForGraph(graphKey).find((line) => line.id === existingId)?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     }
   ];
   setCustomPhaseLinesForGraph(graphKey, nextLines);
@@ -7007,6 +7196,11 @@ async function handleGraphPhaseLineSubmit(event) {
     : `Added phase line "${label}".`;
   funderExportStatus.textContent = graphsMessage.textContent;
   rerenderGraphSurfaces();
+  try {
+    await persistGraphPhaseLinesForCurrentClient();
+  } catch (error) {
+    graphsMessage.textContent = `Could not save phase line changes: ${error.message}`;
+  }
 }
 
 function phaseLineSeriesFromPanel(chartPanel) {
@@ -7439,6 +7633,7 @@ function renderCharts() {
   const range = behaviorGraphRange();
   const sessions = filterSessionsByGraphRange(allSessions, range);
   const scope = graphScopeVisibility(state.activeGraphTab);
+  const graphEntriesNeedingPersistence = [];
   renderGraphScopeTabs();
   if (graphsMessage) {
     graphsMessage.textContent = state.sessionsLoadError || "";
@@ -7458,6 +7653,13 @@ function renderCharts() {
     if (scope.showParentTrainingCharts) {
       skillCharts.innerHTML = "";
       behaviorCharts.innerHTML = "";
+      buildParentTrainingChartModels(allSessions).forEach((chart) => {
+        graphEntriesNeedingPersistence.push({
+          graphKey: graphTrendKey("parent", chart.goalKey),
+          series: chart.series
+        });
+      });
+      void persistMissingTreatmentPhaseLines(graphEntriesNeedingPersistence);
       drawParentTrainingChartSet(sessions, parentTrainingCharts, "parent-training-chart", {
         readOnly: false,
         reportField: "parentTrainingSummary",
@@ -7470,6 +7672,17 @@ function renderCharts() {
     parentTrainingCharts.innerHTML = "";
     renderBehaviorGraphControls();
     const allBehaviorSeries = behaviorChartSeries(allSessions);
+    graphEntriesNeedingPersistence.push({
+      graphKey: graphTrendKey("behavior", "overview"),
+      series: allBehaviorSeries
+    });
+    allBehaviorSeries.forEach((series) => {
+      graphEntriesNeedingPersistence.push({
+        graphKey: graphTrendKey("behavior", series.meta?.behaviorId || series.name),
+        series: [series]
+      });
+    });
+    void persistMissingTreatmentPhaseLines(graphEntriesNeedingPersistence);
     const behaviorSeries = filterSeriesPointsByDateRange(allBehaviorSeries, range, {
       includeSeriesIds: visibleBehaviorIds()
     });
@@ -7686,6 +7899,7 @@ async function queueGraphAnalysisBatch(tasks, token = state.graphAnalysisRenderT
 
 function renderSkillCharts(sessions) {
   const groups = buildSkillChartsByDomain(sessions);
+  const allGroups = buildSkillChartsByDomain(currentSessions().slice().reverse());
   const renderToken = state.graphAnalysisRenderToken;
   renderGraphDomainTabs(groups);
 
@@ -7706,6 +7920,13 @@ function renderSkillCharts(sessions) {
   }
 
   const visibleGroups = groups.filter((group) => !state.activeGraphDomain || group.domain === state.activeGraphDomain);
+  const graphEntriesNeedingPersistence = allGroups
+    .flatMap((group) => group.charts)
+    .map((chart) => ({
+      graphKey: graphTrendKey("skill", chart.program.id),
+      series: chart.series
+    }));
+  void persistMissingTreatmentPhaseLines(graphEntriesNeedingPersistence);
   skillCharts.innerHTML = visibleGroups.map((group) => `
     <section class="graph-domain-group">
       <div class="plan-domain-heading">
@@ -8295,6 +8516,16 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute, options
   const reportField = options.reportField || "parentTrainingSummary";
   const emptyMessage = options.emptyMessage || "No caregiver training graph data available.";
 
+  if (!isReadOnly) {
+    const allCharts = buildParentTrainingChartModels(currentSessions().slice().reverse());
+    void persistMissingTreatmentPhaseLines(
+      allCharts.map((chart) => ({
+        graphKey: graphTrendKey("parent", chart.goalKey),
+        series: chart.series
+      }))
+    );
+  }
+
   if (!charts.length) {
     container.innerHTML = `<p>${escapeHtml(emptyMessage)}</p>`;
     return;
@@ -8546,6 +8777,7 @@ function currentClientProfilePayload(client = currentClient()) {
     assessmentFileName: client?.profile?.assessment?.fileName || "",
     assessmentNotes: client?.profile?.assessment?.notes || "",
     funderReport: structuredClone(client?.profile?.funderReport || {}),
+    graphPhaseLines: structuredClone(client?.profile?.graphPhaseLines || {}),
     intakeInterview: structuredClone(client?.profile?.intakeInterview || {}),
     parentTrainingGoals: structuredClone(client?.profile?.parentTrainingGoals || []),
     documents: structuredClone(client?.profile?.documents || [])
@@ -8820,6 +9052,9 @@ function dateInputValue(date) {
 function replaceClient(updated) {
   const index = state.clients.findIndex((item) => item.id === updated.id);
   if (index >= 0) state.clients[index] = updated;
+  if (updated?.id === state.activeClientId) {
+    syncGraphPhaseLineState(updated);
+  }
 }
 
 function clientPrograms() {
