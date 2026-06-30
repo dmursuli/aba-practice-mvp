@@ -42,6 +42,7 @@ const state = {
   hiddenBehaviorSeries: {},
   graphAnalysisRenderToken: 0,
   graphAnalysisTaskId: 0,
+  graphResizeFrameId: 0,
   graphDataManagerRows: {},
   draftCache: {
     intake: {},
@@ -383,12 +384,12 @@ async function restoreSession() {
 }
 
 async function startAuthenticatedApp() {
+  const requested = requestedWorkspaceState();
   showApp();
   state.lastSessionTouchAt = Date.now();
   startInactivityTimer();
   await refreshData();
   await restoreRecoverableDrafts();
-  const requested = requestedWorkspaceState();
   if (requested.clientId && state.clients.some((client) => client.id === requested.clientId)) {
     state.activeClientId = requested.clientId;
   }
@@ -501,12 +502,6 @@ async function refreshData() {
   });
   if (!clientSelect.value && state.clients[0]) clientSelect.value = state.clients[0].id;
   populateDomainSelect(addProgramForm.elements.programDomain);
-  if (state.currentUser?.role === "admin") {
-    await refreshUsers(false);
-  }
-  if (["admin", "bcba"].includes(state.currentUser?.role)) {
-    await refreshAuditLog(false);
-  }
 }
 
 async function refreshDataAndCurrentViewSessions() {
@@ -572,17 +567,23 @@ function loadedSessions() {
 }
 
 function rerenderSessionBackedView(view = currentView()) {
-  renderSummary();
-  renderGraphsSummary();
-  renderHistoricalImport();
-  renderReportSummary();
-  renderSoapSummary();
-  renderHistory();
-  renderNote();
-  renderParentSummary();
+  if (view === "session") renderSummary();
   if (view === "workflow") renderWorkflowBoard();
-  if (view === "graphs") renderCharts();
-  if (view === "report") renderFunderReportPreview();
+  if (view === "parent") renderParentSummary();
+  if (view === "graphs") {
+    renderGraphsSummary();
+    renderCharts();
+  }
+  if (view === "import") renderHistoricalImport();
+  if (view === "report") {
+    renderReportSummary();
+    renderFunderReportPreview();
+  }
+  if (view === "soap") {
+    renderSoapSummary();
+    renderHistory();
+    renderNote();
+  }
   if (view === "billing") renderBillingExport();
   if (view === "health") runDataHealthCheck();
 }
@@ -820,9 +821,13 @@ function bindEvents() {
   runHealthCheckButton.addEventListener("click", runDataHealthCheck);
   exportHealthCsvButton.addEventListener("click", () => exportHealthReport("csv"));
   exportHealthJsonButton.addEventListener("click", () => exportHealthReport("json"));
-  window.addEventListener("resize", renderCharts);
+  window.addEventListener("resize", scheduleGraphResizeRender);
   window.addEventListener("aba-auth-error", (event) => handleAuthFailureEvent(event.detail));
-  window.addEventListener("pageshow", () => {
+  window.addEventListener("pageshow", (event) => {
+    if (!event.persisted) {
+      if (!state.currentUser && !state.authChallenge) showLogin();
+      return;
+    }
     if (state.currentUser) {
       restoreSession();
       return;
@@ -831,6 +836,15 @@ function bindEvents() {
   });
   ["click", "keydown", "mousemove", "touchstart", "scroll"].forEach((eventName) => {
     window.addEventListener(eventName, resetInactivityTimer, { passive: true });
+  });
+}
+
+function scheduleGraphResizeRender() {
+  if (currentView() !== "graphs") return;
+  if (state.graphResizeFrameId) return;
+  state.graphResizeFrameId = window.requestAnimationFrame(() => {
+    state.graphResizeFrameId = 0;
+    renderCharts();
   });
 }
 

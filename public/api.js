@@ -66,7 +66,7 @@ export async function logout(reason = "") {
 
 export async function getCurrentUser() {
   const response = await fetch("/api/auth/me");
-  return parseResponse(response);
+  return parseResponse(response, { suppressAuthEvent: true });
 }
 
 export async function getData() {
@@ -273,7 +273,7 @@ export async function updateClientPlan(clientId, plan) {
   return parseResponse(response);
 }
 
-async function parseResponse(response) {
+async function parseResponse(response, { suppressAuthEvent = false } = {}) {
   const rawText = await response.text();
   let payload = {};
   if (rawText) {
@@ -292,6 +292,7 @@ async function parseResponse(response) {
     if (
       response.status === 401
       && typeof window !== "undefined"
+      && !suppressAuthEvent
       && ["AUTH_REQUIRED", "SESSION_TIMEOUT", "SESSION_EXPIRED", "MFA_REQUIRED", "MFA_SETUP_REQUIRED", "VERIFICATION_REQUIRED", "VERIFICATION_EMAIL_REQUIRED"].includes(payload.code || "")
     ) {
       window.dispatchEvent(new CustomEvent("aba-auth-error", { detail: payload }));
