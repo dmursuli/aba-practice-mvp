@@ -74,12 +74,19 @@ export async function getData() {
   return parseResponse(response);
 }
 
-export async function getClientSessions(clientId, { startDate = "", endDate = "", serviceType = "", timeoutMs = 15000 } = {}) {
+export async function getClientSessions(clientId, { startDate = "", endDate = "", serviceType = "", limit = "", offset = "", sort = "", timeoutMs = 15000 } = {}) {
   const url = new URL(`/api/clients/${clientId}/sessions`, window.location.origin);
   if (startDate) url.searchParams.set("startDate", startDate);
   if (endDate) url.searchParams.set("endDate", endDate);
   if (serviceType) url.searchParams.set("serviceType", serviceType);
+  if (limit !== "") url.searchParams.set("limit", String(limit));
+  if (offset !== "") url.searchParams.set("offset", String(offset));
+  if (sort) url.searchParams.set("sort", sort);
   return fetchWithTimeout(url.pathname + url.search, timeoutMs);
+}
+
+export async function getHistoricalImportDuplicateMetadata(clientId, { timeoutMs = 15000 } = {}) {
+  return fetchWithTimeout(`/api/clients/${clientId}/historical-import-duplicates`, timeoutMs);
 }
 
 export async function getVisibleSessions({ clientId = "", startDate = "", endDate = "", serviceType = "", timeoutMs = 15000 } = {}) {
@@ -89,6 +96,13 @@ export async function getVisibleSessions({ clientId = "", startDate = "", endDat
   if (endDate) url.searchParams.set("endDate", endDate);
   if (serviceType) url.searchParams.set("serviceType", serviceType);
   return fetchWithTimeout(url.pathname + url.search, timeoutMs);
+}
+
+export async function getHistoricalImportBatches({ clientId = "" } = {}) {
+  const url = new URL("/api/historical-imports", window.location.origin);
+  if (clientId) url.searchParams.set("clientId", clientId);
+  const response = await fetch(url.pathname + url.search);
+  return parseResponse(response);
 }
 
 export async function getPracticeBackup() {

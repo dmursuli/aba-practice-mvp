@@ -137,6 +137,11 @@ test("admin can import a historical skill batch and roll it back", async () => {
   assert.equal(dataResult.json.sessions[0].programs[0].targets[0].targetId, "target-1");
   assert.equal(dataResult.json.historicalImportBatches[0].selectedReferenceId, "target-1");
 
+  const batchesResult = await request("/api/historical-imports?clientId=client-1", { cookie });
+  assert.equal(batchesResult.response.status, 200);
+  assert.equal(batchesResult.json.historicalImportBatches.length, 1);
+  assert.equal(batchesResult.json.historicalImportBatches[0].id, importResult.json.batchId);
+
   const rollback = await request(`/api/historical-imports/${importResult.json.batchId}`, {
     method: "DELETE",
     cookie
@@ -162,6 +167,10 @@ test("bootstrap data omits session payloads while preserving per-client counts",
   assert.equal(result.response.status, 200);
   assert.deepEqual(result.json.sessions, []);
   assert.equal(result.json.clientSessionCounts["client-1"], 2);
+  assert.equal(result.json.clientSessionSummaries["client-1"].count, 2);
+  assert.equal(result.json.clientSessionSummaries["client-1"].firstDate, "2026-01-15");
+  assert.equal(result.json.clientSessionSummaries["client-1"].lastDate, "2026-01-16");
+  assert.deepEqual(result.json.historicalImportBatches, []);
 });
 
 test("client sessions endpoint returns only the requested client's filtered sessions", async () => {
@@ -182,6 +191,83 @@ test("client sessions endpoint returns only the requested client's filtered sess
   assert.equal(result.json.clientId, "client-1");
   assert.equal(result.json.sessions.length, 1);
   assert.equal(result.json.sessions[0].id, "s-2");
+});
+
+test("client sessions endpoint supports pagination for session history", async () => {
+  resetRuntimeState();
+  await resetDb({
+    ...baseDb,
+    sessions: [
+      { id: "s-1", clientId: "client-1", date: "2026-01-15", startTime: "09:00", serviceType: "97153", programs: [], behaviors: [], parentGoals: [] },
+      { id: "s-2", clientId: "client-1", date: "2026-01-16", startTime: "09:00", serviceType: "97153", programs: [], behaviors: [], parentGoals: [] },
+      { id: "s-3", clientId: "client-1", date: "2026-01-17", startTime: "09:00", serviceType: "97153", programs: [], behaviors: [], parentGoals: [] }
+    ]
+  });
+  const cookie = await loginAs();
+  const result = await request("/api/clients/client-1/sessions?limit=2&offset=0&sort=desc", { cookie });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.json.sessions.length, 2);
+  assert.equal(result.json.sessions[0].id, "s-3");
+  assert.equal(result.json.sessions[1].id, "s-2");
+  assert.equal(result.json.total, 3);
+  assert.equal(result.json.hasMore, true);
+
+  const next = await request("/api/clients/client-1/sessions?limit=2&offset=2&sort=desc", { cookie });
+  assert.equal(next.response.status, 200);
+  assert.equal(next.json.sessions.length, 1);
+  assert.equal(next.json.sessions[0].id, "s-1");
+  assert.equal(next.json.hasMore, false);
+});
+
+test("historical import duplicate metadata endpoint omits full session payload fields", async () => {
+  resetRuntimeState();
+  await resetDb({
+    ...baseDb,
+    sessions: [
+      {
+        id: "session-import-1",
+        clientId: "client-1",
+        date: "2026-01-15",
+        serviceType: "97153",
+        source: "historical_import",
+        programs: [{
+          programId: "program-1",
+          targets: [{
+            targetId: "target-1",
+            independence: 80,
+            notes: "Large note should not be sent",
+            historicalImportMeasurementType: "percentage"
+          }]
+        }],
+        behaviors: [{
+          behaviorId: "behavior-1",
+          frequency: 18,
+          historicalImportMeasurementType: "frequency"
+        }],
+        parentGoals: [{
+          goalName: "Use visual schedule",
+          targetName: "Prompt schedule before transitions",
+          fidelity: 90,
+          historicalImportMeasurementType: "fidelity"
+        }],
+        soapNote: "This should not be sent",
+        notes: "This should not be sent"
+      }
+    ]
+  });
+  const cookie = await loginAs();
+  const result = await request("/api/clients/client-1/historical-import-duplicates", { cookie });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.json.sessions.length, 1);
+  assert.equal(result.json.sessions[0].source, "historical_import");
+  assert.equal(result.json.sessions[0].programs[0].targets[0].targetId, "target-1");
+  assert.equal(result.json.sessions[0].programs[0].targets[0].historicalImportMeasurementType, "percentage");
+  assert.equal(result.json.sessions[0].behaviors[0].behaviorId, "behavior-1");
+  assert.equal(result.json.sessions[0].parentGoals[0].targetName, "Prompt schedule before transitions");
+  assert.equal(result.json.sessions[0].soapNote, undefined);
+  assert.equal(result.json.sessions[0].notes, undefined);
+  assert.equal(result.json.sessions[0].programs[0].targets[0].independence, undefined);
+  assert.equal(result.json.sessions[0].behaviors[0].frequency, undefined);
 });
 
 test("update duplicate strategy edits an existing imported point and rollback restores the prior value", async () => {

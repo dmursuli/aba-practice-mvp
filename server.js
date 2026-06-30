@@ -1045,6 +1045,27 @@ export function createAppServer() {
       return;
     }
 
+    const historicalImportDuplicatesMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/historical-import-duplicates$/);
+    if (req.method === "GET" && historicalImportDuplicatesMatch) {
+      const db = await readDbWithUsers();
+      const state = sessionStatus(req, db);
+      if (state.status !== "ok") {
+        requireAuth(req, res, db, state);
+        return;
+      }
+      const user = state.user;
+      const client = (db.clients || []).find((item) => item.id === historicalImportDuplicatesMatch[1]);
+      if (!client || !canAccessClient(user, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
+      sendJson(res, 200, {
+        sessions: historicalImportDuplicateMetadataSessions(db.sessions || [], client.id),
+        clientId: client.id
+      });
+      return;
+    }
+
     const clientSessionsMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/sessions$/);
     if (req.method === "GET" && clientSessionsMatch) {
       const db = await readDbWithUsers();
@@ -1062,19 +1083,41 @@ export function createAppServer() {
       const startDate = String(url.searchParams.get("startDate") || "");
       const endDate = String(url.searchParams.get("endDate") || "");
       const serviceType = String(url.searchParams.get("serviceType") || "");
-      const sessions = filterSessions(visibleSessions(db, user), {
+      const limit = Math.max(0, Number.parseInt(String(url.searchParams.get("limit") || "0"), 10) || 0);
+      const offset = Math.max(0, Number.parseInt(String(url.searchParams.get("offset") || "0"), 10) || 0);
+      const sort = String(url.searchParams.get("sort") || "");
+      let sessions = filterSessions(visibleSessions(db, user), {
         clientId: client.id,
         startDate,
         endDate,
         serviceType
       });
+      if (sort === "desc") {
+        sessions = sessions.slice().sort((a, b) => (
+          String(b.date || "").localeCompare(String(a.date || ""))
+          || String(b.startTime || "").localeCompare(String(a.startTime || ""))
+          || String(b.id || "").localeCompare(String(a.id || ""))
+        ));
+      } else if (sort === "asc") {
+        sessions = sessions.slice().sort((a, b) => (
+          String(a.date || "").localeCompare(String(b.date || ""))
+          || String(a.startTime || "").localeCompare(String(b.startTime || ""))
+          || String(a.id || "").localeCompare(String(b.id || ""))
+        ));
+      }
+      const total = sessions.length;
+      const pagedSessions = limit ? sessions.slice(offset, offset + limit) : sessions;
       sendJson(res, 200, {
-        sessions,
+        sessions: pagedSessions,
         scope: "client",
         clientId: client.id,
         startDate,
         endDate,
-        serviceType
+        serviceType,
+        total,
+        limit,
+        offset,
+        hasMore: limit ? offset + pagedSessions.length < total : false
       });
       return;
     }
@@ -1554,6 +1597,17 @@ export function createAppServer() {
       });
       await writeDb(db);
       sendJson(res, 201, session);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/historical-imports") {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const clientId = String(url.searchParams.get("clientId") || "");
+      const batches = visibleHistoricalImportBatches(db, actor)
+        .filter((batch) => !clientId || batch.clientId === clientId);
+      sendJson(res, 200, { historicalImportBatches: batches });
       return;
     }
 
@@ -2455,6 +2509,33 @@ function visibleSessionCounts(db, user) {
   return counts;
 }
 
+function visibleSessionSummaries(db, user) {
+  const summaries = {};
+  visibleSessions(db, user).forEach((session) => {
+    const clientId = session.clientId;
+    if (!clientId) return;
+    const summary = summaries[clientId] || {
+      count: 0,
+      firstDate: "",
+      lastDate: "",
+      lastSessionId: "",
+      lastServiceType: ""
+    };
+    const sessionDate = String(session.date || "");
+    summary.count += 1;
+    if (sessionDate && (!summary.firstDate || sessionDate < summary.firstDate)) {
+      summary.firstDate = sessionDate;
+    }
+    if (sessionDate && (!summary.lastDate || sessionDate > summary.lastDate)) {
+      summary.lastDate = sessionDate;
+      summary.lastSessionId = session.id || "";
+      summary.lastServiceType = session.serviceType || "";
+    }
+    summaries[clientId] = summary;
+  });
+  return summaries;
+}
+
 function visibleUsers(db, user) {
   return isMasterAdmin(user)
     ? (db.users || [])
@@ -2473,6 +2554,38 @@ function visibleAuditLog(db, user) {
 function visibleHistoricalImportBatches(db, user) {
   const clientIds = new Set(visibleClients(db, user).map((client) => client.id));
   return (db.historicalImportBatches || []).filter((batch) => clientIds.has(batch.clientId));
+}
+
+function historicalImportDuplicateMetadataSessions(sessions = [], clientId = "") {
+  return (sessions || [])
+    .filter((session) => (
+      session.clientId === clientId
+      && String(session.source || session.historicalImport?.source || "") === "historical_import"
+    ))
+    .map((session) => ({
+      id: session.id,
+      clientId: session.clientId,
+      date: session.date,
+      source: "historical_import",
+      historicalImport: { source: "historical_import" },
+      serviceType: session.serviceType || "",
+      programs: (session.programs || []).map((program) => ({
+        programId: program.programId || "",
+        targets: (program.targets || []).map((target) => ({
+          targetId: target.targetId || "",
+          historicalImportMeasurementType: target.historicalImportMeasurementType || ""
+        }))
+      })),
+      behaviors: (session.behaviors || []).map((behavior) => ({
+        behaviorId: behavior.behaviorId || "",
+        historicalImportMeasurementType: behavior.historicalImportMeasurementType || ""
+      })),
+      parentGoals: (session.parentGoals || []).map((goal) => ({
+        goalName: goal.goalName || "",
+        targetName: goal.targetName || "",
+        historicalImportMeasurementType: goal.historicalImportMeasurementType || ""
+      }))
+    }));
 }
 
 function publicUser(user) {
@@ -2511,7 +2624,8 @@ function bootstrapDb(db, user) {
     clients: visibleClients(db, user),
     sessions: [],
     clientSessionCounts: visibleSessionCounts(db, user),
-    historicalImportBatches: visibleHistoricalImportBatches(db, user)
+    clientSessionSummaries: visibleSessionSummaries(db, user),
+    historicalImportBatches: []
   };
 }
 

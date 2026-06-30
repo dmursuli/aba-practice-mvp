@@ -4,6 +4,7 @@ import fs from 'node:fs';
 
 const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const apiSource = fs.readFileSync(new URL('../public/api.js', import.meta.url), 'utf8');
+const serverSource = fs.readFileSync(new URL('../server.js', import.meta.url), 'utf8');
 
 function sourceBlock(functionName) {
   const start = appSource.indexOf(`function ${functionName}`);
@@ -70,4 +71,101 @@ test('session data hydration rerenders only the active session-backed view', () 
   assert.match(block, /if \(view === "report"\) \{\s*renderReportSummary\(\);\s*renderFunderReportPreview\(\);/s);
   assert.doesNotMatch(block, /renderSummary\(\);\s*renderGraphsSummary\(\);\s*renderHistoricalImport\(\);\s*renderReportSummary\(\);/s);
   assert.doesNotMatch(block, /renderSoapSummary\(\);\s*renderHistory\(\);\s*renderNote\(\);\s*renderParentSummary\(\);/s);
+});
+
+test('bootstrap carries session summaries but not eager historical import batches', () => {
+  const block = sourceBlock('refreshData');
+  const bootstrapBlockStart = serverSource.indexOf('function bootstrapDb');
+  const bootstrapBlock = serverSource.slice(bootstrapBlockStart, serverSource.indexOf('\nfunction practiceBackupPayload', bootstrapBlockStart));
+
+  assert.match(bootstrapBlock, /clientSessionSummaries: visibleSessionSummaries\(db, user\)/);
+  assert.match(bootstrapBlock, /historicalImportBatches: \[\]/);
+  assert.match(block, /clientSessionSummaries: data\.clientSessionSummaries \|\| \{\}/);
+  assert.match(block, /historicalImportBatches: \[\]/);
+});
+
+test('graphs load sessions by selected date range and include range-loaded sessions in current client data', () => {
+  const ensureBlock = asyncSourceBlock('ensureSessionDataForView');
+  const currentSessionsBlock = sourceBlock('currentSessions');
+  const controlsBlock = sourceBlock('renderBehaviorGraphControls');
+
+  assert.match(appSource, /async function ensureGraphSessionsLoaded/);
+  assert.match(ensureBlock, /if \(view === "graphs"\) \{\s*await ensureGraphSessionsLoaded\(clientId, \{ force \}\);/s);
+  assert.match(currentSessionsBlock, /state\.sessionsLoadedScope === "clientRange"/);
+  assert.match(controlsBlock, /reloadGraphSessionsForCurrentRange\(\);/);
+  assert.doesNotMatch(controlsBlock, /state\.behaviorGraphRangePreset = event\.target\.value;\s*renderCharts\(\);/);
+});
+
+test('session and report views hydrate scoped session windows instead of full client history by default', () => {
+  const ensureBlock = asyncSourceBlock('ensureSessionDataForView');
+  const reportChangeBlock = asyncSourceBlock('handleReportFormChange');
+
+  assert.match(appSource, /async function ensureRecentClientSessionsLoaded/);
+  assert.match(appSource, /async function ensureReportSessionsLoaded/);
+  assert.match(ensureBlock, /if \(view === "report"\) \{\s*await ensureReportSessionsLoaded\(clientId, \{ force \}\);/s);
+  assert.match(ensureBlock, /if \(view === "session"\) \{\s*await ensureRecentClientSessionsLoaded\(clientId, \{ force \}\);/s);
+  assert.match(reportChangeBlock, /event\?\.target\?\.name === "startDate" \|\| event\?\.target\?\.name === "endDate"/);
+  assert.match(reportChangeBlock, /await ensureReportSessionsLoaded\(state\.activeClientId, \{ force: true \}\);/);
+});
+
+test('report assessment attachments are metadata-first and load binaries only on expand or export', () => {
+  const previewBlock = sourceBlock('reportFilePreview');
+  const prepBlock = asyncSourceBlock('prepareFunderReportForExport');
+
+  assert.match(previewBlock, /data-report-attachment-preview/);
+  assert.match(previewBlock, /data-report-attachment-src/);
+  assert.doesNotMatch(previewBlock, /<img src="\$\{escapeHtml\(document\.url\)\}"/);
+  assert.match(appSource, /reportPreview\?\.addEventListener\("toggle", handleReportPreviewToggle, true\);/);
+  assert.match(prepBlock, /loadDeferredReportAttachmentImages\(reportDocument, \{ forceAll: true \}\)/);
+});
+
+test('funder report graphs are lazy-rendered for screen view and force-rendered for export', () => {
+  const markupBlock = sourceBlock('buildFunderReportPreviewMarkup');
+  const drawBlock = sourceBlock('drawFunderReportCharts');
+  const prepBlock = asyncSourceBlock('prepareFunderReportForExport');
+
+  assert.match(markupBlock, /data-report-lazy-chart="behavior-overview"/);
+  assert.match(markupBlock, /data-report-lazy-chart="skills"/);
+  assert.match(markupBlock, /data-report-lazy-chart="parent-training"/);
+  assert.match(drawBlock, /new IntersectionObserver/);
+  assert.match(drawBlock, /renderReportChartSection\(container, sessions, spec\.kind\)/);
+  assert.match(prepBlock, /drawFunderReportCharts\(filteredReportSessions\(\)\.slice\(\)\.reverse\(\), \{ force: true \}\)/);
+});
+
+test('SOAP history uses paged session loading instead of full client history', () => {
+  const ensureBlock = asyncSourceBlock('ensureSessionDataForView');
+  const soapBlock = asyncSourceBlock('ensureSoapSessionsLoaded');
+  const historyBlock = sourceBlock('renderHistory');
+
+  assert.match(appSource, /const SOAP_SESSION_PAGE_SIZE = 40/);
+  assert.match(ensureBlock, /if \(view === "soap"\) \{\s*await ensureSoapSessionsLoaded\(clientId, \{ force \}\);/s);
+  assert.match(soapBlock, /limit: SOAP_SESSION_PAGE_SIZE/);
+  assert.match(soapBlock, /sort: "desc"/);
+  assert.match(historyBlock, /data-soap-history-show-more/);
+  assert.match(appSource, /async function loadMoreSoapSessions/);
+});
+
+test('historical import preview uses lightweight duplicate metadata instead of full sessions', () => {
+  const previewBlock = asyncSourceBlock('handlePreviewHistoricalImport');
+  const commitBlock = asyncSourceBlock('handleCommitHistoricalImport');
+  const switchBlock = asyncSourceBlock('switchView');
+
+  assert.match(apiSource, /getHistoricalImportDuplicateMetadata/);
+  assert.match(serverSource, /historical-import-duplicates/);
+  assert.match(previewBlock, /await refreshHistoricalImportDuplicateMetadata\(\)/);
+  assert.match(previewBlock, /sessions: state\.historicalImportDuplicateSessions/);
+  assert.match(commitBlock, /sessions: state\.historicalImportDuplicateSessions/);
+  assert.match(switchBlock, /refreshHistoricalImportDuplicateMetadata\(\)/);
+});
+
+test('Data Health renders issues in a window while exports still include all issues', () => {
+  const runBlock = sourceBlock('runDataHealthCheck');
+  const renderBlock = sourceBlock('renderDataHealth');
+  const exportBlock = sourceBlock('exportHealthReport');
+
+  assert.match(runBlock, /state\.healthVisibleLimit = 100/);
+  assert.match(renderBlock, /const visibleIssues = issues\.slice\(0, visibleLimit\)/);
+  assert.match(renderBlock, /data-health-show-more/);
+  assert.match(appSource, /function handleDataHealthClick/);
+  assert.match(exportBlock, /const issues = state\.healthIssues\.length \? state\.healthIssues : buildDataHealthIssues\(\)/);
 });

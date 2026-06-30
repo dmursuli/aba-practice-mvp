@@ -1,4 +1,4 @@
-import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAuditLog, getClientSessions, getCurrentUser, getData, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setupVerificationEmail, touchSession, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setupVerificationEmail, touchSession, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -13,9 +13,12 @@ const state = {
   behaviors: [],
   sessions: [],
   clientSessionCounts: {},
+  clientSessionSummaries: {},
   auditLog: [],
   healthIssues: [],
   users: [],
+  historicalImportBatches: [],
+  historicalImportDuplicateSessions: [],
   selectedSessionId: null,
   selectedSoapEntryKey: "",
   activeClientId: "",
@@ -57,9 +60,18 @@ const state = {
   },
   historicalImportRows: [],
   historicalImportPreview: null,
+  healthVisibleLimit: 100,
+  soapHistoryVisibleLimit: 40,
+  reportChartObserver: null,
   reportCustomPhaseLines: {},
   sessionsLoadedScope: "none",
   sessionsLoadedClientId: "",
+  sessionsLoadedStartDate: "",
+  sessionsLoadedEndDate: "",
+  sessionsLoadedOffset: 0,
+  sessionsLoadedLimit: 0,
+  sessionsLoadedTotal: 0,
+  sessionsLoadedHasMore: false,
   sessionsLoading: false,
   sessionsLoadError: "",
   inactivityTimerId: null,
@@ -352,6 +364,7 @@ const sessionPreloadLimits = {
 const INACTIVITY_TIMEOUT_MS = 45 * 60 * 1000;
 const INACTIVITY_WARNING_MS = 40 * 60 * 1000;
 const SESSION_TOUCH_DEBOUNCE_MS = 60 * 1000;
+const SOAP_SESSION_PAGE_SIZE = 40;
 
 init().catch(handleBootstrapFailure);
 
@@ -495,8 +508,17 @@ async function refreshData() {
   Object.assign(state, data, {
     sessions: [],
     clientSessionCounts: data.clientSessionCounts || {},
+    clientSessionSummaries: data.clientSessionSummaries || {},
+    historicalImportBatches: [],
+    historicalImportDuplicateSessions: [],
     sessionsLoadedScope: "none",
     sessionsLoadedClientId: "",
+    sessionsLoadedStartDate: "",
+    sessionsLoadedEndDate: "",
+    sessionsLoadedOffset: 0,
+    sessionsLoadedLimit: 0,
+    sessionsLoadedTotal: 0,
+    sessionsLoadedHasMore: false,
     sessionsLoading: false,
     sessionsLoadError: ""
   });
@@ -555,7 +577,7 @@ function ensureProgramGraphModalAnalysis() {
 }
 
 function viewNeedsClientSessions(view = currentView()) {
-  return ["session", "workflow", "parent", "graphs", "import", "report", "soap"].includes(view);
+  return ["session", "workflow", "parent", "graphs", "report", "soap"].includes(view);
 }
 
 function viewNeedsAllVisibleSessions(view = currentView()) {
@@ -564,6 +586,21 @@ function viewNeedsAllVisibleSessions(view = currentView()) {
 
 function loadedSessions() {
   return Array.isArray(state.sessions) ? state.sessions : [];
+}
+
+function loadedSessionRangeMatches(clientId, range = {}) {
+  if (state.sessionsLoadedScope === "all") return true;
+  if (state.sessionsLoadedScope === "client" && state.sessionsLoadedClientId === clientId) return true;
+  return state.sessionsLoadedScope === "clientRange"
+    && state.sessionsLoadedClientId === clientId
+    && (state.sessionsLoadedStartDate || "") === (range.startDate || "")
+    && (state.sessionsLoadedEndDate || "") === (range.endDate || "");
+}
+
+function loadedSessionPageMatches(clientId) {
+  return state.sessionsLoadedScope === "clientPage"
+    && state.sessionsLoadedClientId === clientId
+    && Number(state.sessionsLoadedLimit || 0) === SOAP_SESSION_PAGE_SIZE;
 }
 
 function rerenderSessionBackedView(view = currentView()) {
@@ -601,14 +638,201 @@ async function ensureClientSessionsLoaded(clientId = state.activeClientId, { for
     state.sessions = payload.sessions || [];
     state.sessionsLoadedScope = "client";
     state.sessionsLoadedClientId = clientId;
+    state.sessionsLoadedStartDate = "";
+    state.sessionsLoadedEndDate = "";
   } catch (error) {
     state.sessions = [];
     state.sessionsLoadedScope = "none";
     state.sessionsLoadedClientId = "";
+    state.sessionsLoadedStartDate = "";
+    state.sessionsLoadedEndDate = "";
     state.sessionsLoadError = error.message || "We couldn't load session data.";
   } finally {
     state.sessionsLoading = false;
     rerenderSessionBackedView();
+  }
+}
+
+function recentClientSessionRange(clientId = state.activeClientId) {
+  const summary = currentClientSessionSummary(clientId);
+  const endDate = summary.lastDate || new Date().toISOString().slice(0, 10);
+  return {
+    startDate: shiftIsoDate(endDate, -29),
+    endDate
+  };
+}
+
+async function ensureRecentClientSessionsLoaded(clientId = state.activeClientId, { force = false } = {}) {
+  if (!clientId) return;
+  const range = recentClientSessionRange(clientId);
+  if (!force && loadedSessionRangeMatches(clientId, range)) return;
+  state.sessionsLoading = true;
+  state.sessionsLoadError = "";
+  rerenderSessionBackedView("session");
+  try {
+    const payload = await getClientSessions(clientId, {
+      startDate: range.startDate,
+      endDate: range.endDate
+    });
+    state.sessions = payload.sessions || [];
+    state.sessionsLoadedScope = "clientRange";
+    state.sessionsLoadedClientId = clientId;
+    state.sessionsLoadedStartDate = range.startDate || "";
+    state.sessionsLoadedEndDate = range.endDate || "";
+  } catch (error) {
+    state.sessions = [];
+    state.sessionsLoadedScope = "none";
+    state.sessionsLoadedClientId = "";
+    state.sessionsLoadedStartDate = "";
+    state.sessionsLoadedEndDate = "";
+    state.sessionsLoadError = error.message || "We couldn't load recent session data.";
+  } finally {
+    state.sessionsLoading = false;
+    rerenderSessionBackedView("session");
+  }
+}
+
+async function ensureSoapSessionsLoaded(clientId = state.activeClientId, { force = false } = {}) {
+  if (!clientId) return;
+  if (!force && loadedSessionPageMatches(clientId)) return;
+  state.sessionsLoading = true;
+  state.sessionsLoadError = "";
+  rerenderSessionBackedView("soap");
+  try {
+    const payload = await getClientSessions(clientId, {
+      limit: SOAP_SESSION_PAGE_SIZE,
+      offset: 0,
+      sort: "desc"
+    });
+    state.sessions = payload.sessions || [];
+    state.sessionsLoadedScope = "clientPage";
+    state.sessionsLoadedClientId = clientId;
+    state.sessionsLoadedStartDate = "";
+    state.sessionsLoadedEndDate = "";
+    state.sessionsLoadedOffset = 0;
+    state.sessionsLoadedLimit = SOAP_SESSION_PAGE_SIZE;
+    state.sessionsLoadedTotal = Number(payload.total || state.sessions.length);
+    state.sessionsLoadedHasMore = Boolean(payload.hasMore);
+  } catch (error) {
+    state.sessions = [];
+    state.sessionsLoadedScope = "none";
+    state.sessionsLoadedClientId = "";
+    state.sessionsLoadedStartDate = "";
+    state.sessionsLoadedEndDate = "";
+    state.sessionsLoadedOffset = 0;
+    state.sessionsLoadedLimit = 0;
+    state.sessionsLoadedTotal = 0;
+    state.sessionsLoadedHasMore = false;
+    state.sessionsLoadError = error.message || "We couldn't load SOAP history.";
+  } finally {
+    state.sessionsLoading = false;
+    rerenderSessionBackedView("soap");
+  }
+}
+
+async function loadMoreSoapSessions() {
+  const clientId = state.activeClientId;
+  if (!clientId || state.sessionsLoading || !state.sessionsLoadedHasMore) return;
+  state.sessionsLoading = true;
+  state.sessionsLoadError = "";
+  renderHistory();
+  try {
+    const payload = await getClientSessions(clientId, {
+      limit: SOAP_SESSION_PAGE_SIZE,
+      offset: loadedSessions().length,
+      sort: "desc"
+    });
+    const knownIds = new Set(loadedSessions().map((session) => session.id));
+    const nextSessions = (payload.sessions || []).filter((session) => !knownIds.has(session.id));
+    state.sessions = [...loadedSessions(), ...nextSessions];
+    state.sessionsLoadedScope = "clientPage";
+    state.sessionsLoadedClientId = clientId;
+    state.sessionsLoadedLimit = SOAP_SESSION_PAGE_SIZE;
+    state.sessionsLoadedTotal = Number(payload.total || state.sessions.length);
+    state.sessionsLoadedHasMore = Boolean(payload.hasMore);
+    state.soapHistoryVisibleLimit += SOAP_SESSION_PAGE_SIZE;
+  } catch (error) {
+    state.sessionsLoadError = error.message || "We couldn't load more SOAP history.";
+  } finally {
+    state.sessionsLoading = false;
+    renderHistory();
+    renderSoapSummary();
+  }
+}
+
+async function ensureGraphSessionsLoaded(clientId = state.activeClientId, { force = false } = {}) {
+  if (!clientId) return;
+  const range = behaviorGraphRange();
+  if (!force && loadedSessionRangeMatches(clientId, range)) return;
+  if (!range.startDate && !range.endDate) {
+    await ensureClientSessionsLoaded(clientId, { force });
+    return;
+  }
+  state.sessionsLoading = true;
+  state.sessionsLoadError = "";
+  rerenderSessionBackedView("graphs");
+  try {
+    const payload = await getClientSessions(clientId, {
+      startDate: range.startDate,
+      endDate: range.endDate
+    });
+    state.sessions = payload.sessions || [];
+    state.sessionsLoadedScope = "clientRange";
+    state.sessionsLoadedClientId = clientId;
+    state.sessionsLoadedStartDate = range.startDate || "";
+    state.sessionsLoadedEndDate = range.endDate || "";
+  } catch (error) {
+    state.sessions = [];
+    state.sessionsLoadedScope = "none";
+    state.sessionsLoadedClientId = "";
+    state.sessionsLoadedStartDate = "";
+    state.sessionsLoadedEndDate = "";
+    state.sessionsLoadError = error.message || "We couldn't load graph data.";
+  } finally {
+    state.sessionsLoading = false;
+    rerenderSessionBackedView("graphs");
+  }
+}
+
+function reportSessionRange() {
+  const fallback = defaultReportDateRange();
+  return {
+    startDate: reportForm?.elements?.startDate?.value || fallback.startDate || "",
+    endDate: reportForm?.elements?.endDate?.value || fallback.endDate || ""
+  };
+}
+
+async function ensureReportSessionsLoaded(clientId = state.activeClientId, { force = false } = {}) {
+  if (!clientId) return;
+  const range = reportSessionRange();
+  if (!force && loadedSessionRangeMatches(clientId, range)) return;
+  if (!range.startDate && !range.endDate) {
+    await ensureClientSessionsLoaded(clientId, { force });
+    return;
+  }
+  state.sessionsLoading = true;
+  state.sessionsLoadError = "";
+  rerenderSessionBackedView("report");
+  try {
+    const payload = await getClientSessions(clientId, {
+      startDate: range.startDate,
+      endDate: range.endDate
+    });
+    state.sessions = payload.sessions || [];
+    state.sessionsLoadedScope = "clientRange";
+    state.sessionsLoadedClientId = clientId;
+    state.sessionsLoadedStartDate = range.startDate || "";
+    state.sessionsLoadedEndDate = range.endDate || "";
+  } catch (error) {
+    state.sessions = [];
+    state.sessionsLoadedScope = "none";
+    state.sessionsLoadedClientId = "";
+    state.sessionsLoadedStartDate = "";
+    state.sessionsLoadedEndDate = "";
+    state.sessionsLoadError = error.message || "We couldn't load report session data.";
+  } finally {
+    state.sessionsLoading = false;
+    rerenderSessionBackedView("report");
   }
 }
 
@@ -622,10 +846,14 @@ async function ensureAllVisibleSessionsLoaded({ force = false } = {}) {
     state.sessions = payload.sessions || [];
     state.sessionsLoadedScope = "all";
     state.sessionsLoadedClientId = "";
+    state.sessionsLoadedStartDate = "";
+    state.sessionsLoadedEndDate = "";
   } catch (error) {
     state.sessions = [];
     state.sessionsLoadedScope = "none";
     state.sessionsLoadedClientId = "";
+    state.sessionsLoadedStartDate = "";
+    state.sessionsLoadedEndDate = "";
     state.sessionsLoadError = error.message || "We couldn't load session data.";
   } finally {
     state.sessionsLoading = false;
@@ -638,9 +866,60 @@ async function ensureSessionDataForView(view = currentView(), { force = false, c
     await ensureAllVisibleSessionsLoaded({ force });
     return;
   }
+  if (view === "graphs") {
+    await ensureGraphSessionsLoaded(clientId, { force });
+    return;
+  }
+  if (view === "report") {
+    await ensureReportSessionsLoaded(clientId, { force });
+    return;
+  }
+  if (view === "session") {
+    await ensureRecentClientSessionsLoaded(clientId, { force });
+    return;
+  }
+  if (view === "soap") {
+    await ensureSoapSessionsLoaded(clientId, { force });
+    return;
+  }
   if (viewNeedsClientSessions(view)) {
     await ensureClientSessionsLoaded(clientId, { force });
   }
+}
+
+async function refreshHistoricalImportBatches(showMessage = false) {
+  const clientId = currentClient()?.id;
+  if (!clientId || !historicalImportBatches) return;
+  try {
+    const payload = await getHistoricalImportBatches({ clientId });
+    state.historicalImportBatches = payload.historicalImportBatches || [];
+    renderHistoricalImportSummary();
+    renderHistoricalImportBatches();
+    if (showMessage) historicalImportMessage.textContent = "Historical import batches refreshed.";
+  } catch (error) {
+    historicalImportMessage.textContent = error.message || "We couldn't load historical import batches.";
+  }
+}
+
+async function refreshHistoricalImportDuplicateMetadata() {
+  const clientId = currentClient()?.id;
+  if (!clientId) {
+    state.historicalImportDuplicateSessions = [];
+    return;
+  }
+  try {
+    const payload = await getHistoricalImportDuplicateMetadata(clientId);
+    state.historicalImportDuplicateSessions = payload.sessions || [];
+  } catch (error) {
+    state.historicalImportDuplicateSessions = [];
+    if (historicalImportMessage) {
+      historicalImportMessage.textContent = error.message || "We couldn't load the import duplicate index.";
+    }
+  }
+}
+
+function reloadGraphSessionsForCurrentRange() {
+  void ensureSessionDataForView("graphs", { force: true, clientId: state.activeClientId });
 }
 
 function bindEvents() {
@@ -776,6 +1055,7 @@ function bindEvents() {
   programGraphModal?.addEventListener("click", handleGraphAnalysisClick);
   reportPreview?.addEventListener("click", handleGraphPhaseLineClick);
   reportPreview?.addEventListener("submit", handleGraphPhaseLineSubmit);
+  reportPreview?.addEventListener("toggle", handleReportPreviewToggle, true);
   reportForm.addEventListener("submit", handleGenerateFunderReport);
   reportForm.addEventListener("input", handleReportDraftInput);
   reportForm.addEventListener("change", handleReportFormChange);
@@ -789,7 +1069,7 @@ function bindEvents() {
     addServiceHourRow();
     markReportDraftDirty();
   });
-  printFunderReportButton.addEventListener("click", () => window.print());
+  printFunderReportButton.addEventListener("click", handlePrintFunderReport);
   downloadFunderTextButton.addEventListener("click", () => handleDownloadFunderReport("txt"));
   downloadFunderHtmlButton.addEventListener("click", () => handleDownloadFunderReport("html"));
   saveFunderReportButton?.addEventListener("click", handleSaveFunderReportDraft);
@@ -821,7 +1101,13 @@ function bindEvents() {
   runHealthCheckButton.addEventListener("click", runDataHealthCheck);
   exportHealthCsvButton.addEventListener("click", () => exportHealthReport("csv"));
   exportHealthJsonButton.addEventListener("click", () => exportHealthReport("json"));
+  healthReportTable?.addEventListener("click", handleDataHealthClick);
   window.addEventListener("resize", scheduleGraphResizeRender);
+  window.addEventListener("beforeprint", () => {
+    if (currentView() === "report") {
+      void prepareFunderReportForExport();
+    }
+  });
   window.addEventListener("aba-auth-error", (event) => handleAuthFailureEvent(event.detail));
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) {
@@ -994,10 +1280,11 @@ function handleDownloadHistoricalImportTemplate() {
   downloadFile(`historical-import-template-${currentHistoricalImportDataType()}.csv`, csv, "text/csv");
 }
 
-function handlePreviewHistoricalImport() {
+async function handlePreviewHistoricalImport() {
+  await refreshHistoricalImportDuplicateMetadata();
   const preview = validateHistoricalImportRows({
     client: currentClient(),
-    sessions: currentSessions(),
+    sessions: state.historicalImportDuplicateSessions,
     dataType: currentHistoricalImportDataType(),
     measurementType: currentHistoricalImportMeasurementType(),
     selectedReference: currentHistoricalImportReference(),
@@ -1014,9 +1301,10 @@ function handlePreviewHistoricalImport() {
 
 async function handleCommitHistoricalImport(event) {
   event.preventDefault();
+  await refreshHistoricalImportDuplicateMetadata();
   const preview = validateHistoricalImportRows({
     client: currentClient(),
-    sessions: currentSessions(),
+    sessions: state.historicalImportDuplicateSessions,
     dataType: currentHistoricalImportDataType(),
     measurementType: currentHistoricalImportMeasurementType(),
     selectedReference: currentHistoricalImportReference(),
@@ -1046,6 +1334,8 @@ async function handleCommitHistoricalImport(event) {
       rows: historicalImportRowsToPayload()
     });
     await refreshDataAndCurrentViewSessions();
+    await refreshHistoricalImportBatches(false);
+    await refreshHistoricalImportDuplicateMetadata();
     state.historicalImportRows = [blankHistoricalImportRow(currentHistoricalImportDataType())];
     state.historicalImportPreview = null;
     render();
@@ -1066,6 +1356,8 @@ async function handleHistoricalImportBatchClick(event) {
   try {
     await rollbackHistoricalImport(rollbackButton.dataset.importRollback);
     await refreshDataAndCurrentViewSessions();
+    await refreshHistoricalImportBatches(false);
+    await refreshHistoricalImportDuplicateMetadata();
     state.historicalImportPreview = null;
     render();
     historicalImportMessage.textContent = "Historical import batch rolled back.";
@@ -1107,8 +1399,11 @@ function resetSensitiveState() {
   state.behaviors = [];
   state.sessions = [];
   state.clientSessionCounts = {};
+  state.clientSessionSummaries = {};
   state.auditLog = [];
   state.users = [];
+  state.historicalImportBatches = [];
+  state.historicalImportDuplicateSessions = [];
   state.selectedSessionId = null;
   state.selectedSoapEntryKey = "";
   state.activeClientId = "";
@@ -1122,8 +1417,18 @@ function resetSensitiveState() {
   state.draftCache = { intake: {}, session: {} };
   state.historicalImportRows = [];
   state.historicalImportPreview = null;
+  state.healthVisibleLimit = 100;
+  state.soapHistoryVisibleLimit = 40;
+  state.reportChartObserver?.disconnect?.();
+  state.reportChartObserver = null;
   state.sessionsLoadedScope = "none";
   state.sessionsLoadedClientId = "";
+  state.sessionsLoadedStartDate = "";
+  state.sessionsLoadedEndDate = "";
+  state.sessionsLoadedOffset = 0;
+  state.sessionsLoadedLimit = 0;
+  state.sessionsLoadedTotal = 0;
+  state.sessionsLoadedHasMore = false;
   state.sessionsLoading = false;
   state.sessionsLoadError = "";
   state.lastSessionTouchAt = 0;
@@ -1385,17 +1690,29 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
     state.activeGraphDomain = "";
     state.historicalImportRows = [];
     state.historicalImportPreview = null;
+    state.historicalImportDuplicateSessions = [];
+    state.soapHistoryVisibleLimit = 40;
     syncSettingFromClient();
     resetRows();
   }
-  if (state.sessionsLoadedScope === "client" && state.sessionsLoadedClientId !== clientId) {
+  if (["client", "clientRange"].includes(state.sessionsLoadedScope) && state.sessionsLoadedClientId !== clientId) {
     state.sessions = [];
     state.sessionsLoadedScope = "none";
     state.sessionsLoadedClientId = "";
+    state.sessionsLoadedStartDate = "";
+    state.sessionsLoadedEndDate = "";
+    state.sessionsLoadedOffset = 0;
+    state.sessionsLoadedLimit = 0;
+    state.sessionsLoadedTotal = 0;
+    state.sessionsLoadedHasMore = false;
   }
   syncGraphPhaseLineState(currentClient());
   render();
   void ensureSessionDataForView(currentView(), { force: true, clientId });
+  if (currentView() === "import") {
+    void refreshHistoricalImportBatches(false);
+    void refreshHistoricalImportDuplicateMetadata();
+  }
   syncWorkspaceUrl(currentView());
 }
 
@@ -3058,6 +3375,10 @@ async function switchView(view) {
     await ensureSessionDataForView(view, { clientId: state.activeClientId });
   }
   if (view === "graphs") renderCharts();
+  if (view === "import") {
+    void refreshHistoricalImportBatches(false);
+    void refreshHistoricalImportDuplicateMetadata();
+  }
   if (view === "report") renderFunderReportPreview();
   if (view === "billing") renderBillingExport();
   if (view === "audit") refreshAuditLog(false);
@@ -3945,6 +4266,7 @@ function runDataHealthCheck() {
     if (healthMessage) healthMessage.textContent = "Loading session data...";
     return;
   }
+  state.healthVisibleLimit = 100;
   state.healthIssues = buildDataHealthIssues();
   renderDataHealth();
   if (healthMessage) {
@@ -3958,6 +4280,8 @@ function renderDataHealth() {
   if (!healthSummary || !healthReportTable) return;
   const issues = state.healthIssues || [];
   const counts = healthSeverityCounts(issues);
+  const visibleLimit = Math.max(1, Number(state.healthVisibleLimit || 100));
+  const visibleIssues = issues.slice(0, visibleLimit);
   healthSummary.innerHTML = `
     <div><strong>${counts.high}</strong><span>High priority</span></div>
     <div><strong>${counts.medium}</strong><span>Medium priority</span></div>
@@ -3969,6 +4293,7 @@ function renderDataHealth() {
     return;
   }
   healthReportTable.innerHTML = `
+    <p class="muted">Showing ${Math.min(visibleIssues.length, issues.length)} of ${issues.length} data health item${issues.length === 1 ? "" : "s"}.</p>
     <div class="report-table-wrap">
       <table class="fade-plan-table audit-table health-table">
         <thead>
@@ -3981,7 +4306,7 @@ function renderDataHealth() {
           </tr>
         </thead>
         <tbody>
-          ${issues.map((issue) => `
+          ${visibleIssues.map((issue) => `
             <tr>
               <td><span class="health-badge ${escapeHtml(issue.severity)}">${escapeHtml(priorityLabel(issue.severity))}</span></td>
               <td>${escapeHtml(issue.clientName || "Practice")}</td>
@@ -3993,7 +4318,14 @@ function renderDataHealth() {
         </tbody>
       </table>
     </div>
+    ${visibleIssues.length < issues.length ? '<button type="button" class="secondary-button" data-health-show-more>Show next 100 items</button>' : ""}
   `;
+}
+
+function handleDataHealthClick(event) {
+  if (!event.target.closest("[data-health-show-more]")) return;
+  state.healthVisibleLimit = Math.min((state.healthIssues || []).length, Number(state.healthVisibleLimit || 100) + 100);
+  renderDataHealth();
 }
 
 function buildDataHealthIssues() {
@@ -4652,6 +4984,9 @@ async function handleReportFormChange(event) {
   if (fileField === "assessmentGrid" || fileField === "standardizedAssessmentGrid") {
     await handleReportAssessmentUpload(event.target);
   }
+  if (event?.target?.name === "startDate" || event?.target?.name === "endDate") {
+    await ensureReportSessionsLoaded(state.activeClientId, { force: true });
+  }
   markReportDraftDirty();
   renderReportSummary();
   if (currentView() === "report") renderFunderReportPreview();
@@ -5001,11 +5336,8 @@ function buildFunderReportPreviewMarkup() {
       </section>
       <section>
         <h3>Behavior Graphs</h3>
-        <article class="chart-panel">
-          <h4>Behavior frequency</h4>
-          <canvas id="report-behavior-chart" width="760" height="320"></canvas>
-        </article>
-        <div id="report-behavior-charts" class="chart-zone"></div>
+        <div id="report-behavior-overview" class="chart-zone" data-report-lazy-chart="behavior-overview"></div>
+        <div id="report-behavior-charts" class="chart-zone" data-report-lazy-chart="behavior-details"></div>
       </section>
       <section>
         <h3>Progress Summary</h3>
@@ -5022,7 +5354,7 @@ function buildFunderReportPreviewMarkup() {
       </section>
       <section>
         <h3>Skill Acquisition Graphs</h3>
-        <div id="report-skill-charts" class="chart-zone"></div>
+        <div id="report-skill-charts" class="chart-zone" data-report-lazy-chart="skills"></div>
       </section>
       <section>
         <h3>Skill Acquisition Goal and Target Summary</h3>
@@ -5034,7 +5366,7 @@ function buildFunderReportPreviewMarkup() {
           summaryText: values.get("parentTrainingSummary"),
           recommendationText: values.get("parentTrainingRecommendations")
         })}
-        <div id="report-parent-training-charts" class="chart-zone"></div>
+        <div id="report-parent-training-charts" class="chart-zone" data-report-lazy-chart="parent-training"></div>
       </section>
       <section>
         <h3>Instructional Goals Information</h3>
@@ -5918,6 +6250,14 @@ function currentAuthorizationRange() {
   };
 }
 
+function currentClientSessionSummary(clientId = currentClient()?.id) {
+  return state.clientSessionSummaries?.[clientId] || {
+    count: state.clientSessionCounts?.[clientId] || 0,
+    firstDate: "",
+    lastDate: ""
+  };
+}
+
 function resolvedBehaviorGraphRangePreset() {
   if (state.behaviorGraphRangePreset !== "default") return state.behaviorGraphRangePreset;
   const authorization = currentAuthorizationRange();
@@ -5941,7 +6281,7 @@ function behaviorGraphRangeLabel() {
 function behaviorGraphRange() {
   const preset = resolvedBehaviorGraphRangePreset();
   const sessions = currentSessions();
-  const lastDate = latestSessionDate(sessions);
+  const lastDate = latestSessionDate(sessions) || currentClientSessionSummary().lastDate || "";
   const authorization = currentAuthorizationRange();
   if (preset === "authorization") {
     return {
@@ -6638,6 +6978,7 @@ function renderSoapHistoryTabs(groups) {
   soapHistoryTabs.querySelectorAll("[data-soap-history-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeSoapHistoryTab = button.dataset.soapHistoryTab;
+      state.soapHistoryVisibleLimit = 40;
       const selectedGroup = groups.find((group) => group.key === state.activeSoapHistoryTab);
       if (selectedGroup?.entries?.length) {
         state.selectedSoapEntryKey = selectedGroup.entries[0].key;
@@ -6770,11 +7111,13 @@ function renderHistory() {
     state.activeSoapHistoryTab = fallbackOrder.find((key) => availableKeys.includes(key)) || availableKeys[0] || "97153";
   }
   renderSoapHistoryTabs(groups);
+  const visibleLimit = Math.max(1, Number(state.soapHistoryVisibleLimit || SOAP_SESSION_PAGE_SIZE));
   const visibleGroups = groups.filter((group) => group.key === state.activeSoapHistoryTab);
   container.innerHTML = visibleGroups.map((group) => `
     <section class="history-group">
       <h3 class="history-group-title">${escapeHtml(group.label)}</h3>
-      ${group.entries.map((entry) => {
+      <p class="muted">Showing ${Math.min(group.entries.length, visibleLimit)} of ${group.entries.length} note${group.entries.length === 1 ? "" : "s"}.</p>
+      ${group.entries.slice(0, visibleLimit).map((entry) => {
         const active = selectedSoapEntry()?.key === entry.key ? "active" : "";
         if (entry.type === "97151") {
           const preview = String(entry.note || "").trim().split(/\n+/)[0] || "Assessment note generated from intake, report, and treatment planning data.";
@@ -6828,6 +7171,7 @@ function renderHistory() {
           </div>
         `;
       }).join("")}
+      ${(group.entries.length > visibleLimit || state.sessionsLoadedHasMore) ? `<button type="button" class="secondary-button" data-soap-history-show-more ${state.sessionsLoading ? "disabled" : ""}>${state.sessionsLoading ? "Loading notes..." : "Show more notes"}</button>` : ""}
     </section>
   `).join("");
 
@@ -6842,6 +7186,15 @@ function renderHistory() {
   });
   container.querySelectorAll("[data-delete-session]").forEach((button) => {
     button.addEventListener("click", () => handleDeleteSession(button.dataset.deleteSession));
+  });
+  container.querySelector("[data-soap-history-show-more]")?.addEventListener("click", async () => {
+    const activeGroup = groups.find((group) => group.key === state.activeSoapHistoryTab);
+    if (activeGroup && Number(state.soapHistoryVisibleLimit || SOAP_SESSION_PAGE_SIZE) < activeGroup.entries.length) {
+      state.soapHistoryVisibleLimit = Number(state.soapHistoryVisibleLimit || SOAP_SESSION_PAGE_SIZE) + SOAP_SESSION_PAGE_SIZE;
+      renderHistory();
+      return;
+    }
+    await loadMoreSoapSessions();
   });
 }
 
@@ -7273,6 +7626,7 @@ async function handleDownloadFunderReport(format) {
     funderExportStatus.textContent = "Generate the funder report before downloading.";
     return;
   }
+  await prepareFunderReportForExport();
   const base = funderReportFileBase();
   if (format === "html") {
     const html = await funderReportHtml(reportDocument);
@@ -7290,6 +7644,49 @@ async function handleDownloadFunderReport(format) {
       endDate: reportForm.elements.endDate.value
     }
   }).then(() => refreshAuditLog(false)).catch(() => {});
+}
+
+async function handlePrintFunderReport() {
+  const reportDocument = reportPreview.querySelector(".report-document");
+  if (!reportDocument) {
+    funderExportStatus.textContent = "Generate the funder report before printing.";
+    return;
+  }
+  await prepareFunderReportForExport();
+  window.print();
+}
+
+async function prepareFunderReportForExport() {
+  const reportDocument = reportPreview.querySelector(".report-document");
+  if (!reportDocument) return;
+  drawFunderReportCharts(filteredReportSessions().slice().reverse(), { force: true });
+  await loadDeferredReportAttachmentImages(reportDocument, { forceAll: true });
+}
+
+function handleReportPreviewToggle(event) {
+  const preview = event.target.closest?.("[data-report-attachment-preview]");
+  if (!preview?.open) return;
+  void loadDeferredReportAttachmentImages(preview);
+}
+
+async function loadDeferredReportAttachmentImages(root = reportPreview, { forceAll = false } = {}) {
+  const images = [...root.querySelectorAll("img[data-report-attachment-src]")].filter((image) => {
+    if (forceAll) return true;
+    return image.closest("[data-report-attachment-preview]")?.open;
+  });
+  images.forEach((image) => {
+    image.src = image.dataset.reportAttachmentSrc;
+    image.removeAttribute("data-report-attachment-src");
+  });
+  await Promise.allSettled(images.map(waitForImageReady));
+}
+
+function waitForImageReady(image) {
+  if (!image.src || image.complete) return Promise.resolve();
+  return new Promise((resolve) => {
+    image.addEventListener("load", resolve, { once: true });
+    image.addEventListener("error", resolve, { once: true });
+  });
 }
 
 function funderReportFileBase() {
@@ -7574,12 +7971,92 @@ function parentTrainingSessionsForRange(startDate, endDate) {
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
-function drawFunderReportCharts(sessions) {
-  const skillContainer = reportPreview.querySelector("#report-skill-charts");
-  if (!skillContainer) return;
-  drawSkillChartSet(sessions, skillContainer, "report-program-chart", true);
+function reportChartSpecs() {
+  return [
+    { selector: "#report-behavior-overview", kind: "behavior-overview", label: "Behavior frequency" },
+    { selector: "#report-behavior-charts", kind: "behavior-details", label: "Behavior detail graphs" },
+    { selector: "#report-skill-charts", kind: "skills", label: "Skill acquisition graphs" },
+    { selector: "#report-parent-training-charts", kind: "parent-training", label: "Parent training graphs" }
+  ];
+}
 
-  const behaviorCanvas = reportPreview.querySelector("#report-behavior-chart");
+function drawFunderReportCharts(sessions, { force = false } = {}) {
+  state.reportChartObserver?.disconnect?.();
+  state.reportChartObserver = null;
+  reportChartSpecs().forEach((spec) => {
+    const container = reportPreview.querySelector(spec.selector);
+    if (!container) return;
+    container.dataset.reportChartKind = spec.kind;
+    container.dataset.reportChartRendered = "false";
+    if (force) {
+      renderReportChartSection(container, sessions, spec.kind);
+      return;
+    }
+    container.innerHTML = `<article class="chart-panel report-chart-placeholder"><p class="muted">Loading ${escapeHtml(spec.label.toLowerCase())} when visible...</p></article>`;
+  });
+  if (force) return;
+  if (!("IntersectionObserver" in window)) {
+    reportChartSpecs().forEach((spec) => {
+      const container = reportPreview.querySelector(spec.selector);
+      if (container) renderReportChartSection(container, sessions, spec.kind);
+    });
+    return;
+  }
+  state.reportChartObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting) return;
+      const container = entry.target;
+      state.reportChartObserver?.unobserve(container);
+      renderReportChartSection(container, sessions, container.dataset.reportChartKind);
+    });
+  }, { rootMargin: "240px 0px", threshold: 0.01 });
+  reportChartSpecs().forEach((spec) => {
+    const container = reportPreview.querySelector(spec.selector);
+    if (container) state.reportChartObserver.observe(container);
+  });
+}
+
+function renderReportChartSection(container, sessions, kind) {
+  if (!container || container.dataset.reportChartRendered === "true") return;
+  container.dataset.reportChartRendered = "true";
+  if (kind === "skills") {
+    drawSkillChartSet(sessions, container, "report-program-chart", true);
+    return;
+  }
+  if (kind === "behavior-overview") {
+    renderReportBehaviorOverviewChart(container, sessions);
+    return;
+  }
+  if (kind === "behavior-details") {
+    const allBehaviorSeries = behaviorChartSeries(currentSessions().slice().reverse());
+    drawBehaviorChartSet(sessions, container, "report-behavior-chart", {
+      range: {
+        startDate: reportForm.elements.startDate.value,
+        endDate: reportForm.elements.endDate.value,
+        label: "Authorization period"
+      },
+      allSeries: allBehaviorSeries,
+      visibleBehaviorIds: clientBehaviors().map((behavior) => behavior.id)
+    });
+    return;
+  }
+  if (kind === "parent-training") {
+    drawParentTrainingChartSet(sessions, container, "report-parent-training-chart", {
+      readOnly: true,
+      reportField: "parentTrainingSummary",
+      emptyMessage: "No parent training graph data were collected during this reporting period."
+    });
+  }
+}
+
+function renderReportBehaviorOverviewChart(container, sessions) {
+  container.innerHTML = `
+    <article class="chart-panel">
+      <h4>Behavior frequency</h4>
+      <canvas id="report-behavior-chart" width="760" height="320"></canvas>
+    </article>
+  `;
+  const behaviorCanvas = container.querySelector("#report-behavior-chart");
   if (!behaviorCanvas) return;
   const behaviorSeries = behaviorChartSeries(sessions);
   const allBehaviorSeries = behaviorChartSeries(currentSessions().slice().reverse());
@@ -7603,28 +8080,6 @@ function drawFunderReportCharts(sessions) {
     behaviorPanel.insertAdjacentHTML("beforeend", renderCustomPhaseLineManager(behaviorOverviewGraphKey, behaviorSeries, {
       readOnly: true
     }));
-  }
-
-  const behaviorContainer = reportPreview.querySelector("#report-behavior-charts");
-  if (behaviorContainer) {
-    drawBehaviorChartSet(sessions, behaviorContainer, "report-behavior-chart", {
-      range: {
-        startDate: reportForm.elements.startDate.value,
-        endDate: reportForm.elements.endDate.value,
-        label: "Authorization period"
-      },
-      allSeries: allBehaviorSeries,
-      visibleBehaviorIds: clientBehaviors().map((behavior) => behavior.id)
-    });
-  }
-
-  const parentTrainingContainer = reportPreview.querySelector("#report-parent-training-charts");
-  if (parentTrainingContainer) {
-    drawParentTrainingChartSet(sessions, parentTrainingContainer, "report-parent-training-chart", {
-      readOnly: true,
-      reportField: "parentTrainingSummary",
-      emptyMessage: "No parent training graph data were collected during this reporting period."
-    });
   }
 }
 
@@ -7828,15 +8283,15 @@ function renderBehaviorGraphControls() {
   `;
   behaviorGraphControls.querySelector("#behavior-graph-range-preset")?.addEventListener("change", (event) => {
     state.behaviorGraphRangePreset = event.target.value;
-    renderCharts();
+    reloadGraphSessionsForCurrentRange();
   });
   behaviorGraphControls.querySelector("#behavior-graph-custom-start")?.addEventListener("change", (event) => {
     state.behaviorGraphCustomStart = event.target.value;
-    renderCharts();
+    reloadGraphSessionsForCurrentRange();
   });
   behaviorGraphControls.querySelector("#behavior-graph-custom-end")?.addEventListener("change", (event) => {
     state.behaviorGraphCustomEnd = event.target.value;
-    renderCharts();
+    reloadGraphSessionsForCurrentRange();
   });
   behaviorGraphControls.querySelector("#behavior-graph-show-points")?.addEventListener("change", (event) => {
     state.behaviorGraphShowPoints = event.target.checked;
@@ -9109,6 +9564,12 @@ function currentSessions() {
   if (state.sessionsLoadedScope === "client" && state.sessionsLoadedClientId === client.id) {
     return loadedSessions();
   }
+  if (state.sessionsLoadedScope === "clientRange" && state.sessionsLoadedClientId === client.id) {
+    return loadedSessions();
+  }
+  if (state.sessionsLoadedScope === "clientPage" && state.sessionsLoadedClientId === client.id) {
+    return loadedSessions();
+  }
   return [];
 }
 
@@ -9447,13 +9908,13 @@ function reportFilePreview(files, label) {
         }
         if (assessmentDocumentCanRenderInline(document, ref)) {
           return `
-            <figure class="report-upload-preview">
-              <img src="${escapeHtml(document.url)}" alt="${fileName}">
-              <figcaption>
-                <strong>${escapeHtml(label)} uploaded:</strong>
-                <a href="${escapeHtml(document.url)}" target="_blank" rel="noopener">${fileName}</a>
-              </figcaption>
-            </figure>
+            <details class="report-upload-preview" data-report-attachment-preview>
+              <summary><strong>${escapeHtml(label)} uploaded:</strong> ${fileName}</summary>
+              <p><a href="${escapeHtml(document.url)}" target="_blank" rel="noopener">Open/download ${fileName}</a></p>
+              <div class="report-upload-preview-frame">
+                <img data-report-attachment-src="${escapeHtml(document.url)}" alt="${fileName}" loading="lazy" decoding="async">
+              </div>
+            </details>
           `;
         }
         return `

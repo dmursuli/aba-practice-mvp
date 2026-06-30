@@ -833,6 +833,17 @@ button:focus-visible {
   margin: 0;
 }
 
+.report-upload-preview summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.report-upload-preview-frame {
+  display: grid;
+  place-items: center;
+}
+
 .report-upload-preview img {
   max-width: 100%;
   max-height: 640px;
