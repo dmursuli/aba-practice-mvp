@@ -3428,12 +3428,16 @@ function sanitizePrograms(programs) {
     name: String(program.name || "Program"),
     domain: String(program.domain || "General"),
     status: ["active", "maintenance", "mastered", "paused"].includes(program.status) ? program.status : "active",
+    masteredDate: program.masteredDate || "",
+    masteryDate: program.masteryDate || "",
     objective: String(program.objective || ""),
     targets: (program.targets || []).map((target) => ({
       id: String(target.id),
       name: String(target.name || "Target"),
       status: ["active", "maintenance", "mastered", "paused"].includes(target.status) ? target.status : "active",
       dateAdded: target.dateAdded || "",
+      masteredDate: target.masteredDate || "",
+      masteryDate: target.masteryDate || "",
       maintenanceDate: target.maintenanceDate || "",
       note: target.note || ""
     }))
@@ -3490,6 +3494,7 @@ function sanitizePlanChangeLog(changes) {
     domain: String(change.domain || ""),
     programId: String(change.programId || ""),
     programName: String(change.programName || ""),
+    objective: String(change.objective || ""),
     targetId: String(change.targetId || ""),
     targetName: String(change.targetName || ""),
     fromStatus: String(change.fromStatus || ""),

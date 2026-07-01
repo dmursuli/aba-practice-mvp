@@ -5268,6 +5268,8 @@ function skillAcquisitionReportModel(startDate, endDate) {
   return summarizeSkillAcquisitionReport({
     programs: clientPrograms(),
     planChangeLog: currentClient()?.planChangeLog || [],
+    sessions: currentSessions(),
+    masteryCriteria: currentMasteryCriteria(),
     startDate,
     endDate
   });
@@ -5610,7 +5612,17 @@ function renderPlanReview() {
   }
 
   renderPlanStatusTabs(programs);
-  const visiblePrograms = programs.filter((program) => programHasPlanContentForTab(program, state.activePlanProgramTab));
+  const visiblePrograms = programs
+    .filter((program) => programHasPlanContentForTab(program, state.activePlanProgramTab))
+    .sort((a, b) => {
+      if (state.activePlanProgramTab !== "mastered" && state.activePlanReviewFilter !== "mastered") return 0;
+      const aDate = resolvePlanProgramMasteryDate(a);
+      const bDate = resolvePlanProgramMasteryDate(b);
+      if (aDate && bDate) return bDate.localeCompare(aDate) || String(a.name || "").localeCompare(String(b.name || ""));
+      if (aDate) return -1;
+      if (bDate) return 1;
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
   if (!visiblePrograms.length) {
     planDomainTabs.innerHTML = "";
     planReview.innerHTML = state.activePlanReviewFilter
@@ -5686,6 +5698,101 @@ function normalizePlanStatus(status = "active") {
   if (status === "maintenance") return "mastered";
   if (status === "paused") return "paused";
   return status === "mastered" ? "mastered" : "active";
+}
+
+function normalizeMasteryDate(value = "") {
+  const date = parseDateOnly(value);
+  return date ? dateInputValue(date) : "";
+}
+
+function formatMasteryDate(value = "") {
+  const date = normalizeMasteryDate(value);
+  if (!date) return "Mastery date unavailable";
+  const [, year, month, day] = date.match(/^(\d{4})-(\d{2})-(\d{2})$/) || [];
+  return `${Number(month)}/${Number(day)}/${year}`;
+}
+
+function explicitPlanMasteryDate(record = {}) {
+  return [
+    record.masteredDate,
+    record.masteryDate,
+    record.masteredAt,
+    record.completedAt,
+    record.statusChangedAt,
+    record.maintenanceDate
+  ].map(normalizeMasteryDate).find(Boolean) || "";
+}
+
+function firstPlanMasteryChangeDate({ programId = "", targetId = "", type = "" } = {}) {
+  return (currentClient()?.planChangeLog || [])
+    .filter((change) => (
+      change.toStatus === "mastered"
+      && (!type || change.type === type)
+      && (!programId || change.programId === programId)
+      && (!targetId || change.targetId === targetId)
+    ))
+    .map((change) => normalizeMasteryDate(change.date))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b))[0] || "";
+}
+
+function inferredPlanTargetMasteryDate(programId, targetId) {
+  const criteria = currentMasteryCriteria();
+  const consecutiveSessions = Math.max(1, Number(criteria.consecutiveSessions || 2));
+  const thresholdPercent = Number(criteria.thresholdPercent || 90);
+  const qualifyingSessions = currentSessions()
+    .filter((session) => (session.serviceType || "97153") === "97153")
+    .map((session) => {
+      const date = normalizeMasteryDate(session.date);
+      const entry = targetEntries(session).find((target) => target.programId === programId && target.targetId === targetId);
+      return date && entry ? { session: { ...session, date }, entry } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const aValue = `${a.session.date}T${a.session.startTime || "00:00"}`;
+      const bValue = `${b.session.date}T${b.session.startTime || "00:00"}`;
+      return aValue.localeCompare(bValue);
+    });
+
+  for (let start = 0; start <= qualifyingSessions.length - consecutiveSessions; start += 1) {
+    const window = qualifyingSessions.slice(start, start + consecutiveSessions);
+    if (window.every(({ entry }) => Number(entry.independence || 0) >= thresholdPercent)) {
+      return window[window.length - 1]?.session?.date || "";
+    }
+  }
+  return "";
+}
+
+function resolvePlanTargetMasteryDate(program, target) {
+  return explicitPlanMasteryDate(target)
+    || firstPlanMasteryChangeDate({
+      type: "target-status-changed",
+      programId: program?.id,
+      targetId: target?.id
+    })
+    || firstPlanMasteryChangeDate({
+      type: "program-status-changed",
+      programId: program?.id
+    })
+    || inferredPlanTargetMasteryDate(program?.id, target?.id);
+}
+
+function resolvePlanProgramMasteryDate(program) {
+  const explicitDate = explicitPlanMasteryDate(program)
+    || firstPlanMasteryChangeDate({
+      type: "program-status-changed",
+      programId: program?.id
+    });
+  if (explicitDate) return explicitDate;
+  const requiredTargets = (program?.targets || [])
+    .filter((target) => normalizePlanStatus(target.status || "active") !== "paused");
+  if (!requiredTargets.length) return "";
+  const masteredTargetDates = requiredTargets
+    .filter((target) => normalizePlanStatus(target.status || "active") === "mastered")
+    .map((target) => resolvePlanTargetMasteryDate(program, target))
+    .filter(Boolean);
+  if (masteredTargetDates.length !== requiredTargets.length) return "";
+  return masteredTargetDates.sort((a, b) => b.localeCompare(a))[0] || "";
 }
 
 function bindPlanReviewInputs() {
@@ -5817,6 +5924,15 @@ function filteredTargetsForPlanProgram(program, tab) {
     if (!targetMatchesPlanReviewFilter(program, target)) return false;
     if (state.activePlanReviewFilter) return true;
     return targetMatchesPlanTab(target, tab);
+  }).sort((a, b) => {
+    const shouldSortByMastery = tab === "mastered" || state.activePlanReviewFilter === "mastered";
+    if (!shouldSortByMastery) return 0;
+    const aDate = resolvePlanTargetMasteryDate(program, a);
+    const bDate = resolvePlanTargetMasteryDate(program, b);
+    if (aDate && bDate) return bDate.localeCompare(aDate) || String(a.name || "").localeCompare(String(b.name || ""));
+    if (aDate) return -1;
+    if (bDate) return 1;
+    return String(a.name || "").localeCompare(String(b.name || ""));
   });
 }
 
@@ -5894,7 +6010,10 @@ function renderPlanProgram(program, tab = state.activePlanProgramTab) {
         <textarea rows="3" data-program-objective="${program.id}" aria-label="${program.name} objective">${escapeHtml(program.objective || "")}</textarea>
       </label>
       <div class="plan-target-list">
-        ${visibleTargets.length ? visibleTargets.map((target) => `
+        ${visibleTargets.length ? visibleTargets.map((target) => {
+          const targetStatus = normalizePlanStatus(target.status || "active");
+          const masteryDate = targetStatus === "mastered" ? resolvePlanTargetMasteryDate(program, target) : "";
+          return `
           <div class="plan-target ${masteryReviewClass(program, target)}" data-review-state="${escapeHtml(masteryReviewForTarget(program.id, target.id).state)}" data-target-anchor="${escapeHtml(program.id)}:${escapeHtml(target.id)}">
             <label>
               Target
@@ -5912,9 +6031,11 @@ function renderPlanProgram(program, tab = state.activePlanProgramTab) {
               BCBA note
               <input type="text" value="${escapeHtml(target.note || "")}" data-target-note="${program.id}:${target.id}" placeholder="Optional">
             </label>
+            ${targetStatus === "mastered" ? `<div class="muted">Mastered: ${escapeHtml(formatMasteryDate(masteryDate))}</div>` : ""}
             ${renderMasteryReviewHint(program, target)}
           </div>
-        `).join("") : '<p class="muted">No targets in this status view.</p>'}
+        `;
+        }).join("") : '<p class="muted">No targets in this status view.</p>'}
       </div>
     </section>
   `;
@@ -6455,12 +6576,18 @@ async function handlePlanStatusChange(event) {
     const previousStatus = normalizePlanStatus(program.status || "active");
     program.status = programControl.value;
     if (programControl.value === "mastered") {
+      const transitionDate = new Date().toISOString().slice(0, 10);
       (program.targets || []).forEach((target) => {
         if (normalizePlanStatus(target.status || "active") !== "paused") {
+          if (!explicitPlanMasteryDate(target)) {
+            target.maintenanceDate = resolvePlanTargetMasteryDate(program, target) || transitionDate;
+          }
           target.status = "mastered";
-          if (!target.maintenanceDate) target.maintenanceDate = new Date().toISOString().slice(0, 10);
         }
       });
+      if (!explicitPlanMasteryDate(program)) {
+        program.masteredDate = resolvePlanProgramMasteryDate(program) || transitionDate;
+      }
     } else if (programControl.value === "paused") {
       (program.targets || []).forEach((target) => {
         if (normalizePlanStatus(target.status || "active") !== "mastered") {
@@ -6474,6 +6601,7 @@ async function handlePlanStatusChange(event) {
         domain: program.domain,
         programId: program.id,
         programName: program.name,
+        objective: program.objective || "",
         fromStatus: previousStatus,
         toStatus: programControl.value
       } : null);
@@ -6492,8 +6620,8 @@ async function handlePlanStatusChange(event) {
 
   const previousStatus = normalizePlanStatus(target.status || "active");
   target.status = control.value;
-  if (control.value === "mastered" && !target.maintenanceDate) {
-    target.maintenanceDate = new Date().toISOString().slice(0, 10);
+  if (control.value === "mastered" && !explicitPlanMasteryDate(target)) {
+    target.maintenanceDate = resolvePlanTargetMasteryDate(program, target) || new Date().toISOString().slice(0, 10);
   }
 
   try {
@@ -6502,6 +6630,7 @@ async function handlePlanStatusChange(event) {
       domain: program.domain,
       programId: program.id,
       programName: program.name,
+      objective: program.objective || "",
       targetId: target.id,
       targetName: target.name,
       fromStatus: previousStatus,

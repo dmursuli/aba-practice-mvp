@@ -179,6 +179,137 @@ function normalizeSkillStatus(status = "active") {
   return status === "mastered" ? "mastered" : "active";
 }
 
+const masteryDateFields = [
+  "masteredDate",
+  "masteryDate",
+  "masteredAt",
+  "completedAt",
+  "statusChangedAt",
+  "maintenanceDate"
+];
+
+function normalizeDateOnly(value = "") {
+  const text = sanitizeText(value);
+  if (!text) return "";
+  const candidate = text.includes("T") ? text.slice(0, 10) : text;
+  const match = candidate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return "";
+  const date = new Date(`${candidate}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? "" : candidate;
+}
+
+function explicitMasteryDate(source = {}) {
+  for (const field of masteryDateFields) {
+    const date = normalizeDateOnly(source?.[field]);
+    if (date) return date;
+  }
+  return "";
+}
+
+function formatMasteryDate(value = "") {
+  const date = normalizeDateOnly(value);
+  if (!date) return "Mastery date unavailable";
+  const [, year, month, day] = date.match(/^(\d{4})-(\d{2})-(\d{2})$/) || [];
+  return `${Number(month)}/${Number(day)}/${year}`;
+}
+
+function isDateInRange(value = "", startDate = "", endDate = "") {
+  const date = normalizeDateOnly(value);
+  if (!date) return false;
+  return (!startDate || date >= startDate) && (!endDate || date <= endDate);
+}
+
+function firstChangeDate(planChangeLog = [], predicate = () => false) {
+  return (planChangeLog || [])
+    .filter((change) => predicate(change))
+    .map((change) => normalizeDateOnly(change?.date))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b))[0] || "";
+}
+
+function targetEntriesFromSession(session = {}) {
+  return (session.programs || []).flatMap((program) => {
+    if (Array.isArray(program.targets)) {
+      return program.targets.map((target) => ({ ...target, programId: program.programId }));
+    }
+    return [{ ...program, targetId: program.targetId || program.programId }];
+  }).filter((target) => target.targetId && target.targetId !== target.programId);
+}
+
+function inferTargetMasteryDateFromSessions({
+  sessions = [],
+  programId = "",
+  targetId = "",
+  masteryCriteria = {}
+} = {}) {
+  const consecutiveSessions = Math.max(1, Number(masteryCriteria.consecutiveSessions || 2));
+  const thresholdPercent = Number(masteryCriteria.thresholdPercent || 90);
+  const qualifying = (sessions || [])
+    .filter((session) => (session.serviceType || "97153") === "97153")
+    .map((session) => {
+      const date = normalizeDateOnly(session?.date);
+      if (!date) return null;
+      const entry = targetEntriesFromSession(session).find((target) => (
+        sanitizeText(target.programId) === sanitizeText(programId)
+        && sanitizeText(target.targetId) === sanitizeText(targetId)
+      ));
+      if (!entry) return null;
+      return {
+        session: { ...session, date },
+        entry
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const aValue = `${a.session.date}T${a.session.startTime || "00:00"}`;
+      const bValue = `${b.session.date}T${b.session.startTime || "00:00"}`;
+      return aValue.localeCompare(bValue);
+    });
+
+  for (let start = 0; start <= qualifying.length - consecutiveSessions; start += 1) {
+    const window = qualifying.slice(start, start + consecutiveSessions);
+    if (window.every(({ entry }) => Number(entry.independence || 0) >= thresholdPercent)) {
+      return window[window.length - 1]?.session?.date || "";
+    }
+  }
+  return "";
+}
+
+function resolveTargetMasteryDate({
+  target = {},
+  program = {},
+  planChangeLog = [],
+  sessions = [],
+  masteryCriteria = {}
+} = {}) {
+  return explicitMasteryDate(target)
+    || firstChangeDate(planChangeLog, (change) => (
+      change?.type === "target-status-changed"
+      && change?.toStatus === "mastered"
+      && sanitizeText(change.targetId) === sanitizeText(target?.id)
+      && sanitizeText(change.programId) === sanitizeText(program?.id)
+    ))
+    || firstChangeDate(planChangeLog, (change) => (
+      change?.type === "program-status-changed"
+      && change?.toStatus === "mastered"
+      && sanitizeText(change.programId) === sanitizeText(program?.id)
+    ))
+    || inferTargetMasteryDateFromSessions({
+      sessions,
+      programId: program?.id,
+      targetId: target?.id,
+      masteryCriteria
+    });
+}
+
+function latestDate(values = []) {
+  return values.map(normalizeDateOnly).filter(Boolean).sort((a, b) => b.localeCompare(a))[0] || "";
+}
+
+function earliestDate(values = []) {
+  return values.map(normalizeDateOnly).filter(Boolean).sort((a, b) => a.localeCompare(b))[0] || "";
+}
+
 export function skillAcquisitionGoalIdentity(goal = {}) {
   return sanitizeText(goal.programId || goal.goalId)
     || [
@@ -200,12 +331,15 @@ export function skillAcquisitionTargetIdentity(target = {}) {
 export function summarizeSkillAcquisitionReport({
   programs = [],
   planChangeLog = [],
+  sessions = [],
+  masteryCriteria = {},
   startDate = "",
   endDate = ""
 } = {}) {
   const goalMap = new Map();
   const goalChangeMap = new Map();
   const currentProgramMap = new Map();
+  const targetEntriesByProgram = new Map();
   const targetStatusMap = {
     mastered: new Map(),
     paused: new Map(),
@@ -221,11 +355,18 @@ export function summarizeSkillAcquisitionReport({
       goalName: sanitizeText(program?.name),
       domain: sanitizeText(program?.domain || "General"),
       objective: sanitizeText(program?.objective),
-      status: programStatus
+      status: programStatus,
+      masteredDate: explicitMasteryDate(program)
+        || firstChangeDate(planChangeLog, (change) => (
+          change?.type === "program-status-changed"
+          && change?.toStatus === "mastered"
+          && sanitizeText(change.programId) === sanitizeText(program?.id)
+        ))
     };
     const goalKey = skillAcquisitionGoalIdentity(programEntry);
     goalMap.set(goalKey, programEntry);
     if (programEntry.programId) currentProgramMap.set(programEntry.programId, programEntry);
+    const programTargetEntries = [];
     (program?.targets || []).forEach((target) => {
       const targetStatus = normalizeSkillStatus(target?.status || "active");
       const effectiveStatus = programStatus === "mastered" && targetStatus !== "paused"
@@ -233,6 +374,9 @@ export function summarizeSkillAcquisitionReport({
         : programStatus === "paused" && targetStatus !== "mastered"
           ? "paused"
           : targetStatus;
+      const masteredDate = effectiveStatus === "mastered"
+        ? resolveTargetMasteryDate({ target, program, planChangeLog, sessions, masteryCriteria })
+        : "";
       const targetEntry = {
         targetId: sanitizeText(target?.id),
         targetName: sanitizeText(target?.name),
@@ -240,21 +384,20 @@ export function summarizeSkillAcquisitionReport({
         programName: sanitizeText(program?.name),
         domain: sanitizeText(program?.domain || "General"),
         objective: sanitizeText(program?.objective),
-        status: effectiveStatus
+        status: effectiveStatus,
+        masteredDate
       };
+      programTargetEntries.push(targetEntry);
       targetStatusMap[effectiveStatus]?.set(skillAcquisitionTargetIdentity(targetEntry), targetEntry);
     });
+    targetEntriesByProgram.set(programEntry.programId, programTargetEntries);
   });
 
-  const masteryHistoryInRange = (planChangeLog || []).filter((change) => (
-    (!startDate || change?.date >= startDate)
-    && (!endDate || change?.date <= endDate)
-  ));
-
-  masteryHistoryInRange
+  (planChangeLog || [])
     .filter((change) => (
       change?.type === "program-status-changed"
       && change?.toStatus === "mastered"
+      && isDateInRange(change?.date, startDate, endDate)
     ))
     .forEach((change) => {
       const entry = {
@@ -271,80 +414,57 @@ export function summarizeSkillAcquisitionReport({
       goalChangeMap.set(skillAcquisitionGoalIdentity(entry), entry);
     });
 
-  const masteredTargetIds = new Set([...targetStatusMap.mastered.values()].map((target) => target.targetId).filter(Boolean));
-  const fallbackGoalMap = new Map();
-  const masteredTargetChangeMap = new Map();
-  masteryHistoryInRange
-    .filter((change) => change?.type === "target-status-changed" && change?.toStatus === "mastered")
-    .forEach((change) => {
-      const targetId = sanitizeText(change.targetId);
-      const programId = sanitizeText(change.programId);
-      if (!programId || !targetId || !masteredTargetIds.has(targetId)) return;
-      const currentGoal = currentProgramMap.get(programId);
-      const targetEntry = {
-        targetId,
-        targetName: sanitizeText(change.targetName),
-        programId,
-        programName: sanitizeText(change.programName) || sanitizeText(currentGoal?.programName),
-        domain: sanitizeText(change.domain || currentGoal?.domain || "General"),
-        objective: sanitizeText(change.objective || currentGoal?.objective || change.programName),
-        masteredDate: sanitizeText(change.date),
-        status: "mastered",
-        assumption: ""
-      };
-      masteredTargetChangeMap.set(skillAcquisitionTargetIdentity(targetEntry), targetEntry);
-      const entry = {
-        programId,
-        goalId: programId,
-        programName: sanitizeText(change.programName) || sanitizeText(currentGoal?.programName),
-        goalName: sanitizeText(change.programName) || sanitizeText(currentGoal?.goalName),
-        domain: sanitizeText(change.domain || currentGoal?.domain || "General"),
-        objective: sanitizeText(change.objective || currentGoal?.objective || change.programName),
-        masteredDate: sanitizeText(change.date),
-        status: currentGoal?.status || "active",
-        assumption: "target-mastery-fallback"
-      };
-      const key = skillAcquisitionGoalIdentity(entry);
-      if (!goalChangeMap.has(key) && !fallbackGoalMap.has(key)) {
-        fallbackGoalMap.set(key, entry);
-      }
-    });
-  fallbackGoalMap.forEach((entry, key) => goalChangeMap.set(key, entry));
+  const masteredTargets = [...targetStatusMap.mastered.values()]
+    .sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName) || a.targetName.localeCompare(b.targetName));
+  const masteredTargetsDuringPeriod = masteredTargets
+    .filter((target) => isDateInRange(target.masteredDate, startDate, endDate))
+    .sort((a, b) => (a.masteredDate || "").localeCompare(b.masteredDate || "") || a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName) || a.targetName.localeCompare(b.targetName));
 
   goalMap.forEach((goal, key) => {
     if (goalChangeMap.has(key)) return;
-    if (goal.status !== "mastered") return;
-    const hasHistory = (planChangeLog || []).some((change) => (
-      sanitizeText(change.programId) === goal.programId
-      && (change?.type === "program-status-changed" || change?.type === "target-status-changed")
-    ));
-    if (hasHistory) return;
-    goalChangeMap.set(key, {
-      ...goal,
-      masteredDate: "",
-      assumption: "current-status-fallback"
-    });
+    const programTargets = targetEntriesByProgram.get(goal.programId) || [];
+    const requiredTargets = programTargets.filter((target) => target.status !== "paused");
+    const masteredRequiredTargets = requiredTargets.filter((target) => target.status === "mastered");
+    const explicitGoalDate = normalizeDateOnly(goal.masteredDate);
+    const allRequiredTargetsMastered = Boolean(requiredTargets.length)
+      && requiredTargets.length === masteredRequiredTargets.length;
+    const allRequiredTargetDates = masteredRequiredTargets.map((target) => target.masteredDate).filter(Boolean);
+    const finalRequiredTargetDate = allRequiredTargetsMastered && allRequiredTargetDates.length === masteredRequiredTargets.length
+      ? latestDate(allRequiredTargetDates)
+      : "";
+    const goalMasteryDate = explicitGoalDate || finalRequiredTargetDate;
+    if (goal.status === "mastered" && isDateInRange(goalMasteryDate, startDate, endDate)) {
+      goalChangeMap.set(key, {
+        ...goal,
+        masteredDate: goalMasteryDate,
+        assumption: explicitGoalDate ? "" : "all-targets-mastered-fallback"
+      });
+    }
   });
 
-  targetStatusMap.mastered.forEach((target, key) => {
-    if (masteredTargetChangeMap.has(key)) return;
-    const hasHistory = (planChangeLog || []).some((change) => (
-      change?.type === "target-status-changed"
-      && sanitizeText(change.targetId) === target.targetId
-    ));
-    if (hasHistory) return;
-    masteredTargetChangeMap.set(key, {
-      ...target,
-      masteredDate: "",
-      assumption: "current-status-fallback"
-    });
+  const fallbackGoalTargetDates = masteredTargetsDuringPeriod.reduce((map, target) => {
+    const programId = sanitizeText(target.programId);
+    if (!programId) return map;
+    if (!map.has(programId)) map.set(programId, []);
+    map.get(programId).push(target.masteredDate);
+    return map;
+  }, new Map());
+  fallbackGoalTargetDates.forEach((dates, programId) => {
+    const currentGoal = currentProgramMap.get(programId);
+    if (!currentGoal) return;
+    const entry = {
+      ...currentGoal,
+      masteredDate: earliestDate(dates),
+      status: currentGoal.status || "active",
+      assumption: "target-mastery-fallback"
+    };
+    const key = skillAcquisitionGoalIdentity(entry);
+    if (!goalChangeMap.has(key)) goalChangeMap.set(key, entry);
   });
 
   const masteredGoalsDuringPeriod = [...goalChangeMap.values()]
-    .sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName));
-  const masteredTargetsDuringPeriod = [...masteredTargetChangeMap.values()]
-    .sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName) || a.targetName.localeCompare(b.targetName));
-  const masteredTargets = [...targetStatusMap.mastered.values()].sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName) || a.targetName.localeCompare(b.targetName));
+    .filter((goal) => isDateInRange(goal.masteredDate, startDate, endDate))
+    .sort((a, b) => (a.masteredDate || "").localeCompare(b.masteredDate || "") || a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName));
   const onHoldTargets = [...targetStatusMap.paused.values()].sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName) || a.targetName.localeCompare(b.targetName));
   const activeTargets = [...targetStatusMap.active.values()].sort((a, b) => a.domain.localeCompare(b.domain) || a.programName.localeCompare(b.programName) || a.targetName.localeCompare(b.targetName));
   const domainBreakdown = buildSkillDomainBreakdown({
@@ -377,10 +497,10 @@ export function summarizeSkillAcquisitionReport({
     },
     totals: {
       masteredGoals: masteredGoalsDuringPeriod.length,
-      masteredTargets: masteredTargets.length,
+      masteredTargets: masteredTargetsDuringPeriod.length,
       onHoldTargets: onHoldTargets.length,
       activeTargets: activeTargets.length,
-      totalTargets: masteredTargets.length + onHoldTargets.length + activeTargets.length
+      totalTargets: masteredTargetsDuringPeriod.length + onHoldTargets.length + activeTargets.length
     }
   };
 }
@@ -479,19 +599,26 @@ function buildSkillDomainBreakdown({
 
 function skillGoalLabel(goal = {}) {
   const heading = sanitizeText(goal.domain) ? `${sanitizeText(goal.domain)}: ` : "";
-  return `${heading}${sanitizeText(goal.objective || goal.programName || goal.goalName)}`.trim();
+  return `${heading}${sanitizeText(goal.objective || goal.programName || goal.goalName)} - Mastered: ${formatMasteryDate(goal.masteredDate)}`.trim();
 }
 
-function skillTargetLabel(target = {}) {
+function skillTargetLabel(target = {}, options = {}) {
   const prefix = [sanitizeText(target.programName), sanitizeText(target.domain)].filter(Boolean).join(" / ");
-  return prefix
+  const label = prefix
     ? `${prefix}: ${sanitizeText(target.targetName)}`
     : sanitizeText(target.targetName);
+  return options.includeMasteryDate
+    ? `${label} - Mastered: ${formatMasteryDate(target.masteredDate)}`
+    : label;
 }
 
 export function buildEditableSkillAcquisitionSummary(model = {}) {
   const masteredGoals = Array.isArray(model.masteredGoalsDuringPeriod) ? model.masteredGoalsDuringPeriod : [];
-  const masteredTargets = Array.isArray(model.masteredTargets) ? model.masteredTargets : [];
+  const masteredTargets = Array.isArray(model.masteredTargetsDuringPeriod)
+    ? model.masteredTargetsDuringPeriod
+    : Array.isArray(model.masteredTargets)
+      ? model.masteredTargets
+      : [];
   const onHoldTargets = Array.isArray(model.onHoldTargets) ? model.onHoldTargets : [];
   const activeTargets = Array.isArray(model.activeTargets) ? model.activeTargets : [];
   const domainBreakdown = Array.isArray(model.domainBreakdown) ? model.domainBreakdown : [];
@@ -538,7 +665,7 @@ export function buildEditableSkillAcquisitionSummary(model = {}) {
 
   lines.push("", "Mastered Skill Acquisition Targets:");
   if (masteredTargets.length) {
-    masteredTargets.forEach((target) => lines.push(`- ${skillTargetLabel(target)}`));
+    masteredTargets.forEach((target) => lines.push(`- ${skillTargetLabel(target, { includeMasteryDate: true })}`));
   } else {
     lines.push("No skill acquisition targets were mastered during this authorization period.");
   }

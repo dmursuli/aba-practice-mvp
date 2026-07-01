@@ -194,7 +194,7 @@ test("skill acquisition summary groups targets by status and deduplicates master
   });
 });
 
-test("skill acquisition summary falls back to current mastered program status when change dates are unavailable", () => {
+test("skill acquisition summary does not count undated legacy mastery as mastered during period", () => {
   const model = summarizeSkillAcquisitionReport({
     programs: [
       {
@@ -211,8 +211,98 @@ test("skill acquisition summary falls back to current mastered program status wh
     endDate: "2026-06-30"
   });
 
+  assert.equal(model.masteredGoalsDuringPeriod.length, 0);
+  assert.equal(model.masteredTargetsDuringPeriod.length, 0);
+  assert.equal(model.masteredTargets.length, 1);
+  assert.equal(model.masteredTargets[0].masteredDate, "");
+});
+
+test("persisted skill target mastery dates display and are not replaced by later session history", () => {
+  const model = summarizeSkillAcquisitionReport({
+    programs: [
+      {
+        id: "program-1",
+        name: "LRFFC",
+        domain: "Intraverbals/LRFFC's",
+        objective: "Will identify objects by feature.",
+        status: "active",
+        targets: [{ id: "target-1", name: "What has wheels?", status: "mastered", maintenanceDate: "2026-05-21" }]
+      }
+    ],
+    sessions: [
+      {
+        id: "session-1",
+        date: "2026-06-03",
+        serviceType: "97153",
+        programs: [{ programId: "program-1", targets: [{ targetId: "target-1", independence: 100 }] }]
+      },
+      {
+        id: "session-2",
+        date: "2026-06-04",
+        serviceType: "97153",
+        programs: [{ programId: "program-1", targets: [{ targetId: "target-1", independence: 100 }] }]
+      }
+    ],
+    startDate: "2026-05-01",
+    endDate: "2026-05-31"
+  });
+  const text = buildEditableSkillAcquisitionSummary(model);
+
+  assert.equal(model.masteredTargetsDuringPeriod.length, 1);
+  assert.equal(model.masteredTargetsDuringPeriod[0].masteredDate, "2026-05-21");
+  assert.match(text, /What has wheels\? - Mastered: 5\/21\/2026/);
+});
+
+test("legacy mastered skill targets infer mastery dates from first mastery session window", () => {
+  const model = summarizeSkillAcquisitionReport({
+    programs: [
+      {
+        id: "program-1",
+        name: "Functional Communication: Manding",
+        domain: "Functional Communication",
+        objective: "Will request help independently.",
+        status: "active",
+        targets: [{ id: "target-1", name: "Request help", status: "mastered" }]
+      }
+    ],
+    sessions: [
+      {
+        id: "session-1",
+        date: "2026-06-01",
+        serviceType: "97153",
+        programs: [{ programId: "program-1", targets: [{ targetId: "target-1", independence: 80 }] }]
+      },
+      {
+        id: "session-2",
+        date: "2026-06-03",
+        serviceType: "97153",
+        programs: [{ programId: "program-1", targets: [{ targetId: "target-1", independence: 90 }] }]
+      },
+      {
+        id: "session-3",
+        date: "2026-06-04",
+        serviceType: "97153",
+        programs: [{ programId: "program-1", targets: [{ targetId: "target-1", independence: 95 }] }]
+      },
+      {
+        id: "session-4",
+        date: "2026-06-20",
+        serviceType: "97153",
+        programs: [{ programId: "program-1", targets: [{ targetId: "target-1", independence: 100 }] }]
+      }
+    ],
+    masteryCriteria: { thresholdPercent: 90, consecutiveSessions: 2 },
+    startDate: "2026-06-01",
+    endDate: "2026-06-30"
+  });
+  const text = buildEditableSkillAcquisitionSummary(model);
+
+  assert.equal(model.masteredTargetsDuringPeriod.length, 1);
+  assert.equal(model.masteredTargetsDuringPeriod[0].masteredDate, "2026-06-04");
   assert.equal(model.masteredGoalsDuringPeriod.length, 1);
-  assert.equal(model.masteredGoalsDuringPeriod[0].assumption, "current-status-fallback");
+  assert.equal(model.masteredGoalsDuringPeriod[0].masteredDate, "2026-06-04");
+  assert.match(text, /Functional Communication: Will request help independently\. - Mastered: 6\/4\/2026/);
+  assert.match(text, /Request help - Mastered: 6\/4\/2026/);
 });
 
 test("multiple mastered targets within the same goal count as one mastered goal when using target-mastery fallback", () => {
@@ -661,6 +751,13 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /syncSkillAcquisitionSummaryField/);
   assert.match(appSource, /skillAcquisitionSummary/);
   assert.match(appSource, /Skill Acquisition Goal and Target Summary/);
+  assert.match(appSource, /function explicitPlanMasteryDate/);
+  assert.match(appSource, /target\.maintenanceDate = resolvePlanTargetMasteryDate\(program, target\)/);
+  assert.match(appSource, /program\.masteredDate = resolvePlanProgramMasteryDate\(program\)/);
+  assert.match(appSource, /Mastered: \$\{escapeHtml\(formatMasteryDate\(masteryDate\)\)\}/);
+  assert.match(serverSource, /masteredDate: program\.masteredDate \|\| ""/);
+  assert.match(serverSource, /masteredDate: target\.masteredDate \|\| ""/);
+  assert.match(serverSource, /objective: String\(change\.objective \|\| ""\)/);
   assert.doesNotMatch(appSource, /<h4>Active Skill Acquisition Targets<\/h4>/);
   assert.match(appSource, /Draft saved/);
   assert.match(appSource, /Saved report draft restored/);
