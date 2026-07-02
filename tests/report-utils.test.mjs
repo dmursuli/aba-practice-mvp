@@ -144,6 +144,46 @@ test("custom environmental phase lines are normalized with stable style and type
   });
 });
 
+test("treatment phase line normalization keeps the latest saved override only", () => {
+  const lines = sanitizeCustomPhaseLines({
+    "behavior:aggression": [
+      {
+        id: "behavior:aggression:treatment",
+        graphId: "behavior:aggression",
+        graphType: "behavior",
+        behaviorId: "aggression",
+        date: "2026-04-18",
+        label: "Treatment",
+        lineStyle: "solid",
+        phaseType: "treatment",
+        source: "auto",
+        createdAt: "2026-06-28T10:00:00.000Z",
+        updatedAt: "2026-06-28T10:00:00.000Z"
+      },
+      {
+        id: "behavior:aggression:treatment",
+        graphId: "behavior:aggression",
+        graphType: "behavior",
+        behaviorId: "aggression",
+        date: "2026-04-22",
+        label: "Treatment package updated",
+        lineStyle: "dashed",
+        note: "BCBA adjusted the clinically appropriate start date.",
+        phaseType: "treatment",
+        source: "user",
+        createdAt: "2026-06-28T10:00:00.000Z",
+        updatedAt: "2026-06-29T10:00:00.000Z"
+      }
+    ]
+  });
+
+  assert.equal(lines["behavior:aggression"].filter((line) => line.phaseType === "treatment").length, 1);
+  assert.equal(lines["behavior:aggression"][0].date, "2026-04-22");
+  assert.equal(lines["behavior:aggression"][0].label, "Treatment package updated");
+  assert.equal(lines["behavior:aggression"][0].lineStyle, "dashed");
+  assert.equal(lines["behavior:aggression"][0].source, "user");
+});
+
 test("skill acquisition summary groups targets by status and deduplicates mastered goals by program id", () => {
   const model = summarizeSkillAcquisitionReport({
     programs: [

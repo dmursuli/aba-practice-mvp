@@ -391,6 +391,66 @@ test('graph phase line updates persist server-side and survive a fresh data load
   assert.deepEqual(reloadedClient.profile.graphPhaseLines, graphPhaseLines);
 });
 
+test('graph phase line update deduplicates stale treatment records server-side', async () => {
+  resetRuntimeState();
+  await resetDb();
+  const { cookie } = await loginPasswordOnly();
+  const createClientResult = await request('/api/clients', {
+    method: 'POST',
+    cookie,
+    body: {
+      name: 'Phase Line Dedupe Client',
+      agency: 'Triumph ABA'
+    }
+  });
+  assert.equal(createClientResult.response.status, 201);
+  const clientId = createClientResult.json.id;
+
+  const updateResult = await request(`/api/clients/${clientId}/graph-phase-lines`, {
+    method: 'PUT',
+    cookie,
+    body: {
+      graphPhaseLines: {
+        'behavior:aggression': [
+          {
+            id: 'behavior:aggression:treatment',
+            graphId: 'behavior:aggression',
+            graphType: 'behavior',
+            behaviorId: 'aggression',
+            date: '2026-04-18',
+            label: 'Treatment',
+            lineStyle: 'solid',
+            phaseType: 'treatment',
+            source: 'auto',
+            updatedAt: '2026-06-28T10:00:00.000Z'
+          },
+          {
+            id: 'behavior:aggression:treatment',
+            graphId: 'behavior:aggression',
+            graphType: 'behavior',
+            behaviorId: 'aggression',
+            date: '2026-04-22',
+            label: 'Treatment package updated',
+            lineStyle: 'dashed',
+            note: 'BCBA override',
+            phaseType: 'treatment',
+            source: 'user',
+            updatedAt: '2026-06-29T10:00:00.000Z'
+          }
+        ]
+      }
+    }
+  });
+
+  assert.equal(updateResult.response.status, 200);
+  const persistedLines = updateResult.json.profile.graphPhaseLines['behavior:aggression'];
+  assert.equal(persistedLines.length, 1);
+  assert.equal(persistedLines[0].date, '2026-04-22');
+  assert.equal(persistedLines[0].label, 'Treatment package updated');
+  assert.equal(persistedLines[0].lineStyle, 'dashed');
+  assert.equal(persistedLines[0].source, 'user');
+});
+
 test('absolute session expiration requires re-login even with activity', async () => {
   resetRuntimeState();
   await resetDb();

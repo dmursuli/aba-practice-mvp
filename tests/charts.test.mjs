@@ -392,6 +392,11 @@ test('graph layout uses responsive width without data-length based canvas sizing
   assert.match(appSource, /behavior-graph-show-points/);
   assert.match(appSource, /behavior-graph-analyze-all/);
   assert.match(appSource, /function graphTreatmentPhaseLine/);
+  assert.match(appSource, /function setPhaseLinesForGraph/);
+  assert.match(appSource, /selectTreatmentPhaseRecord\(storedPhaseLinesForGraph\(graphKey\)\)/);
+  assert.match(appSource, /setTreatmentPhaseOverrideForGraph\(graphKey, null\)/);
+  assert.doesNotMatch(appSource, /deleted:\s*true\s*\}\)\);\s*markReportDraftDirty\(\);\s*await persistGraphPhaseLineUiChange/);
+  assert.match(appSource, /await persistGraphPhaseLineUiChange\(\{[\s\S]*successMessage: `Updated treatment phase line "\$\{label\}"\.`/);
   assert.match(appSource, /data-edit-treatment-phase-line/);
   assert.match(appSource, /data-hide-treatment-phase-line/);
   assert.match(appSource, /data-reset-treatment-phase-line/);

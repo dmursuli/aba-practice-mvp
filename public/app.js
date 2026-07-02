@@ -4621,8 +4621,39 @@ function storedPhaseLinesForGraph(graphKey) {
   return sanitizeCustomPhaseLines(state.reportCustomPhaseLines)[graphKey] || [];
 }
 
+function selectTreatmentPhaseRecord(lines = []) {
+  const records = (Array.isArray(lines) ? lines : [])
+    .filter((line) => line?.phaseType === "treatment" && !line.deleted);
+  if (!records.length) return null;
+  return records.slice().sort((a, b) => {
+    const updated = (b.updatedAt || "").localeCompare(a.updatedAt || "");
+    if (updated) return updated;
+    const sourcePriority = Number(b.source === "user") - Number(a.source === "user");
+    if (sourcePriority) return sourcePriority;
+    const created = (b.createdAt || "").localeCompare(a.createdAt || "");
+    if (created) return created;
+    return (a.date || "").localeCompare(b.date || "");
+  })[0] || null;
+}
+
+function normalizeGraphPhaseLineStore(source = {}) {
+  const sanitized = sanitizeCustomPhaseLines(source);
+  return Object.entries(sanitized).reduce((result, [graphKey, lines]) => {
+    const treatmentLine = selectTreatmentPhaseRecord(lines);
+    const nonTreatmentLines = lines.filter((line) => line.phaseType !== "treatment");
+    const graphLines = sanitizeCustomPhaseLines({
+      [graphKey]: [
+        ...nonTreatmentLines,
+        ...(treatmentLine ? [treatmentLine] : [])
+      ]
+    })[graphKey] || [];
+    if (graphLines.length) result[graphKey] = graphLines;
+    return result;
+  }, {});
+}
+
 function graphPhaseLineStoreForClient(client = currentClient()) {
-  return sanitizeCustomPhaseLines(client?.profile?.graphPhaseLines || {});
+  return normalizeGraphPhaseLineStore(client?.profile?.graphPhaseLines || {});
 }
 
 function syncGraphPhaseLineState(client = currentClient()) {
@@ -4634,28 +4665,43 @@ function customPhaseLinesForGraph(graphKey) {
 }
 
 function treatmentPhaseRecordForGraph(graphKey) {
-  return storedPhaseLinesForGraph(graphKey).find((line) => line.phaseType === "treatment") || null;
+  return selectTreatmentPhaseRecord(storedPhaseLinesForGraph(graphKey));
+}
+
+function setPhaseLinesForGraph(graphKey, lines) {
+  const currentStore = normalizeGraphPhaseLineStore(state.reportCustomPhaseLines);
+  const sanitizedLines = sanitizeCustomPhaseLines({ [graphKey]: Array.isArray(lines) ? lines : [] })[graphKey] || [];
+  const treatmentLine = selectTreatmentPhaseRecord(sanitizedLines);
+  const nonTreatmentLines = sanitizedLines.filter((line) => line.phaseType !== "treatment");
+  const graphLines = sanitizeCustomPhaseLines({
+    [graphKey]: [
+      ...nonTreatmentLines,
+      ...(treatmentLine ? [treatmentLine] : [])
+    ]
+  })[graphKey] || [];
+  if (graphLines.length) {
+    currentStore[graphKey] = graphLines;
+  } else {
+    delete currentStore[graphKey];
+  }
+  state.reportCustomPhaseLines = currentStore;
 }
 
 function setCustomPhaseLinesForGraph(graphKey, lines) {
   const treatmentOverride = treatmentPhaseRecordForGraph(graphKey);
-  state.reportCustomPhaseLines = {
-    ...sanitizeCustomPhaseLines(state.reportCustomPhaseLines),
-    [graphKey]: sanitizeCustomPhaseLines({
-      [graphKey]: [
-        ...(Array.isArray(lines) ? lines : []),
-        ...(treatmentOverride ? [treatmentOverride] : [])
-      ]
-    })[graphKey] || []
-  };
+  const nonTreatmentLines = (Array.isArray(lines) ? lines : []).filter((line) => line?.phaseType !== "treatment");
+  setPhaseLinesForGraph(graphKey, [
+    ...nonTreatmentLines,
+    ...(treatmentOverride ? [treatmentOverride] : [])
+  ]);
 }
 
 function setTreatmentPhaseOverrideForGraph(graphKey, line) {
-  const nextLines = [
-    ...customPhaseLinesForGraph(graphKey),
+  const nonTreatmentLines = storedPhaseLinesForGraph(graphKey).filter((item) => item.phaseType !== "treatment");
+  setPhaseLinesForGraph(graphKey, [
+    ...nonTreatmentLines,
     ...(line ? [line] : [])
-  ];
-  setCustomPhaseLinesForGraph(graphKey, nextLines);
+  ]);
 }
 
 function graphPhaseLineMeta(graphKey) {
@@ -7472,7 +7518,31 @@ function handleGraphAnalysisClick(event) {
     : "Graph interpretation inserted into the progress summary.";
 }
 
-function handleGraphPhaseLineClick(event) {
+async function persistGraphPhaseLineUiChange({ successMessage = "", failureMessage = "Could not save phase line changes", control = null } = {}) {
+  const controlElement = control?.closest?.("button, input") || control;
+  if (controlElement && "disabled" in controlElement) controlElement.disabled = true;
+  try {
+    await persistGraphPhaseLinesForCurrentClient();
+    if (successMessage && graphsMessage) {
+      graphsMessage.textContent = successMessage;
+      if (funderExportStatus) funderExportStatus.textContent = successMessage;
+    }
+    rerenderGraphSurfaces();
+    return true;
+  } catch (error) {
+    syncGraphPhaseLineState(currentClient());
+    const message = `${failureMessage}: ${error.message}`;
+    if (graphsMessage) graphsMessage.textContent = message;
+    if (funderExportStatus) funderExportStatus.textContent = message;
+    return false;
+  } finally {
+    if (controlElement?.isConnected && "disabled" in controlElement) {
+      controlElement.disabled = false;
+    }
+  }
+}
+
+async function handleGraphPhaseLineClick(event) {
   const editTreatment = event.target.closest("[data-edit-treatment-phase-line]");
   if (editTreatment) {
     const graphKey = editTreatment.dataset.editTreatmentPhaseLine;
@@ -7537,11 +7607,10 @@ function handleGraphPhaseLineClick(event) {
       deleted: false
     }));
     markReportDraftDirty();
-    graphsMessage.textContent = "Treatment phase line hidden for this graph.";
-    funderExportStatus.textContent = graphsMessage.textContent;
-    rerenderGraphSurfaces();
-    void persistGraphPhaseLinesForCurrentClient().catch((error) => {
-      graphsMessage.textContent = `Could not save treatment phase line changes: ${error.message}`;
+    await persistGraphPhaseLineUiChange({
+      successMessage: "Treatment phase line hidden for this graph.",
+      failureMessage: "Could not save treatment phase line changes",
+      control: hideTreatment
     });
     return;
   }
@@ -7566,11 +7635,10 @@ function handleGraphPhaseLineClick(event) {
       deleted: false
     }));
     markReportDraftDirty();
-    graphsMessage.textContent = "Treatment phase line reset to default.";
-    funderExportStatus.textContent = graphsMessage.textContent;
-    rerenderGraphSurfaces();
-    void persistGraphPhaseLinesForCurrentClient().catch((error) => {
-      graphsMessage.textContent = `Could not save treatment phase line changes: ${error.message}`;
+    await persistGraphPhaseLineUiChange({
+      successMessage: "Treatment phase line reset to default.",
+      failureMessage: "Could not save treatment phase line changes",
+      control: resetTreatment
     });
     return;
   }
@@ -7582,21 +7650,12 @@ function handleGraphPhaseLineClick(event) {
       || treatmentPhaseRecordForGraph(graphKey);
     if (!currentLine) return;
     if (!window.confirm(`Delete the "${currentLine.label || "Treatment"}" treatment phase line for this graph?`)) return;
-    setTreatmentPhaseOverrideForGraph(graphKey, buildTreatmentPhaseLineRecord(graphKey, {
-      date: currentLine.date || "",
-      label: currentLine.label || "Treatment",
-      lineStyle: currentLine.lineStyle === "dashed" ? "dashed" : "solid",
-      note: currentLine.note || "",
-      source: "user",
-      hidden: false,
-      deleted: true
-    }));
+    setTreatmentPhaseOverrideForGraph(graphKey, null);
     markReportDraftDirty();
-    graphsMessage.textContent = "Treatment phase line deleted for this graph.";
-    funderExportStatus.textContent = graphsMessage.textContent;
-    rerenderGraphSurfaces();
-    void persistGraphPhaseLinesForCurrentClient().catch((error) => {
-      graphsMessage.textContent = `Could not save treatment phase line changes: ${error.message}`;
+    await persistGraphPhaseLineUiChange({
+      successMessage: "Treatment phase line deleted; default rule restored when enough graph data are available.",
+      failureMessage: "Could not save treatment phase line changes",
+      control: deleteTreatment
     });
     return;
   }
@@ -7610,10 +7669,10 @@ function handleGraphPhaseLineClick(event) {
   if (!window.confirm(`Delete the "${line.label}" phase line from this graph?`)) return;
   setCustomPhaseLinesForGraph(graphKey, customPhaseLinesForGraph(graphKey).filter((item) => item.id !== phaseLineId));
   markReportDraftDirty();
-  funderExportStatus.textContent = `Removed phase line "${line.label}".`;
-  rerenderGraphSurfaces();
-  void persistGraphPhaseLinesForCurrentClient().catch((error) => {
-    graphsMessage.textContent = `Could not save phase line changes: ${error.message}`;
+  await persistGraphPhaseLineUiChange({
+    successMessage: `Removed phase line "${line.label}".`,
+    failureMessage: "Could not save phase line changes",
+    control: remove
   });
 }
 
@@ -7640,6 +7699,7 @@ async function handleGraphPhaseLineSubmit(event) {
     return;
   }
   if (formKind === "treatment") {
+    const submitButton = form.querySelector('button[type="submit"]');
     const seriesDates = [...new Set(phaseLineSeriesFromPanel(form.closest(".chart-panel")).flatMap((item) => (item.points || []).map((point) => point.x)).filter(Boolean))].sort();
     if (seriesDates.length >= 2 && date <= seriesDates[0]) {
       graphsMessage.textContent = `Treatment phase line must occur after the first baseline date (${formatGraphDate(seriesDates[0])}).`;
@@ -7658,14 +7718,11 @@ async function handleGraphPhaseLineSubmit(event) {
       })
     });
     markReportDraftDirty();
-    graphsMessage.textContent = `Updated treatment phase line "${label}".`;
-    funderExportStatus.textContent = graphsMessage.textContent;
-    rerenderGraphSurfaces();
-    try {
-      await persistGraphPhaseLinesForCurrentClient();
-    } catch (error) {
-      graphsMessage.textContent = `Could not save treatment phase line changes: ${error.message}`;
-    }
+    await persistGraphPhaseLineUiChange({
+      successMessage: `Updated treatment phase line "${label}".`,
+      failureMessage: "Could not save treatment phase line changes",
+      control: submitButton
+    });
     return;
   }
 
@@ -7689,16 +7746,13 @@ async function handleGraphPhaseLineSubmit(event) {
   ];
   setCustomPhaseLinesForGraph(graphKey, nextLines);
   markReportDraftDirty();
-  graphsMessage.textContent = existingId
+  await persistGraphPhaseLineUiChange({
+    successMessage: existingId
     ? `Updated phase line "${label}".`
-    : `Added phase line "${label}".`;
-  funderExportStatus.textContent = graphsMessage.textContent;
-  rerenderGraphSurfaces();
-  try {
-    await persistGraphPhaseLinesForCurrentClient();
-  } catch (error) {
-    graphsMessage.textContent = `Could not save phase line changes: ${error.message}`;
-  }
+    : `Added phase line "${label}".`,
+    failureMessage: "Could not save phase line changes",
+    control: form.querySelector('button[type="submit"]')
+  });
 }
 
 function phaseLineSeriesFromPanel(chartPanel) {

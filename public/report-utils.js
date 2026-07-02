@@ -91,6 +91,21 @@ export function sanitizeAssessmentDocumentRefs(source = {}) {
   };
 }
 
+function selectLatestTreatmentLine(lines = []) {
+  const records = (Array.isArray(lines) ? lines : [])
+    .filter((line) => line?.phaseType === "treatment" && !line.deleted);
+  if (!records.length) return null;
+  return records.slice().sort((a, b) => {
+    const updated = (b.updatedAt || "").localeCompare(a.updatedAt || "");
+    if (updated) return updated;
+    const sourcePriority = Number(b.source === "user") - Number(a.source === "user");
+    if (sourcePriority) return sourcePriority;
+    const created = (b.createdAt || "").localeCompare(a.createdAt || "");
+    if (created) return created;
+    return (a.date || "").localeCompare(b.date || "");
+  })[0] || null;
+}
+
 export function sanitizeCustomPhaseLines(source = {}) {
   if (!source || typeof source !== "object" || Array.isArray(source)) return {};
   const allowedPhaseTypes = new Set([
@@ -157,8 +172,13 @@ export function sanitizeCustomPhaseLines(source = {}) {
       });
       return entries;
     }, []);
-    if (normalized.length) {
-      result[key] = normalized.sort((a, b) => {
+    const treatmentLine = selectLatestTreatmentLine(normalized);
+    const deduped = [
+      ...normalized.filter((line) => line.phaseType !== "treatment"),
+      ...(treatmentLine ? [treatmentLine] : [])
+    ];
+    if (deduped.length) {
+      result[key] = deduped.sort((a, b) => {
         if (a.phaseType !== b.phaseType) {
           return a.phaseType === "treatment" ? -1 : 1;
         }

@@ -2978,6 +2978,20 @@ function sanitizeGraphPhaseLines(source) {
     "userTreatmentOverride"
   ]);
   const allowedSources = new Set(["auto", "user", "autoTreatment"]);
+  const latestTreatmentLine = (lines = []) => {
+    const records = (Array.isArray(lines) ? lines : [])
+      .filter((line) => line?.phaseType === "treatment" && !line.deleted);
+    if (!records.length) return null;
+    return records.slice().sort((a, b) => {
+      const updated = (b.updatedAt || "").localeCompare(a.updatedAt || "");
+      if (updated) return updated;
+      const sourcePriority = Number(b.source === "user") - Number(a.source === "user");
+      if (sourcePriority) return sourcePriority;
+      const created = (b.createdAt || "").localeCompare(a.createdAt || "");
+      if (created) return created;
+      return (a.date || "").localeCompare(b.date || "");
+    })[0] || null;
+  };
   return Object.entries(source).reduce((result, [graphKey, values]) => {
     const key = text(graphKey);
     if (!key || !Array.isArray(values)) return result;
@@ -3030,7 +3044,12 @@ function sanitizeGraphPhaseLines(source) {
       });
       return entries;
     }, []);
-    if (lines.length) result[key] = lines;
+    const treatmentLine = latestTreatmentLine(lines);
+    const deduped = [
+      ...lines.filter((line) => line.phaseType !== "treatment"),
+      ...(treatmentLine ? [treatmentLine] : [])
+    ];
+    if (deduped.length) result[key] = deduped;
     return result;
   }, {});
 }
