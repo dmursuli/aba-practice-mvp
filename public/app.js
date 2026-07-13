@@ -4,7 +4,7 @@ import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
 import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, isLegacyGeneratedSkillAcquisitionSummary, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, summarizeSkillAcquisitionReport } from "./report-utils.js";
-import { generateSoapNote } from "./soap.js";
+import { format97155TargetChangeSummary, generateSoapNote, planChangesFor97155Session, summarize97155TargetChanges } from "./soap.js";
 import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms } from "./session-utils.js";
 
 const state = {
@@ -74,6 +74,8 @@ const state = {
   sessionsLoadedHasMore: false,
   sessionsLoading: false,
   sessionsLoadError: "",
+  planSavePromise: null,
+  active97155SessionId: "",
   inactivityTimerId: null,
   inactivityWarningTimerId: null,
   lastSessionTouchAt: 0
@@ -6226,6 +6228,8 @@ async function handlePlanClick(event) {
     behaviors.push(newBehavior);
     await savePlan(programs, behaviors, {
       type: "behavior-added",
+      behaviorId: newBehavior.id,
+      behaviorName: newBehavior.name,
       targetName: newBehavior.name
     });
     return;
@@ -6238,6 +6242,8 @@ async function handlePlanClick(event) {
     if (!window.confirm(`Remove ${target.name}?`)) return;
     await savePlan(programs, behaviors.filter((behavior) => behavior.id !== target.id), {
       type: "behavior-removed",
+      behaviorId: target.id,
+      behaviorName: target.name,
       targetName: target.name
     });
     return;
@@ -6555,6 +6561,93 @@ function closeProgramGraphModal() {
   if (programGraphModalAnalysis) programGraphModalAnalysis.innerHTML = "";
 }
 
+function planDraftChangeLogEntries(previousPrograms = [], nextPrograms = [], previousBehaviors = [], nextBehaviors = []) {
+  const entries = [];
+  nextPrograms.forEach((program) => {
+    const previous = previousPrograms.find((item) => item.id === program.id);
+    if (!previous) return;
+    if (String(previous.name || "") !== String(program.name || "")) {
+      entries.push({
+        type: "program-modified",
+        domain: program.domain,
+        programId: program.id,
+        programName: program.name,
+        field: "name",
+        fromValue: previous.name || "",
+        toValue: program.name || ""
+      });
+    }
+    if (String(previous.objective || "") !== String(program.objective || "")) {
+      entries.push({
+        type: "program-modified",
+        domain: program.domain,
+        programId: program.id,
+        programName: program.name,
+        field: "objective",
+        fromValue: previous.objective || "",
+        toValue: program.objective || ""
+      });
+    }
+    (program.targets || []).forEach((target) => {
+      const previousTarget = (previous.targets || []).find((item) => item.id === target.id);
+      if (!previousTarget) return;
+      if (String(previousTarget.name || "") !== String(target.name || "")) {
+        entries.push({
+          type: "target-modified",
+          domain: program.domain,
+          programId: program.id,
+          programName: program.name,
+          targetId: target.id,
+          targetName: target.name,
+          field: "name",
+          fromValue: previousTarget.name || "",
+          toValue: target.name || ""
+        });
+      }
+      if (String(previousTarget.note || "") !== String(target.note || "")) {
+        entries.push({
+          type: "target-modified",
+          domain: program.domain,
+          programId: program.id,
+          programName: program.name,
+          targetId: target.id,
+          targetName: target.name,
+          field: "BCBA note",
+          fromValue: previousTarget.note || "",
+          toValue: target.note || ""
+        });
+      }
+    });
+  });
+  nextBehaviors.forEach((behavior) => {
+    const previous = previousBehaviors.find((item) => item.id === behavior.id);
+    if (!previous) return;
+    if (String(previous.name || "") !== String(behavior.name || "")) {
+      entries.push({
+        type: "behavior-modified",
+        behaviorId: behavior.id,
+        behaviorName: behavior.name,
+        targetName: behavior.name,
+        field: "name",
+        fromValue: previous.name || "",
+        toValue: behavior.name || ""
+      });
+    }
+  });
+  return entries;
+}
+
+async function trackPlanSave(promise) {
+  state.planSavePromise = promise;
+  try {
+    return await promise;
+  } finally {
+    if (state.planSavePromise === promise) {
+      state.planSavePromise = null;
+    }
+  }
+}
+
 async function handlePlanTextEdit(event) {
   const input = event.target;
   const { programs, behaviors } = currentPlanDraft();
@@ -6593,15 +6686,24 @@ async function handlePlanTextEdit(event) {
       behavior.name = input.value.trim();
     }
   }
-  await savePlan(programs, behaviors);
+  await trackPlanSave(savePlan(programs, behaviors, planDraftChangeLogEntries(clientPrograms(), programs, clientBehaviors(), behaviors)));
 }
 
 async function handleProgramDomainChange(event) {
   const { programs, behaviors } = currentPlanDraft();
   const program = programs.find((item) => item.id === event.target.dataset.programDomain);
   if (!program) return;
+  const previousProgram = clientPrograms().find((item) => item.id === program.id);
   program.domain = event.target.value;
-  await savePlan(programs, behaviors);
+  await savePlan(programs, behaviors, previousProgram?.domain !== program.domain ? {
+    type: "program-modified",
+    domain: program.domain,
+    programId: program.id,
+    programName: program.name,
+    field: "domain",
+    fromValue: previousProgram?.domain || "",
+    toValue: program.domain
+  } : null);
 }
 
 async function handlePlanStatusChange(event) {
@@ -6610,8 +6712,16 @@ async function handlePlanStatusChange(event) {
     const { programs, behaviors } = currentPlanDraft();
     const behavior = behaviors.find((item) => item.id === behaviorControl.dataset.behaviorStatus);
     if (!behavior) return;
+    const previousStatus = clientBehaviors().find((item) => item.id === behavior.id)?.status || "active";
     behavior.status = behaviorControl.value;
-    await savePlan(programs, behaviors);
+    await trackPlanSave(savePlan(programs, behaviors, previousStatus !== behavior.status ? {
+      type: "behavior-status-changed",
+      behaviorId: behavior.id,
+      behaviorName: behavior.name,
+      targetName: behavior.name,
+      fromStatus: previousStatus,
+      toStatus: behavior.status
+    } : null));
     return;
   }
   const programControl = event.target.closest("[data-plan-program-status]");
@@ -6619,7 +6729,8 @@ async function handlePlanStatusChange(event) {
     const { programs, behaviors } = currentPlanDraft();
     const program = programs.find((item) => item.id === programControl.dataset.planProgramStatus);
     if (!program) return;
-    const previousStatus = normalizePlanStatus(program.status || "active");
+    const previousProgram = clientPrograms().find((item) => item.id === program.id);
+    const previousStatus = normalizePlanStatus(previousProgram?.status || "active");
     program.status = programControl.value;
     if (programControl.value === "mastered") {
       const transitionDate = new Date().toISOString().slice(0, 10);
@@ -6642,7 +6753,7 @@ async function handlePlanStatusChange(event) {
       });
     }
     try {
-      await savePlan(programs, behaviors, previousStatus !== programControl.value ? {
+      await trackPlanSave(savePlan(programs, behaviors, previousStatus !== programControl.value ? {
         type: "program-status-changed",
         domain: program.domain,
         programId: program.id,
@@ -6650,7 +6761,7 @@ async function handlePlanStatusChange(event) {
         objective: program.objective || "",
         fromStatus: previousStatus,
         toStatus: programControl.value
-      } : null);
+      } : null));
     } catch (error) {
       formMessage.textContent = error.message;
       renderPlanReview();
@@ -6664,14 +6775,16 @@ async function handlePlanStatusChange(event) {
   const target = program?.targets?.find((item) => item.id === control.dataset.planTarget);
   if (!target) return;
 
-  const previousStatus = normalizePlanStatus(target.status || "active");
+  const previousProgram = clientPrograms().find((item) => item.id === control.dataset.planProgram);
+  const previousTarget = previousProgram?.targets?.find((item) => item.id === control.dataset.planTarget);
+  const previousStatus = normalizePlanStatus(previousTarget?.status || "active");
   target.status = control.value;
   if (control.value === "mastered" && !explicitPlanMasteryDate(target)) {
     target.maintenanceDate = resolvePlanTargetMasteryDate(program, target) || new Date().toISOString().slice(0, 10);
   }
 
   try {
-    await savePlan(programs, behaviors, previousStatus !== control.value ? {
+    await trackPlanSave(savePlan(programs, behaviors, previousStatus !== control.value ? {
       type: "target-status-changed",
       domain: program.domain,
       programId: program.id,
@@ -6681,7 +6794,7 @@ async function handlePlanStatusChange(event) {
       targetName: target.name,
       fromStatus: previousStatus,
       toStatus: control.value
-    } : null);
+    } : null));
   } catch (error) {
     formMessage.textContent = error.message;
     renderPlanReview();
@@ -6699,13 +6812,17 @@ async function savePlan(
   note97155History = currentClient()?.note97155History || [],
   note97151History = currentClient()?.note97151History || []
 ) {
-  const planChangeLog = change
-    ? [...(currentClient()?.planChangeLog || []), {
+  const changes = Array.isArray(change) ? change.filter(Boolean) : (change ? [change] : []);
+  const changeDate = currentPlanChangeDate();
+  const changeContext = changes.length ? current97155SessionContext({ create: true, date: changeDate }) : null;
+  const planChangeLog = changes.length
+    ? [...(currentClient()?.planChangeLog || []), ...changes.map((entry) => ({
         id: cryptoId(),
-        date: new Date().toISOString().slice(0, 10),
+        ...changeContext,
+        date: changeDate,
         timestamp: new Date().toISOString(),
-        ...change
-      }]
+        ...entry
+      }))]
     : currentClient()?.planChangeLog || [];
   const updated = await updateClientPlan(currentClient().id, {
     domains,
@@ -6722,6 +6839,29 @@ async function savePlan(
   if (index >= 0) state.clients[index] = updated;
   resetRows();
   render();
+}
+
+function currentPlanChangeDate() {
+  const value = bcbaSessionForm?.elements?.date?.value;
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))
+    ? value
+    : new Date().toISOString().slice(0, 10);
+}
+
+function current97155SessionContext({ create = true, date = "" } = {}) {
+  if (!state.active97155SessionId && create) {
+    state.active97155SessionId = cryptoId();
+  }
+  const sessionDate = /^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))
+    ? date
+    : currentPlanChangeDate();
+  return {
+    clientId: currentClient()?.id || "",
+    sessionId: state.active97155SessionId || "",
+    sessionDate,
+    serviceCode: "97155",
+    context: "treatment-planning"
+  };
 }
 
 function soapNoteEntryKey(serviceCode, entryId) {
@@ -6857,11 +6997,53 @@ async function savePlanParentTrainingGoals(goals, message = "Parent training goa
   render();
 }
 
+async function persistCurrentPlanDraftBefore97155Generation() {
+  if (state.planSavePromise) {
+    await state.planSavePromise;
+  }
+  const client = currentClient();
+  if (!client || !planReview) return;
+  const { programs, behaviors } = currentPlanDraft();
+  const changes = planDraftChangeLogEntries(clientPrograms(), programs, clientBehaviors(), behaviors);
+  if (changes.length) {
+    await trackPlanSave(savePlan(
+      programs,
+      behaviors,
+      changes,
+      client.note97155 || "",
+      clientDomains(),
+      clientRbtPerformanceAreas(),
+      client.note97151 || "",
+      client.note97155History || [],
+      client.note97151History || []
+    ));
+  }
+}
+
+async function refreshCurrentClientPlanBefore97155Generation() {
+  const clientId = currentClient()?.id;
+  if (!clientId) return;
+  const data = await getData();
+  const latestClient = (data.clients || []).find((client) => client.id === clientId);
+  if (latestClient) {
+    replaceClient(latestClient);
+  }
+}
+
 async function handleGenerate97155Note() {
-  const note = generate97155Note();
+  note97155Status.textContent = "Refreshing treatment-plan changes...";
+  await persistCurrentPlanDraftBefore97155Generation();
+  const sessionContext = current97155SessionContext({ create: false });
+  try {
+    await refreshCurrentClientPlanBefore97155Generation();
+  } catch (error) {
+    note97155Status.textContent = "Using locally loaded treatment-plan changes.";
+  }
+  const note = generate97155Note(sessionContext);
   const sessionDetails = readBcbaSessionDetails();
   const note97155History = upsertNoteHistoryEntry("97155", {
-    id: cryptoId(),
+    id: sessionContext.sessionId || cryptoId(),
+    sessionId: sessionContext.sessionId || "",
     note,
     date: sessionDetails.date,
     providerSignature: sessionDetails.providerSignature,
@@ -6884,6 +7066,7 @@ async function handleGenerate97155Note() {
     currentClient()?.note97151History || []
   );
   state.selectedSoapEntryKey = soapNoteEntryKey("97155", note97155History[0].id);
+  state.active97155SessionId = "";
   note97155Status.textContent = "97155 note generated.";
   planMessage.textContent = "97155 note generated. Review or edit it below.";
   renderHistory();
@@ -7055,19 +7238,16 @@ function renderRbtFidelityRows() {
   toggleRbtFeedbackSection();
 }
 
-function generate97155Note() {
+function generate97155Note(sessionContext = current97155SessionContext({ create: false })) {
   const client = currentClient();
   const sessionDetails = readBcbaSessionDetails();
-  const today = new Date().toISOString().slice(0, 10);
-  const changes = (client?.planChangeLog || []).filter((change) => change.date === today);
-  const targetAdds = changes.filter((change) => change.type === "target-added");
-  const statusChanges = changes.filter((change) => change.type === "target-status-changed");
-  const programAdds = changes.filter((change) => change.type === "program-added");
-  const objectiveItems = [
-    ...programAdds.map((change) => `Added program ${change.programName} under ${change.domain}.`),
-    ...targetAdds.map((change) => `Added target ${change.targetName} under ${change.programName}.`),
-    ...statusChanges.map((change) => `Changed ${change.targetName} under ${change.programName} from ${change.fromStatus} to ${change.toStatus}.`)
-  ];
+  const changes = planChangesFor97155Session(client?.planChangeLog || [], {
+    ...sessionContext,
+    clientId: client?.id || sessionContext.clientId || "",
+    sessionDate: sessionContext.sessionDate || sessionDetails.date,
+    date: sessionDetails.date
+  });
+  const targetChangeSummary = format97155TargetChangeSummary(summarize97155TargetChanges(changes));
   const rbtFeedbackText = sessionDetails.rbtPresent
     ? ` RBT session fidelity was ${sessionDetails.rbtFidelity.percent}% (${sessionDetails.rbtFidelity.yesCount}/${sessionDetails.rbtFidelity.total} areas performed). ${sessionDetails.rbtFidelity.noItems.length ? `Areas needing support: ${sessionDetails.rbtFidelity.noItems.join(", ")}.` : "All scored areas were completed."} ${sessionDetails.rbtWrittenFeedback ? `Written RBT feedback: ${sessionDetails.rbtWrittenFeedback}` : "No written RBT feedback narrative was entered."}`
     : "";
@@ -7075,9 +7255,9 @@ function generate97155Note() {
   return [
     `S: ${sessionDetails.bcba || "BCBA"} completed a ${sessionDetails.focus} session for ${client?.name || "client"} under 97155 on ${formatDate(sessionDetails.date)} from ${sessionDetails.startTime || "start time"} to ${sessionDetails.endTime || "end time"} in the ${sessionDetails.setting || "setting"} setting. Caregiver ${sessionDetails.caregiverPresent ? "was" : "was not"} present. RBT ${sessionDetails.rbtPresent ? "was" : "was not"} present.`,
     "",
-    `O: ${objectiveItems.length ? objectiveItems.join(" ") : "No target additions or target status changes were recorded today."}${rbtFeedbackText}${sessionDetails.notes ? ` Additional supervision note: ${sessionDetails.notes}` : ""}`,
+    `O: ${targetChangeSummary}${rbtFeedbackText}${sessionDetails.notes ? ` Additional supervision note: ${sessionDetails.notes}` : ""}`,
     "",
-    "A: Treatment plan updates were completed to align active acquisition and maintenance targets with current clinical priorities and client performance.",
+    "A: Treatment plan updates were completed to align active acquisition, maintenance, and behavior-reduction procedures with current clinical priorities and client performance.",
     "",
     "P: Implement updated targets during upcoming 97153 sessions. Continue monitoring acquisition, maintenance, and behavior data to guide future protocol modifications.",
     "",

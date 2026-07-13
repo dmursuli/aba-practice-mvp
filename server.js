@@ -3507,6 +3507,11 @@ function sanitizeRbtPerformanceAreas(areas) {
 function sanitizePlanChangeLog(changes) {
   return changes.map((change) => ({
     id: String(change.id || crypto.randomUUID()),
+    clientId: String(change.clientId || ""),
+    sessionId: String(change.sessionId || ""),
+    sessionDate: String(change.sessionDate || change.date || new Date().toISOString().slice(0, 10)).slice(0, 10),
+    serviceCode: String(change.serviceCode || ""),
+    context: String(change.context || ""),
     date: String(change.date || new Date().toISOString().slice(0, 10)),
     timestamp: String(change.timestamp || new Date().toISOString()),
     type: String(change.type || "plan-updated"),
@@ -3514,8 +3519,14 @@ function sanitizePlanChangeLog(changes) {
     programId: String(change.programId || ""),
     programName: String(change.programName || ""),
     objective: String(change.objective || ""),
+    behaviorId: String(change.behaviorId || ""),
+    behaviorName: String(change.behaviorName || ""),
     targetId: String(change.targetId || ""),
     targetName: String(change.targetName || ""),
+    field: String(change.field || ""),
+    fromValue: String(change.fromValue || ""),
+    toValue: String(change.toValue || ""),
+    note: String(change.note || ""),
     fromStatus: String(change.fromStatus || ""),
     toStatus: String(change.toStatus || "")
   }));
@@ -3527,6 +3538,7 @@ function sanitizeNoteHistoryEntries(entries, serviceCode) {
     .filter((entry) => entry && typeof entry === "object")
     .map((entry) => ({
       id: String(entry.id || crypto.randomUUID()),
+      sessionId: String(entry.sessionId || entry.id || ""),
       serviceCode,
       note: String(entry.note || "").trim(),
       date: String(entry.date || new Date().toISOString().slice(0, 10)).slice(0, 10),
@@ -3547,6 +3559,7 @@ function createNoteHistoryEntry(serviceCode, note, metadata = {}) {
   const now = new Date().toISOString();
   return {
     id: crypto.randomUUID(),
+    sessionId: String(metadata.sessionId || ""),
     serviceCode,
     note: String(note || "").trim(),
     date: String(metadata.date || now.slice(0, 10)).slice(0, 10),
