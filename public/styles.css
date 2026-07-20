@@ -1730,6 +1730,41 @@ canvas {
   min-height: 420px;
 }
 
+.soap-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+
+.soap-meta-grid {
+  margin-bottom: 14px;
+}
+
+.soap-section-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.soap-section-grid label,
+.soap-amendment-field {
+  display: grid;
+  gap: 6px;
+}
+
+.soap-amendment-field {
+  margin-top: 12px;
+}
+
+.soap-raw-note {
+  margin-top: 12px;
+}
+
+.soap-raw-note[open] .soap-editor {
+  min-height: 220px;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.55;

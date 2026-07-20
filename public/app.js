@@ -76,6 +76,7 @@ const state = {
   sessionsLoadError: "",
   planSavePromise: null,
   active97155SessionId: "",
+  soapAmendmentModeKey: "",
   inactivityTimerId: null,
   inactivityWarningTimerId: null,
   lastSessionTouchAt: 0
@@ -243,8 +244,26 @@ const parentMessage = document.querySelector("#parent-message");
 const formMessage = document.querySelector("#form-message");
 const noteStatus = document.querySelector("#note-status");
 const soapEditor = document.querySelector("#soap-note");
+const soapStatusLabel = document.querySelector("#soap-note-status-label");
+const soapNoteMeta = document.querySelector("#soap-note-meta");
+const soapServiceDate = document.querySelector("#soap-service-date");
+const soapSignatureDate = document.querySelector("#soap-signature-date");
+const soapStartTime = document.querySelector("#soap-start-time");
+const soapEndTime = document.querySelector("#soap-end-time");
+const soapSetting = document.querySelector("#soap-setting");
+const soapCaregiverPresent = document.querySelector("#soap-caregiver-present");
+const soapRbtPresent = document.querySelector("#soap-rbt-present");
+const soapProviderSignature = document.querySelector("#soap-provider-signature");
+const soapProviderCredential = document.querySelector("#soap-provider-credential");
+const soapSubjective = document.querySelector("#soap-subjective");
+const soapObjective = document.querySelector("#soap-objective");
+const soapAssessment = document.querySelector("#soap-assessment");
+const soapPlan = document.querySelector("#soap-plan");
+const soapAmendmentReason = document.querySelector("#soap-amendment-reason");
 const selectedSoapNoteTitle = document.querySelector("#selected-soap-note-title");
+const saveSoapDraftButton = document.querySelector("#save-soap-draft");
 const finalizeButton = document.querySelector("#finalize-note");
+const amendSoapNoteButton = document.querySelector("#amend-soap-note");
 const printSoapNoteButton = document.querySelector("#print-soap-note");
 const downloadSoapTextButton = document.querySelector("#download-soap-text");
 const downloadSoapHtmlButton = document.querySelector("#download-soap-html");
@@ -1085,10 +1104,21 @@ function bindEvents() {
   planReview.addEventListener("change", handlePlanStatusChange);
   planReview.addEventListener("click", handlePlanClick);
   programGraphModal?.addEventListener("click", handleProgramGraphModalClick);
+  saveSoapDraftButton?.addEventListener("click", handleSaveSoapDraft);
   finalizeButton.addEventListener("click", handleFinalize);
+  amendSoapNoteButton?.addEventListener("click", handleAmendSoapNote);
   printSoapNoteButton.addEventListener("click", handlePrintSoapNote);
   downloadSoapTextButton.addEventListener("click", () => handleDownloadSoapNote("txt"));
   downloadSoapHtmlButton.addEventListener("click", () => handleDownloadSoapNote("html"));
+  [
+    soapSubjective,
+    soapObjective,
+    soapAssessment,
+    soapPlan,
+    soapEditor
+  ].forEach((field) => {
+    field?.addEventListener("input", handleSoapTextInput);
+  });
   [auditClientFilter, auditUserFilter, auditActionFilter, auditStartFilter, auditEndFilter].forEach((field) => {
     field.addEventListener("input", renderAuditLog);
   });
@@ -1472,6 +1502,18 @@ function clearSensitiveDom() {
   const graphLegends = document.querySelectorAll(".graph-legend");
   [
     soapEditor,
+    soapServiceDate,
+    soapSignatureDate,
+    soapStartTime,
+    soapEndTime,
+    soapSetting,
+    soapProviderSignature,
+    soapProviderCredential,
+    soapSubjective,
+    soapObjective,
+    soapAssessment,
+    soapPlan,
+    soapAmendmentReason,
     note97151Editor,
     planNote97151Editor,
     note97155Editor,
@@ -1481,6 +1523,8 @@ function clearSensitiveDom() {
   });
   [
     selectedSoapNoteTitle,
+    soapStatusLabel,
+    soapNoteMeta,
     currentUserLabel,
     soapClientSummary,
     planClientSummary,
@@ -6909,6 +6953,32 @@ function upsertNoteHistoryEntry(serviceCode, record) {
   return [normalized, ...remaining].sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
 }
 
+function confirmRegenerateNote(serviceCode, nextNote) {
+  const selected = selectedNoteHistoryEntry(serviceCode);
+  const status = soapEntryStatus({ type: serviceCode, record: selected });
+  if (selected?.note && status === "draft" && String(selected.note).trim() !== String(nextNote).trim()) {
+    return window.confirm("This note contains manual edits. Regenerating may overwrite them. Continue?");
+  }
+  return true;
+}
+
+function draftNoteHistoryMetadata(record = {}) {
+  const now = new Date().toISOString();
+  return {
+    ...record,
+    status: "draft",
+    noteStatus: "draft",
+    finalized: false,
+    finalizedAt: "",
+    finalizedBy: "",
+    amendedAt: "",
+    amendedBy: "",
+    amendmentReason: "",
+    lastSavedAt: now,
+    lastSavedBy: state.currentUser?.id || ""
+  };
+}
+
 function currentPlanDraft() {
   const programs = structuredClone(clientPrograms());
   const behaviors = structuredClone(clientBehaviors());
@@ -7040,9 +7110,17 @@ async function handleGenerate97155Note() {
     note97155Status.textContent = "Using locally loaded treatment-plan changes.";
   }
   const note = generate97155Note(sessionContext);
+  if (!confirmRegenerateNote("97155", note)) {
+    note97155Status.textContent = "Regeneration canceled.";
+    return;
+  }
   const sessionDetails = readBcbaSessionDetails();
-  const note97155History = upsertNoteHistoryEntry("97155", {
-    id: sessionContext.sessionId || cryptoId(),
+  const selected = selectedNoteHistoryEntry("97155");
+  const selectedStatus = soapEntryStatus({ type: "97155", record: selected });
+  const selectedLocked = selected && ["finalized", "amended"].includes(selectedStatus)
+    && (selected.sessionId === sessionContext.sessionId || selected.id === sessionContext.sessionId);
+  const note97155History = upsertNoteHistoryEntry("97155", draftNoteHistoryMetadata({
+    id: selectedLocked ? cryptoId() : (sessionContext.sessionId || selected?.id || cryptoId()),
     sessionId: sessionContext.sessionId || "",
     note,
     date: sessionDetails.date,
@@ -7052,7 +7130,7 @@ async function handleGenerate97155Note() {
     endTime: sessionDetails.endTime,
     setting: sessionDetails.setting,
     activityLabel: "Treatment planning / protocol modification"
-  });
+  }));
   note97155Editor.value = note;
   await savePlan(
     clientPrograms(),
@@ -7104,15 +7182,19 @@ function generate97151Note() {
 
 async function handleGenerate97151Note() {
   const note = generate97151Note();
+  if (!confirmRegenerateNote("97151", note)) {
+    note97151Status.textContent = "Regeneration canceled.";
+    return;
+  }
   const values = new FormData(reportForm);
-  const note97151History = upsertNoteHistoryEntry("97151", {
+  const note97151History = upsertNoteHistoryEntry("97151", draftNoteHistoryMetadata({
     id: cryptoId(),
     note,
     date: values.get("assessmentDate") || new Date().toISOString().slice(0, 10),
     providerSignature: values.get("preparedBy") || values.get("assessmentConductedBy") || state.currentUser?.name || "BCBA",
     providerCredential: values.get("credential") || "BCBA",
     activityLabel: "Behavior assessment / report update"
-  });
+  }));
   note97151Editor.value = note;
   planNote97151Editor.value = note;
   await savePlan(
@@ -7140,14 +7222,19 @@ async function handleSave97151Note() {
   const note = document.activeElement === planNote97151Editor ? planNote97151Editor.value : note97151Editor.value;
   const values = new FormData(reportForm);
   const selected = selectedNoteHistoryEntry("97151");
-  const note97151History = upsertNoteHistoryEntry("97151", {
+  if (selected && ["finalized", "amended"].includes(soapEntryStatus({ type: "97151", record: selected }))) {
+    note97151Status.textContent = "Finalized 97151 notes require the amendment workflow.";
+    planNote97151Status.textContent = "Finalized 97151 notes require the amendment workflow.";
+    return;
+  }
+  const note97151History = upsertNoteHistoryEntry("97151", draftNoteHistoryMetadata({
     ...selected,
     note,
     date: selected?.date || values.get("assessmentDate") || new Date().toISOString().slice(0, 10),
     providerSignature: selected?.providerSignature || values.get("preparedBy") || values.get("assessmentConductedBy") || state.currentUser?.name || "BCBA",
     providerCredential: selected?.providerCredential || values.get("credential") || "BCBA",
     activityLabel: selected?.activityLabel || "Behavior assessment / report update"
-  });
+  }));
   note97151Editor.value = note;
   planNote97151Editor.value = note;
   await savePlan(
@@ -7184,7 +7271,11 @@ function render97151Note() {
 async function handleSave97155Note() {
   const sessionDetails = readBcbaSessionDetails();
   const selected = selectedNoteHistoryEntry("97155");
-  const note97155History = upsertNoteHistoryEntry("97155", {
+  if (selected && ["finalized", "amended"].includes(soapEntryStatus({ type: "97155", record: selected }))) {
+    note97155Status.textContent = "Finalized 97155 notes require the amendment workflow.";
+    return;
+  }
+  const note97155History = upsertNoteHistoryEntry("97155", draftNoteHistoryMetadata({
     ...selected,
     note: note97155Editor.value,
     date: selected?.date || sessionDetails.date,
@@ -7194,7 +7285,7 @@ async function handleSave97155Note() {
     endTime: selected?.endTime || sessionDetails.endTime,
     setting: selected?.setting || sessionDetails.setting,
     activityLabel: selected?.activityLabel || "Treatment planning / protocol modification"
-  });
+  }));
   await savePlan(
     clientPrograms(),
     clientBehaviors(),
@@ -7474,6 +7565,7 @@ function renderHistory() {
       <p class="muted">Showing ${Math.min(group.entries.length, visibleLimit)} of ${group.entries.length} note${group.entries.length === 1 ? "" : "s"}.</p>
       ${group.entries.slice(0, visibleLimit).map((entry) => {
         const active = selectedSoapEntry()?.key === entry.key ? "active" : "";
+        const entryStatus = soapEntryStatus(entry);
         if (entry.type === "97151") {
           const preview = String(entry.note || "").trim().split(/\n+/)[0] || "Assessment note generated from intake, report, and treatment planning data.";
           return `
@@ -7482,9 +7574,10 @@ function renderHistory() {
                 <span><strong>97151</strong> • <strong>${formatDate(entry.record?.date)}</strong></span>
                 <div class="history-item-meta">
                   <span class="health-badge low">${escapeHtml(soapEntryActivityLabel(entry))}</span>
+                  <span class="health-badge ${soapStatusClass(entryStatus)}">${escapeHtml(soapStatusLabelText(entryStatus))}</span>
                 </div>
                 <span>${escapeHtml(preview)}</span>
-                <span>${escapeHtml(entry.record?.providerSignature || "Saved note")}</span>
+                <span>${escapeHtml(entry.record?.providerSignature || soapStatusLabelText(entryStatus))}</span>
               </button>
             </div>
           `;
@@ -7497,9 +7590,10 @@ function renderHistory() {
                 <span><strong>97155</strong> • <strong>${formatDate(entry.record?.date)}</strong>${entry.record?.startTime && entry.record?.endTime ? ` ${entry.record.startTime}-${entry.record.endTime}` : ""}</span>
                 <div class="history-item-meta">
                   <span class="health-badge medium">${escapeHtml(soapEntryActivityLabel(entry))}</span>
+                  <span class="health-badge ${soapStatusClass(entryStatus)}">${escapeHtml(soapStatusLabelText(entryStatus))}</span>
                 </div>
                 <span>${escapeHtml(preview)}</span>
-                <span>${escapeHtml(entry.record?.providerSignature || "Saved note")}</span>
+                <span>${escapeHtml(entry.record?.providerSignature || soapStatusLabelText(entryStatus))}</span>
               </button>
             </div>
           `;
@@ -7517,10 +7611,10 @@ function renderHistory() {
               <span><strong>${sessionCodeLabel(session)}</strong> • <strong>${formatDate(session.date)}</strong> ${session.startTime}-${session.endTime}</span>
               <div class="history-item-meta">
                 <span class="health-badge low">${escapeHtml(soapEntryActivityLabel(entry))}</span>
-                <span class="health-badge ${session.finalized ? "low" : "medium"}">${session.finalized ? "Finalized" : "Draft"}</span>
+                <span class="health-badge ${soapStatusClass(entryStatus)}">${escapeHtml(soapStatusLabelText(entryStatus))}</span>
               </div>
               <span>${programSummary}</span>
-              <span>${session.finalized ? "Finalized" : "Draft note"}</span>
+              <span>${escapeHtml(soapStatusLabelText(entryStatus))} note</span>
             </button>
             <button type="button" class="delete-button" data-delete-session="${session.id}" aria-label="Delete session from ${formatDate(session.date)}">Delete</button>
           </div>
@@ -7534,6 +7628,8 @@ function renderHistory() {
     button.addEventListener("click", () => {
       state.selectedSoapEntryKey = button.dataset.soapEntry;
       if (button.dataset.sessionId) state.selectedSessionId = button.dataset.sessionId;
+      state.soapAmendmentModeKey = "";
+      noteStatus.textContent = "";
       renderHistory();
       renderNote();
       renderSoapSummary();
@@ -9424,55 +9520,365 @@ function renderReportProgramInfo(program) {
   `;
 }
 
+function soapEntryRecord(entry) {
+  return entry?.type === "session" ? entry.session : entry?.record || {};
+}
+
+function soapEntryNote(entry) {
+  if (!entry) return "";
+  if (entry.type === "session") {
+    return entry.session?.soapNote || generateSoapNote(entry.session, lookups());
+  }
+  return entry.note || entry.record?.note || "";
+}
+
+function soapEntryStatus(entry) {
+  const record = soapEntryRecord(entry);
+  const status = String(record.noteStatus || record.status || "").trim().toLowerCase();
+  if (status === "amended") return "amended";
+  if (status === "finalized" || record.finalized) return "finalized";
+  if ((entry?.type === "97151" || entry?.type === "97155") && String(record.id || "").startsWith("legacy-")) {
+    return "finalized";
+  }
+  return "draft";
+}
+
+function soapStatusLabelText(status) {
+  return status === "amended" ? "Amended" : status === "finalized" ? "Finalized" : "Draft";
+}
+
+function soapStatusClass(status) {
+  if (status === "amended") return "high";
+  if (status === "finalized") return "low";
+  return "medium";
+}
+
+function parseSoapSections(note) {
+  const result = { subjective: "", objective: "", assessment: "", plan: "" };
+  const labels = { S: "subjective", O: "objective", A: "assessment", P: "plan" };
+  const text = String(note || "").trim();
+  const matches = [...text.matchAll(/(?:^|\n)([SOAP]):\s*/g)];
+  if (!matches.length) {
+    result.subjective = text;
+    return result;
+  }
+  matches.forEach((match, index) => {
+    const key = labels[match[1]];
+    const start = Number(match.index || 0) + match[0].length;
+    const end = index + 1 < matches.length ? Number(matches[index + 1].index || text.length) : text.length;
+    result[key] = text.slice(start, end).trim();
+  });
+  return result;
+}
+
+function composeSoapNoteFromSectionFields() {
+  return [
+    `S: ${String(soapSubjective?.value || "").trim()}`,
+    "",
+    `O: ${String(soapObjective?.value || "").trim()}`,
+    "",
+    `A: ${String(soapAssessment?.value || "").trim()}`,
+    "",
+    `P: ${String(soapPlan?.value || "").trim()}`
+  ].join("\n");
+}
+
+function setSoapSectionFields(note) {
+  const sections = parseSoapSections(note);
+  if (soapSubjective) soapSubjective.value = sections.subjective;
+  if (soapObjective) soapObjective.value = sections.objective;
+  if (soapAssessment) soapAssessment.value = sections.assessment;
+  if (soapPlan) soapPlan.value = sections.plan;
+  if (soapEditor) soapEditor.value = composeSoapNoteFromSectionFields();
+}
+
+function handleSoapTextInput(event) {
+  if (event.target === soapEditor) {
+    setSoapSectionFields(soapEditor.value);
+    return;
+  }
+  if (soapEditor) soapEditor.value = composeSoapNoteFromSectionFields();
+}
+
+function booleanSelectValue(value) {
+  if (value === true) return "true";
+  if (value === false) return "false";
+  return "";
+}
+
+function setSoapMetadataFields(entry) {
+  const record = soapEntryRecord(entry);
+  if (soapServiceDate) soapServiceDate.value = String(record.date || "").slice(0, 10);
+  if (soapSignatureDate) soapSignatureDate.value = String(record.signatureDate || record.finalizedAt || "").slice(0, 10);
+  if (soapStartTime) soapStartTime.value = String(record.startTime || "");
+  if (soapEndTime) soapEndTime.value = String(record.endTime || "");
+  if (soapSetting) soapSetting.value = String(record.setting || "");
+  if (soapCaregiverPresent) soapCaregiverPresent.value = booleanSelectValue(record.caregiverPresent);
+  if (soapRbtPresent) soapRbtPresent.value = booleanSelectValue(record.rbtPresent);
+  if (soapProviderSignature) soapProviderSignature.value = String(record.providerSignature || "");
+  if (soapProviderCredential) soapProviderCredential.value = String(record.providerCredential || "");
+  if (soapAmendmentReason) soapAmendmentReason.value = "";
+}
+
+function setSoapControlsDisabled(disabled, amendmentReasonDisabled = true) {
+  [
+    soapServiceDate,
+    soapSignatureDate,
+    soapStartTime,
+    soapEndTime,
+    soapSetting,
+    soapCaregiverPresent,
+    soapRbtPresent,
+    soapProviderSignature,
+    soapProviderCredential,
+    soapSubjective,
+    soapObjective,
+    soapAssessment,
+    soapPlan,
+    soapEditor
+  ].forEach((field) => {
+    if (field) field.disabled = disabled;
+  });
+  if (soapAmendmentReason) soapAmendmentReason.disabled = amendmentReasonDisabled;
+}
+
+function soapMetadataSummary(entry) {
+  const record = soapEntryRecord(entry);
+  const status = soapEntryStatus(entry);
+  const parts = [];
+  if (status === "draft" && record.lastSavedAt) parts.push(`Last saved ${formatDateTime(record.lastSavedAt)}`);
+  if (status === "finalized" && record.finalizedAt) parts.push(`Finalized ${formatDateTime(record.finalizedAt)}`);
+  if (status === "amended" && record.amendedAt) parts.push(`Amended ${formatDateTime(record.amendedAt)}`);
+  if (record.signatureDate) parts.push(`Signature date ${formatDate(record.signatureDate)}`);
+  return parts.join(" • ");
+}
+
+function readSoapEditorPayload(action = "save-draft") {
+  if (soapEditor) soapEditor.value = composeSoapNoteFromSectionFields();
+  return {
+    action,
+    soapNote: soapEditor?.value || "",
+    date: soapServiceDate?.value || "",
+    startTime: soapStartTime?.value || "",
+    endTime: soapEndTime?.value || "",
+    setting: soapSetting?.value || "",
+    caregiverPresent: soapCaregiverPresent?.value === "true",
+    rbtPresent: soapRbtPresent?.value === "true",
+    providerSignature: soapProviderSignature?.value || "",
+    providerCredential: soapProviderCredential?.value || "",
+    signatureDate: soapSignatureDate?.value || "",
+    amendmentReason: soapAmendmentReason?.value || ""
+  };
+}
+
+function soapValidationErrors(payload) {
+  const errors = [];
+  if (payload.date) {
+    const today = new Date().toISOString().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.date)) {
+      errors.push("Enter a valid service date.");
+    } else if (payload.date > today) {
+      errors.push("Service date cannot be in the future.");
+    }
+  }
+  if (payload.startTime && !/^\d{2}:\d{2}$/.test(payload.startTime)) errors.push("Enter a valid start time.");
+  if (payload.endTime && !/^\d{2}:\d{2}$/.test(payload.endTime)) errors.push("Enter a valid end time.");
+  if (payload.startTime && payload.endTime && payload.endTime <= payload.startTime) {
+    errors.push("End time must be after start time.");
+  }
+  if (payload.action === "amend" && !String(payload.amendmentReason || "").trim()) {
+    errors.push("Amendment reason is required.");
+  }
+  return errors;
+}
+
+function authorizationDateWarning(date) {
+  const authorization = currentClient()?.profile?.authorization || {};
+  if (!date || !authorization.startDate || !authorization.endDate) return "";
+  if (date < authorization.startDate || date > authorization.endDate) {
+    return `Service date is outside the authorization period (${formatDate(authorization.startDate)}-${formatDate(authorization.endDate)}).`;
+  }
+  return "";
+}
+
+function soapDateChangeMessage(entry, payload) {
+  const record = soapEntryRecord(entry);
+  const previousDate = String(record.date || "").slice(0, 10);
+  if (!payload.date || !previousDate || payload.date === previousDate) return "";
+  if (entry.type === "97155") return "Changing this 97155 service date may affect linked target-change lookup. Continue?";
+  if (entry.type === "session") return "Changing this SOAP service date will update the linked session date. Continue?";
+  return "Changing this SOAP service date will update this saved note record. Continue?";
+}
+
+function ensureSoapPayloadConfirmed(entry, payload) {
+  const warning = authorizationDateWarning(payload.date);
+  if (warning && !window.confirm(`${warning} Continue?`)) return false;
+  const dateChangeMessage = soapDateChangeMessage(entry, payload);
+  if (dateChangeMessage && !window.confirm(dateChangeMessage)) return false;
+  return true;
+}
+
+function soapRecordSnapshot(record = {}) {
+  return {
+    note: String(record.note || record.soapNote || ""),
+    date: String(record.date || ""),
+    startTime: String(record.startTime || ""),
+    endTime: String(record.endTime || ""),
+    setting: String(record.setting || ""),
+    caregiverPresent: Boolean(record.caregiverPresent),
+    rbtPresent: Boolean(record.rbtPresent),
+    providerSignature: String(record.providerSignature || ""),
+    providerCredential: String(record.providerCredential || ""),
+    signatureDate: String(record.signatureDate || "")
+  };
+}
+
+function noteHistoryRecordFromPayload(entry, payload, status) {
+  const now = new Date().toISOString();
+  const existing = entry?.record || {};
+  const finalized = status === "finalized" || status === "amended";
+  const previousSnapshot = existing.finalizedSnapshot || (existing.finalized ? soapRecordSnapshot(existing) : null);
+  const base = {
+    ...existing,
+    id: existing.id || cryptoId(),
+    sessionId: String(existing.sessionId || ""),
+    serviceCode: entry?.type === "97151" ? "97151" : entry?.type === "97155" ? "97155" : existing.serviceCode || "",
+    note: payload.soapNote,
+    date: payload.date || existing.date || new Date().toISOString().slice(0, 10),
+    startTime: payload.startTime,
+    endTime: payload.endTime,
+    setting: payload.setting,
+    caregiverPresent: payload.caregiverPresent,
+    rbtPresent: payload.rbtPresent,
+    providerSignature: payload.providerSignature,
+    providerCredential: payload.providerCredential,
+    signatureDate: payload.signatureDate,
+    status,
+    noteStatus: status,
+    finalized,
+    updatedAt: now
+  };
+  if (!base.createdAt) base.createdAt = now;
+  if (status === "draft") {
+    base.lastSavedAt = now;
+    base.lastSavedBy = state.currentUser?.id || "";
+  }
+  if (status === "finalized") {
+    base.finalizedAt = existing.finalizedAt || now;
+    base.finalizedBy = existing.finalizedBy || state.currentUser?.id || "";
+    base.finalizedSnapshot = previousSnapshot || soapRecordSnapshot(base);
+  }
+  if (status === "amended") {
+    base.finalizedAt = existing.finalizedAt || now;
+    base.finalizedBy = existing.finalizedBy || state.currentUser?.id || "";
+    base.amendedAt = now;
+    base.amendedBy = state.currentUser?.id || "";
+    base.amendmentReason = String(payload.amendmentReason || "").trim();
+    base.finalizedSnapshot = previousSnapshot || soapRecordSnapshot(existing);
+    base.amendments = [
+      ...(Array.isArray(existing.amendments) ? existing.amendments : []),
+      {
+        id: cryptoId(),
+        reason: base.amendmentReason,
+        amendedAt: now,
+        amendedBy: base.amendedBy,
+        before: base.finalizedSnapshot,
+        after: soapRecordSnapshot(base)
+      }
+    ];
+  }
+  return base;
+}
+
+async function saveNoteHistoryRecord(entry, record, message) {
+  const serviceCode = entry?.type === "97151" ? "97151" : "97155";
+  const note97151History = serviceCode === "97151"
+    ? upsertNoteHistoryEntry("97151", record)
+    : currentClient()?.note97151History || [];
+  const note97155History = serviceCode === "97155"
+    ? upsertNoteHistoryEntry("97155", record)
+    : currentClient()?.note97155History || [];
+  await savePlan(
+    clientPrograms(),
+    clientBehaviors(),
+    null,
+    serviceCode === "97155" ? record.note : currentClient()?.note97155 || "",
+    clientDomains(),
+    clientRbtPerformanceAreas(),
+    serviceCode === "97151" ? record.note : currentClient()?.note97151 || "",
+    note97155History,
+    note97151History
+  );
+  state.selectedSoapEntryKey = soapNoteEntryKey(serviceCode, record.id);
+  state.soapAmendmentModeKey = "";
+  noteStatus.textContent = message;
+  renderHistory();
+  renderNote();
+  renderSoapSummary();
+}
+
 function renderNote() {
   const entry = selectedSoapEntry();
   const session = entry?.type === "session" ? entry.session : null;
   if (!entry) {
     selectedSoapNoteTitle.textContent = "Selected note";
-    soapEditor.value = "";
+    setSoapSectionFields("");
+    setSoapMetadataFields(null);
     soapEditor.placeholder = "Save or select a session to generate a SOAP note.";
-    soapEditor.readOnly = false;
+    setSoapControlsDisabled(true, true);
+    if (soapStatusLabel) {
+      soapStatusLabel.textContent = "No note";
+      soapStatusLabel.className = "health-badge medium";
+    }
+    if (soapNoteMeta) soapNoteMeta.textContent = "";
+    if (saveSoapDraftButton) saveSoapDraftButton.disabled = true;
     finalizeButton.disabled = true;
+    if (amendSoapNoteButton) amendSoapNoteButton.disabled = true;
     printSoapNoteButton.disabled = true;
     downloadSoapTextButton.disabled = true;
     downloadSoapHtmlButton.disabled = true;
     return;
   }
+  const status = soapEntryStatus(entry);
+  const inAmendmentMode = state.soapAmendmentModeKey === entry.key;
+  const locked = (status === "finalized" || status === "amended") && !inAmendmentMode;
   if (entry.type === "97151") {
     selectedSoapNoteTitle.textContent = "97151 assessment note";
-    soapEditor.value = entry.note || "";
-    soapEditor.readOnly = true;
-    finalizeButton.disabled = true;
-    printSoapNoteButton.disabled = false;
-    downloadSoapTextButton.disabled = false;
-    downloadSoapHtmlButton.disabled = false;
-    noteStatus.textContent = "This 97151 assessment note is managed from Treatment Plan or Funder Report.";
-    return;
-  }
-  if (entry.type === "97155") {
+  } else if (entry.type === "97155") {
     selectedSoapNoteTitle.textContent = "97155 treatment plan note";
-    soapEditor.value = entry.note || "";
-    soapEditor.readOnly = true;
-    finalizeButton.disabled = true;
-    printSoapNoteButton.disabled = false;
-    downloadSoapTextButton.disabled = false;
-    downloadSoapHtmlButton.disabled = false;
-    noteStatus.textContent = "This 97155 treatment plan note is managed from Treatment Plan.";
-    return;
+  } else {
+    selectedSoapNoteTitle.textContent = `${sessionCodeLabel(session)} ${soapEntryActivityLabel(entry)}`;
   }
-  selectedSoapNoteTitle.textContent = `${sessionCodeLabel(session)} ${soapEntryActivityLabel(entry)}`;
-  soapEditor.value = session.soapNote || generateSoapNote(session, lookups());
-  soapEditor.readOnly = session.finalized;
-  finalizeButton.disabled = session.finalized;
+  setSoapSectionFields(soapEntryNote(entry));
+  setSoapMetadataFields(entry);
+  setSoapControlsDisabled(locked, !inAmendmentMode);
+  if (soapStatusLabel) {
+    soapStatusLabel.textContent = soapStatusLabelText(status);
+    soapStatusLabel.className = `health-badge ${soapStatusClass(status)}`;
+  }
+  if (soapNoteMeta) soapNoteMeta.textContent = soapMetadataSummary(entry);
+  if (saveSoapDraftButton) saveSoapDraftButton.disabled = locked || status !== "draft";
+  finalizeButton.disabled = locked || status !== "draft";
+  if (amendSoapNoteButton) {
+    amendSoapNoteButton.disabled = status === "draft";
+    amendSoapNoteButton.textContent = inAmendmentMode ? "Save amendment" : "Amend note";
+  }
   printSoapNoteButton.disabled = false;
   downloadSoapTextButton.disabled = false;
   downloadSoapHtmlButton.disabled = false;
-  noteStatus.textContent = session.finalized ? "This note is finalized." : "Draft note is editable.";
+  if (!noteStatus.textContent) {
+    noteStatus.textContent = locked
+      ? "This note is locked. Use Amend note to make a correction."
+      : inAmendmentMode
+        ? "Amendment mode enabled. Enter a reason before saving."
+        : "Draft note is editable.";
+  }
 }
 
 function handlePrintSoapNote() {
   const entry = selectedSoapEntry();
   if (!entry) return;
+  if (soapEditor) soapEditor.value = composeSoapNoteFromSectionFields();
   const session = entry.type === "session" ? entry.session : null;
   const noteWindow = window.open("", "_blank");
   if (!noteWindow) {
@@ -9494,7 +9900,7 @@ function handlePrintSoapNote() {
       </head>
       <body>
         <h1>${escapeHtml(selectedSoapNoteTitle.textContent)}</h1>
-        <p>${escapeHtml(currentClient()?.name || "Client")}${session ? ` - ${formatDate(session.date)}` : ""}</p>
+        <p>${escapeHtml(currentClient()?.name || "Client")}${soapServiceDate?.value ? ` - ${formatDate(soapServiceDate.value)}` : session ? ` - ${formatDate(session.date)}` : ""} • ${escapeHtml(soapStatusLabel?.textContent || "")}</p>
         <pre>${escapeHtml(soapEditor.value)}</pre>
       </body>
     </html>
@@ -9507,6 +9913,7 @@ function handlePrintSoapNote() {
 function handleDownloadSoapNote(format) {
   const entry = selectedSoapEntry();
   if (!entry) return;
+  if (soapEditor) soapEditor.value = composeSoapNoteFromSectionFields();
   const base = soapNoteFileBase(entry);
   if (format === "html") {
     downloadFile(`${base}.html`, soapNoteHtml(entry), "text/html");
@@ -9528,6 +9935,7 @@ function soapNoteFileBase(entry) {
 
 function soapNoteHtml(entry) {
   const session = entry?.type === "session" ? entry.session : null;
+  if (soapEditor) soapEditor.value = composeSoapNoteFromSectionFields();
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -9542,23 +9950,100 @@ function soapNoteHtml(entry) {
   </head>
   <body>
     <h1>${escapeHtml(selectedSoapNoteTitle.textContent)}</h1>
-    <p>${escapeHtml(currentClient()?.name || "Client")}${session ? ` - ${formatDate(session.date)}` : ""}</p>
+    <p>${escapeHtml(currentClient()?.name || "Client")}${soapServiceDate?.value ? ` - ${formatDate(soapServiceDate.value)}` : session ? ` - ${formatDate(session.date)}` : ""} • ${escapeHtml(soapStatusLabel?.textContent || "")}</p>
     <pre>${escapeHtml(soapEditor.value)}</pre>
   </body>
 </html>`;
 }
 
-async function handleFinalize() {
-  const session = selectedSession();
-  if (!session) return;
+async function handleSaveSoapDraft() {
+  const entry = selectedSoapEntry();
+  if (!entry || soapEntryStatus(entry) !== "draft") return;
   noteStatus.textContent = "";
+  const payload = readSoapEditorPayload("save-draft");
+  const errors = soapValidationErrors(payload);
+  if (errors.length) {
+    noteStatus.textContent = errors.join(" ");
+    return;
+  }
+  if (!ensureSoapPayloadConfirmed(entry, payload)) return;
   try {
-    await updateNote(session.id, soapEditor.value, true);
-    await refreshDataAndCurrentViewSessions();
-    renderHistory();
+    if (entry.type === "session") {
+      await updateNote(entry.session.id, payload);
+      await refreshDataAndCurrentViewSessions();
+      renderHistory();
+      renderNote();
+      renderSoapSummary();
+      noteStatus.textContent = `Draft saved ${formatDateTime(new Date().toISOString())}.`;
+      return;
+    }
+    await saveNoteHistoryRecord(entry, noteHistoryRecordFromPayload(entry, payload, "draft"), `Draft saved ${formatDateTime(new Date().toISOString())}.`);
+  } catch (error) {
+    noteStatus.textContent = error.message;
+  }
+}
+
+async function handleFinalize() {
+  const entry = selectedSoapEntry();
+  if (!entry || soapEntryStatus(entry) !== "draft") return;
+  noteStatus.textContent = "";
+  const payload = readSoapEditorPayload("finalize");
+  if (!payload.signatureDate) payload.signatureDate = new Date().toISOString().slice(0, 10);
+  const errors = soapValidationErrors(payload);
+  if (errors.length) {
+    noteStatus.textContent = errors.join(" ");
+    return;
+  }
+  if (!ensureSoapPayloadConfirmed(entry, payload)) return;
+  if (!window.confirm("Finalizing this SOAP note will lock the original clinical record. Continue?")) return;
+  try {
+    if (entry.type === "session") {
+      await updateNote(entry.session.id, payload);
+      await refreshDataAndCurrentViewSessions();
+      renderHistory();
+      renderNote();
+      renderSoapSummary();
+      noteStatus.textContent = "SOAP note finalized.";
+      return;
+    }
+    await saveNoteHistoryRecord(entry, noteHistoryRecordFromPayload(entry, payload, "finalized"), "SOAP note finalized.");
+  } catch (error) {
+    noteStatus.textContent = error.message;
+  }
+}
+
+async function handleAmendSoapNote() {
+  const entry = selectedSoapEntry();
+  if (!entry) return;
+  const status = soapEntryStatus(entry);
+  if (status === "draft") return;
+  if (state.soapAmendmentModeKey !== entry.key) {
+    state.soapAmendmentModeKey = entry.key;
+    noteStatus.textContent = "Amendment mode enabled. Enter a reason before saving.";
     renderNote();
-    renderSoapSummary();
-    noteStatus.textContent = "SOAP note finalized.";
+    return;
+  }
+  noteStatus.textContent = "";
+  const payload = readSoapEditorPayload("amend");
+  if (!payload.signatureDate) payload.signatureDate = new Date().toISOString().slice(0, 10);
+  const errors = soapValidationErrors(payload);
+  if (errors.length) {
+    noteStatus.textContent = errors.join(" ");
+    return;
+  }
+  if (!ensureSoapPayloadConfirmed(entry, payload)) return;
+  try {
+    if (entry.type === "session") {
+      await updateNote(entry.session.id, payload);
+      state.soapAmendmentModeKey = "";
+      await refreshDataAndCurrentViewSessions();
+      renderHistory();
+      renderNote();
+      renderSoapSummary();
+      noteStatus.textContent = "SOAP note amended.";
+      return;
+    }
+    await saveNoteHistoryRecord(entry, noteHistoryRecordFromPayload(entry, payload, "amended"), "SOAP note amended.");
   } catch (error) {
     noteStatus.textContent = error.message;
   }
@@ -9958,6 +10443,9 @@ function soapHistoryEntries() {
       providerSignature: "",
       providerCredential: "",
       activityLabel: "Treatment planning / protocol modification",
+      status: "finalized",
+      noteStatus: "finalized",
+      finalized: true,
       createdAt: currentClient()?.planUpdatedAt || currentClient()?.updatedAt || currentClient()?.createdAt || "",
       updatedAt: currentClient()?.planUpdatedAt || currentClient()?.updatedAt || currentClient()?.createdAt || ""
     });
@@ -9971,6 +10459,9 @@ function soapHistoryEntries() {
       providerSignature: "",
       providerCredential: "",
       activityLabel: "Behavior assessment / report update",
+      status: "finalized",
+      noteStatus: "finalized",
+      finalized: true,
       createdAt: currentClient()?.updatedAt || currentClient()?.createdAt || "",
       updatedAt: currentClient()?.updatedAt || currentClient()?.createdAt || ""
     });

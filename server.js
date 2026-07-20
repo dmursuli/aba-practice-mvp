@@ -301,6 +301,12 @@ function validateSession(payload, db) {
       providerCredential: payload.providerCredential?.trim() || "",
       soapNote: payload.soapNote || "",
       finalized: false,
+      noteStatus: "draft",
+      lastSavedAt: "",
+      finalizedAt: "",
+      amendedAt: "",
+      signatureDate: "",
+      amendments: [],
       agency: normalizeAgency(client?.agency),
       createdAt: new Date().toISOString()
     }
@@ -481,6 +487,12 @@ function createHistoricalImportSession({ client, actor, row, batchId, importedAt
     providerCredential: String(actor.role || "").toUpperCase(),
     soapNote: "",
     finalized: false,
+    noteStatus: "draft",
+    lastSavedAt: "",
+    finalizedAt: "",
+    amendedAt: "",
+    signatureDate: "",
+    amendments: [],
     agency: normalizeAgency(client.agency),
     source: "historical_import",
     historicalImport: {
@@ -1954,15 +1966,103 @@ export function createAppServer() {
         return;
       }
       const before = soapNoteAuditSnapshot(session);
-      session.soapNote = String(payload.soapNote || "");
-      session.finalized = Boolean(payload.finalized);
+      const action = String(payload.action || (payload.finalized ? "finalize" : "save-draft"));
+      const isLocked = Boolean(session.finalized) || ["finalized", "amended"].includes(String(session.noteStatus || "").toLowerCase());
+      if (isLocked && action !== "amend") {
+        sendJson(res, 409, { errors: ["Finalized SOAP notes require the amendment workflow."] });
+        return;
+      }
+      const validationErrors = validateSoapNotePayload(payload);
+      if (validationErrors.length) {
+        sendJson(res, 400, { errors: validationErrors });
+        return;
+      }
+      if (action === "amend" && !String(payload.amendmentReason || "").trim()) {
+        sendJson(res, 400, { errors: ["Amendment reason is required."] });
+        return;
+      }
+      const now = new Date().toISOString();
+      const beforeFinalizedSnapshot = session.finalizedSnapshot || {
+        soapNote: String(session.soapNote || ""),
+        date: String(session.date || ""),
+        startTime: String(session.startTime || ""),
+        endTime: String(session.endTime || ""),
+        setting: String(session.setting || ""),
+        caregiverPresent: Boolean(session.caregiverPresent),
+        rbtPresent: Boolean(session.rbtPresent),
+        providerSignature: String(session.providerSignature || ""),
+        providerCredential: String(session.providerCredential || ""),
+        signatureDate: String(session.signatureDate || ""),
+        finalizedAt: String(session.finalizedAt || ""),
+        finalizedBy: String(session.finalizedBy || "")
+      };
+      applySoapNotePayload(session, payload);
+      if (action === "finalize") {
+        session.finalized = true;
+        session.noteStatus = "finalized";
+        session.finalizedAt = session.finalizedAt || now;
+        session.finalizedBy = actor.id;
+        session.signatureDate = String(payload.signatureDate || now.slice(0, 10)).slice(0, 10);
+        session.finalizedSnapshot = session.finalizedSnapshot || {
+          soapNote: String(session.soapNote || ""),
+          date: String(session.date || ""),
+          startTime: String(session.startTime || ""),
+          endTime: String(session.endTime || ""),
+          setting: String(session.setting || ""),
+          caregiverPresent: Boolean(session.caregiverPresent),
+          rbtPresent: Boolean(session.rbtPresent),
+          providerSignature: String(session.providerSignature || ""),
+          providerCredential: String(session.providerCredential || ""),
+          signatureDate: session.signatureDate,
+          finalizedAt: session.finalizedAt,
+          finalizedBy: session.finalizedBy
+        };
+      } else if (action === "amend") {
+        session.finalized = true;
+        session.noteStatus = "amended";
+        session.amendedAt = now;
+        session.amendedBy = actor.id;
+        session.signatureDate = String(payload.signatureDate || now.slice(0, 10)).slice(0, 10);
+        session.finalizedSnapshot = beforeFinalizedSnapshot;
+        session.amendments = [
+          ...(Array.isArray(session.amendments) ? session.amendments : []),
+          {
+            id: crypto.randomUUID(),
+            reason: String(payload.amendmentReason || "").trim(),
+            amendedAt: now,
+            amendedBy: actor.id,
+            before: beforeFinalizedSnapshot,
+            after: {
+              soapNote: String(session.soapNote || ""),
+              date: String(session.date || ""),
+              startTime: String(session.startTime || ""),
+              endTime: String(session.endTime || ""),
+              setting: String(session.setting || ""),
+              caregiverPresent: Boolean(session.caregiverPresent),
+              rbtPresent: Boolean(session.rbtPresent),
+              providerSignature: String(session.providerSignature || ""),
+              providerCredential: String(session.providerCredential || ""),
+              signatureDate: String(session.signatureDate || "")
+            }
+          }
+        ];
+      } else {
+        session.finalized = false;
+        session.noteStatus = "draft";
+        session.lastSavedAt = now;
+        session.lastSavedBy = actor.id;
+      }
       session.updatedAt = new Date().toISOString();
-      logAudit(db, req, actor, session.finalized ? "soap-note-finalized" : "soap-note-updated", {
+      const auditAction = action === "amend"
+        ? "soap-note-amended"
+        : (action === "finalize" ? "soap-note-finalized" : "soap-note-draft-saved");
+      logAudit(db, req, actor, auditAction, {
         clientId: session.clientId,
         details: {
           sessionId: session.id,
           date: session.date,
           serviceType: session.serviceType || "97153",
+          amendmentReason: action === "amend" ? String(payload.amendmentReason || "").trim() : "",
           before,
           after: soapNoteAuditSnapshot(session)
         }
@@ -2782,8 +2882,57 @@ function auditScalar(value) {
 function soapNoteAuditSnapshot(session) {
   return {
     finalized: Boolean(session.finalized),
-    noteLength: String(session.soapNote || "").length
+    status: normalizedSoapNoteStatus(session),
+    noteLength: String(session.soapNote || "").length,
+    date: String(session.date || ""),
+    startTime: String(session.startTime || ""),
+    endTime: String(session.endTime || ""),
+    finalizedAt: String(session.finalizedAt || ""),
+    amendedAt: String(session.amendedAt || ""),
+    signatureDate: String(session.signatureDate || "")
   };
+}
+
+function normalizedSoapNoteStatus(note = {}) {
+  const status = String(note.noteStatus || note.status || "").trim().toLowerCase();
+  if (status === "amended") return "amended";
+  if (status === "finalized" || note.finalized) return "finalized";
+  return "draft";
+}
+
+function validateSoapNotePayload(payload = {}) {
+  const errors = [];
+  const date = String(payload.date || "").trim();
+  if (date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      errors.push("Enter a valid service date.");
+    } else if (date > new Date().toISOString().slice(0, 10)) {
+      errors.push("Service date cannot be in the future.");
+    }
+  }
+  const startTime = String(payload.startTime || "").trim();
+  const endTime = String(payload.endTime || "").trim();
+  if (startTime && !/^\d{2}:\d{2}$/.test(startTime)) errors.push("Enter a valid start time.");
+  if (endTime && !/^\d{2}:\d{2}$/.test(endTime)) errors.push("Enter a valid end time.");
+  if (/^\d{2}:\d{2}$/.test(startTime) && /^\d{2}:\d{2}$/.test(endTime) && endTime <= startTime) {
+    errors.push("End time must be after start time.");
+  }
+  return errors;
+}
+
+function applySoapNotePayload(session, payload = {}) {
+  if (Object.prototype.hasOwnProperty.call(payload, "soapNote")) {
+    session.soapNote = String(payload.soapNote || "");
+  }
+  if (payload.date) session.date = String(payload.date).slice(0, 10);
+  if (Object.prototype.hasOwnProperty.call(payload, "startTime")) session.startTime = String(payload.startTime || "");
+  if (Object.prototype.hasOwnProperty.call(payload, "endTime")) session.endTime = String(payload.endTime || "");
+  if (Object.prototype.hasOwnProperty.call(payload, "setting")) session.setting = String(payload.setting || "").trim();
+  if (Object.prototype.hasOwnProperty.call(payload, "caregiverPresent")) session.caregiverPresent = Boolean(payload.caregiverPresent);
+  if (Object.prototype.hasOwnProperty.call(payload, "rbtPresent")) session.rbtPresent = Boolean(payload.rbtPresent);
+  if (Object.prototype.hasOwnProperty.call(payload, "providerSignature")) session.providerSignature = String(payload.providerSignature || "").trim();
+  if (Object.prototype.hasOwnProperty.call(payload, "providerCredential")) session.providerCredential = String(payload.providerCredential || "").trim();
+  if (Object.prototype.hasOwnProperty.call(payload, "signatureDate")) session.signatureDate = String(payload.signatureDate || "").slice(0, 10);
 }
 
 function treatmentPlanAuditSnapshot(client) {
@@ -2813,7 +2962,11 @@ function treatmentPlanAuditSnapshot(client) {
       id: behavior.id,
       name: behavior.name,
       status: behavior.status
-    }))
+    })),
+    soapNotes: [
+      ...soapNoteHistoryAuditItems(client.note97151History || [], "97151"),
+      ...soapNoteHistoryAuditItems(client.note97155History || [], "97155")
+    ]
   };
 }
 
@@ -2827,8 +2980,41 @@ function treatmentPlanChanges(before, after) {
     targetStatusChanges: targetStatusChanges(before.programs, after.programs),
     objectivesChanged: objectivesChanged(before.programs, after.programs),
     behaviorsAdded: addedById(before.behaviors, after.behaviors).map((behavior) => behavior.name),
-    behaviorsRemoved: addedById(after.behaviors, before.behaviors).map((behavior) => behavior.name)
+    behaviorsRemoved: addedById(after.behaviors, before.behaviors).map((behavior) => behavior.name),
+    soapNotes: soapNoteHistoryAuditChanges(before.soapNotes || [], after.soapNotes || [])
   };
+}
+
+function soapNoteHistoryAuditItems(entries, serviceCode) {
+  return (Array.isArray(entries) ? entries : []).map((entry) => ({
+    id: String(entry.id || ""),
+    serviceCode,
+    status: normalizedSoapNoteStatus(entry),
+    date: String(entry.date || ""),
+    updatedAt: String(entry.updatedAt || ""),
+    finalizedAt: String(entry.finalizedAt || ""),
+    amendedAt: String(entry.amendedAt || "")
+  }));
+}
+
+function soapNoteHistoryAuditChanges(before = [], after = []) {
+  const beforeById = new Map(before.map((entry) => [entry.id, entry]));
+  return after
+    .filter((entry) => {
+      const previous = beforeById.get(entry.id);
+      return !previous
+        || previous.status !== entry.status
+        || previous.date !== entry.date
+        || previous.updatedAt !== entry.updatedAt
+        || previous.finalizedAt !== entry.finalizedAt
+        || previous.amendedAt !== entry.amendedAt;
+    })
+    .map((entry) => ({
+      id: entry.id,
+      serviceCode: entry.serviceCode,
+      status: entry.status,
+      date: entry.date
+    }));
 }
 
 function addedById(before, after) {
@@ -3536,21 +3722,60 @@ function sanitizeNoteHistoryEntries(entries, serviceCode) {
   if (!Array.isArray(entries)) return [];
   return entries
     .filter((entry) => entry && typeof entry === "object")
-    .map((entry) => ({
-      id: String(entry.id || crypto.randomUUID()),
-      sessionId: String(entry.sessionId || entry.id || ""),
-      serviceCode,
-      note: String(entry.note || "").trim(),
-      date: String(entry.date || new Date().toISOString().slice(0, 10)).slice(0, 10),
-      createdAt: String(entry.createdAt || new Date().toISOString()),
-      updatedAt: String(entry.updatedAt || entry.createdAt || new Date().toISOString()),
-      providerSignature: String(entry.providerSignature || ""),
-      providerCredential: String(entry.providerCredential || ""),
-      startTime: String(entry.startTime || ""),
-      endTime: String(entry.endTime || ""),
-      setting: String(entry.setting || ""),
-      activityLabel: String(entry.activityLabel || "")
-    }))
+    .map((entry) => {
+      const now = new Date().toISOString();
+      const hadExplicitStatus = Boolean(entry.status || entry.noteStatus || entry.finalized);
+      const status = hadExplicitStatus ? normalizedSoapNoteStatus(entry) : "finalized";
+      const finalized = status === "finalized" || status === "amended";
+      const finalizedAt = String(entry.finalizedAt || (finalized ? entry.updatedAt || entry.createdAt || now : ""));
+      const finalizedBy = String(entry.finalizedBy || (finalized ? entry.lastSavedBy || "migration" : ""));
+      const base = {
+        id: String(entry.id || crypto.randomUUID()),
+        sessionId: String(entry.sessionId || entry.id || ""),
+        serviceCode,
+        note: String(entry.note || "").trim(),
+        date: String(entry.date || new Date().toISOString().slice(0, 10)).slice(0, 10),
+        createdAt: String(entry.createdAt || now),
+        updatedAt: String(entry.updatedAt || entry.createdAt || now),
+        providerSignature: String(entry.providerSignature || ""),
+        providerCredential: String(entry.providerCredential || ""),
+        startTime: String(entry.startTime || ""),
+        endTime: String(entry.endTime || ""),
+        setting: String(entry.setting || ""),
+        caregiverPresent: Boolean(entry.caregiverPresent),
+        rbtPresent: Boolean(entry.rbtPresent),
+        signatureDate: String(entry.signatureDate || ""),
+        activityLabel: String(entry.activityLabel || ""),
+        status,
+        noteStatus: status,
+        finalized,
+        lastSavedAt: String(entry.lastSavedAt || ""),
+        lastSavedBy: String(entry.lastSavedBy || ""),
+        finalizedAt,
+        finalizedBy,
+        amendedAt: String(entry.amendedAt || ""),
+        amendedBy: String(entry.amendedBy || ""),
+        amendmentReason: String(entry.amendmentReason || ""),
+        amendments: Array.isArray(entry.amendments) ? entry.amendments : []
+      };
+      return {
+        ...base,
+        finalizedSnapshot: entry.finalizedSnapshot || (finalized ? {
+          note: base.note,
+          date: base.date,
+          startTime: base.startTime,
+          endTime: base.endTime,
+          setting: base.setting,
+          caregiverPresent: base.caregiverPresent,
+          rbtPresent: base.rbtPresent,
+          providerSignature: base.providerSignature,
+          providerCredential: base.providerCredential,
+          signatureDate: base.signatureDate,
+          finalizedAt: base.finalizedAt,
+          finalizedBy: base.finalizedBy
+        } : null)
+      };
+    })
     .filter((entry) => entry.note)
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
 }
@@ -3570,7 +3795,35 @@ function createNoteHistoryEntry(serviceCode, note, metadata = {}) {
     startTime: String(metadata.startTime || ""),
     endTime: String(metadata.endTime || ""),
     setting: String(metadata.setting || ""),
-    activityLabel: String(metadata.activityLabel || "")
+    caregiverPresent: Boolean(metadata.caregiverPresent),
+    rbtPresent: Boolean(metadata.rbtPresent),
+    signatureDate: String(metadata.signatureDate || now.slice(0, 10)),
+    activityLabel: String(metadata.activityLabel || ""),
+    status: "finalized",
+    noteStatus: "finalized",
+    finalized: true,
+    lastSavedAt: "",
+    lastSavedBy: "",
+    finalizedAt: String(metadata.finalizedAt || now),
+    finalizedBy: String(metadata.finalizedBy || "migration"),
+    amendedAt: "",
+    amendedBy: "",
+    amendmentReason: "",
+    amendments: [],
+    finalizedSnapshot: {
+      note: String(note || "").trim(),
+      date: String(metadata.date || now.slice(0, 10)).slice(0, 10),
+      startTime: String(metadata.startTime || ""),
+      endTime: String(metadata.endTime || ""),
+      setting: String(metadata.setting || ""),
+      caregiverPresent: Boolean(metadata.caregiverPresent),
+      rbtPresent: Boolean(metadata.rbtPresent),
+      providerSignature: String(metadata.providerSignature || ""),
+      providerCredential: String(metadata.providerCredential || ""),
+      signatureDate: String(metadata.signatureDate || now.slice(0, 10)),
+      finalizedAt: String(metadata.finalizedAt || now),
+      finalizedBy: String(metadata.finalizedBy || "migration")
+    }
   };
 }
 

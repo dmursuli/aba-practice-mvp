@@ -184,3 +184,181 @@ test("97155 SOAP reads target-status changes persisted through the treatment-pla
   assert.equal(matched.length, 1);
   assert.match(summary, /Targets mastered included Manding: Request help\./);
 });
+
+test("SOAP draft, finalize, and amend workflow preserves the finalized session note", async () => {
+  await resetDb({
+    ...structuredClone(baseDb),
+    sessions: [
+      {
+        id: "session-1",
+        clientId: "client-1",
+        date: "2026-07-10",
+        therapist: "Diego Mursuli",
+        startTime: "09:00",
+        endTime: "10:00",
+        setting: "Home",
+        caregiverPresent: false,
+        rbtPresent: false,
+        programs: [],
+        behaviors: [],
+        barriers: "none",
+        serviceType: "97153",
+        providerSignature: "Diego Mursuli",
+        providerCredential: "BCBA",
+        soapNote: "S: Original draft\n\nO: Data reviewed\n\nA: Progress noted\n\nP: Continue plan",
+        finalized: false,
+        noteStatus: "draft",
+        createdAt: "2026-07-10T13:00:00.000Z"
+      }
+    ]
+  });
+  const cookie = await loginAs();
+
+  const draft = await request("/api/sessions/session-1/note", {
+    method: "PUT",
+    cookie,
+    body: {
+      action: "save-draft",
+      soapNote: "S: Edited draft\n\nO: Data reviewed\n\nA: Progress noted\n\nP: Continue plan",
+      date: "2026-07-11",
+      startTime: "09:15",
+      endTime: "10:15",
+      setting: "Clinic",
+      caregiverPresent: true,
+      rbtPresent: false,
+      providerSignature: "Diego Mursuli",
+      providerCredential: "BCBA"
+    }
+  });
+  assert.equal(draft.response.status, 200);
+  assert.equal(draft.json.noteStatus, "draft");
+  assert.equal(draft.json.finalized, false);
+  assert.equal(draft.json.date, "2026-07-11");
+  assert.match(draft.json.soapNote, /Edited draft/);
+
+  const finalized = await request("/api/sessions/session-1/note", {
+    method: "PUT",
+    cookie,
+    body: {
+      action: "finalize",
+      soapNote: draft.json.soapNote,
+      date: "2026-07-11",
+      startTime: "09:15",
+      endTime: "10:15",
+      setting: "Clinic",
+      caregiverPresent: true,
+      rbtPresent: false,
+      providerSignature: "Diego Mursuli",
+      providerCredential: "BCBA",
+      signatureDate: "2026-07-11"
+    }
+  });
+  assert.equal(finalized.response.status, 200);
+  assert.equal(finalized.json.noteStatus, "finalized");
+  assert.equal(finalized.json.finalized, true);
+  assert.match(finalized.json.finalizedSnapshot.soapNote, /Edited draft/);
+
+  const blocked = await request("/api/sessions/session-1/note", {
+    method: "PUT",
+    cookie,
+    body: {
+      action: "save-draft",
+      soapNote: "S: Silent overwrite attempt",
+      date: "2026-07-12",
+      startTime: "09:15",
+      endTime: "10:15"
+    }
+  });
+  assert.equal(blocked.response.status, 409);
+
+  const missingReason = await request("/api/sessions/session-1/note", {
+    method: "PUT",
+    cookie,
+    body: {
+      action: "amend",
+      soapNote: "S: Corrected note",
+      date: "2026-07-12",
+      startTime: "09:15",
+      endTime: "10:15"
+    }
+  });
+  assert.equal(missingReason.response.status, 400);
+
+  const amended = await request("/api/sessions/session-1/note", {
+    method: "PUT",
+    cookie,
+    body: {
+      action: "amend",
+      soapNote: "S: Corrected note\n\nO: Data reviewed\n\nA: Progress noted\n\nP: Continue plan",
+      date: "2026-07-12",
+      startTime: "09:15",
+      endTime: "10:15",
+      setting: "Clinic",
+      caregiverPresent: true,
+      rbtPresent: false,
+      providerSignature: "Diego Mursuli",
+      providerCredential: "BCBA",
+      signatureDate: "2026-07-12",
+      amendmentReason: "Corrected service date after documentation review."
+    }
+  });
+  assert.equal(amended.response.status, 200);
+  assert.equal(amended.json.noteStatus, "amended");
+  assert.equal(amended.json.finalized, true);
+  assert.equal(amended.json.date, "2026-07-12");
+  assert.match(amended.json.finalizedSnapshot.soapNote, /Edited draft/);
+  assert.equal(amended.json.amendments.length, 1);
+  assert.match(amended.json.amendments[0].reason, /Corrected service date/);
+});
+
+test("97155 SOAP note history keeps draft status and treats unknown legacy status as finalized", async () => {
+  await resetDb();
+  const cookie = await loginAs();
+  const dataBefore = await request("/api/data?includeSessions=visible", { cookie });
+  assert.equal(dataBefore.response.status, 200);
+  const clientBefore = dataBefore.json.clients.find((client) => client.id === "client-1");
+
+  const saveResult = await request("/api/clients/client-1/plan", {
+    method: "PUT",
+    cookie,
+    body: {
+      domains: clientBefore.domains,
+      programs: clientBefore.programs,
+      behaviors: clientBefore.behaviors,
+      rbtPerformanceAreas: clientBefore.rbtPerformanceAreas,
+      planChangeLog: clientBefore.planChangeLog,
+      note97151: clientBefore.note97151,
+      note97155: "S: Draft 97155\n\nO: Data reviewed\n\nA: Progress noted\n\nP: Continue",
+      note97151History: [],
+      note97155History: [
+        {
+          id: "draft-97155",
+          sessionId: "97155-session-2",
+          serviceCode: "97155",
+          note: "S: Draft 97155\n\nO: Data reviewed\n\nA: Progress noted\n\nP: Continue",
+          date: "2026-07-14",
+          status: "draft",
+          noteStatus: "draft",
+          finalized: false,
+          lastSavedAt: "2026-07-14T15:00:00.000Z"
+        },
+        {
+          id: "legacy-unknown-status",
+          sessionId: "97155-session-1",
+          serviceCode: "97155",
+          note: "S: Legacy saved note",
+          date: "2026-07-13"
+        }
+      ]
+    }
+  });
+
+  assert.equal(saveResult.response.status, 200);
+  const draft = saveResult.json.note97155History.find((entry) => entry.id === "draft-97155");
+  const legacy = saveResult.json.note97155History.find((entry) => entry.id === "legacy-unknown-status");
+  assert.equal(draft.noteStatus, "draft");
+  assert.equal(draft.finalized, false);
+  assert.equal(legacy.noteStatus, "finalized");
+  assert.equal(legacy.finalized, true);
+  assert.match(legacy.finalizedBy, /migration/);
+});

@@ -1028,10 +1028,73 @@
             <button type="button" class="secondary-button" id="print-soap-note">Print note</button>
             <button type="button" class="secondary-button" id="download-soap-text">Download .txt</button>
             <button type="button" class="secondary-button" id="download-soap-html">Download .html</button>
+            <button type="button" class="secondary-button" id="save-soap-draft">Save draft</button>
             <button type="button" class="secondary-button" id="finalize-note">Finalize note</button>
+            <button type="button" class="secondary-button" id="amend-soap-note">Amend note</button>
           </div>
         </div>
-        <textarea id="soap-note" class="soap-editor" rows="18" aria-label="Editable SOAP note"></textarea>
+        <div class="soap-status-row">
+          <span id="soap-note-status-label" class="health-badge medium">Draft</span>
+          <span id="soap-note-meta" class="muted"></span>
+        </div>
+        <div class="form-grid soap-meta-grid">
+          <label>Service date
+            <input type="date" id="soap-service-date">
+          </label>
+          <label>Signature date
+            <input type="date" id="soap-signature-date">
+          </label>
+          <label>Start time
+            <input type="time" id="soap-start-time">
+          </label>
+          <label>End time
+            <input type="time" id="soap-end-time">
+          </label>
+          <label>Setting
+            <input type="text" id="soap-setting" placeholder="Home, clinic, school, telehealth">
+          </label>
+          <label>Provider signature
+            <input type="text" id="soap-provider-signature" placeholder="Provider name">
+          </label>
+          <label>Provider credential
+            <input type="text" id="soap-provider-credential" placeholder="BCBA, RBT">
+          </label>
+          <label>Caregiver present
+            <select id="soap-caregiver-present">
+              <option value="">Not entered</option>
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+          </label>
+          <label>RBT present
+            <select id="soap-rbt-present">
+              <option value="">Not entered</option>
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+          </label>
+        </div>
+        <div class="soap-section-grid">
+          <label>Subjective
+            <textarea id="soap-subjective" rows="5" aria-label="Subjective SOAP section"></textarea>
+          </label>
+          <label>Objective
+            <textarea id="soap-objective" rows="5" aria-label="Objective SOAP section"></textarea>
+          </label>
+          <label>Assessment
+            <textarea id="soap-assessment" rows="5" aria-label="Assessment SOAP section"></textarea>
+          </label>
+          <label>Plan
+            <textarea id="soap-plan" rows="5" aria-label="Plan SOAP section"></textarea>
+          </label>
+        </div>
+        <label class="soap-amendment-field">Amendment reason
+          <textarea id="soap-amendment-reason" rows="3" placeholder="Required before saving an amendment"></textarea>
+        </label>
+        <details class="soap-raw-note">
+          <summary>Full note text used for export</summary>
+          <textarea id="soap-note" class="soap-editor" rows="10" aria-label="Editable SOAP note"></textarea>
+        </details>
         <p id="note-status" class="form-message" role="status"></p>
       </section>
     </main>

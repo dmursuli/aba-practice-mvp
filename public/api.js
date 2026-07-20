@@ -241,10 +241,13 @@ export async function rollbackHistoricalImport(batchId) {
 }
 
 export async function updateNote(sessionId, soapNote, finalized) {
+  const payload = soapNote && typeof soapNote === "object"
+    ? soapNote
+    : { soapNote, finalized };
   const response = await fetch(`/api/sessions/${sessionId}/note`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ soapNote, finalized })
+    body: JSON.stringify(payload)
   });
   return parseResponse(response);
 }
