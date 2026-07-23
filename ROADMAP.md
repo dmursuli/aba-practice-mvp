@@ -1,244 +1,354 @@
-# Scheduling Roadmap
+# Scheduling Operations Workspace Roadmap
 
-Every phase is narrow, independently testable, and independently deployable. A later phase must not be bundled into an earlier phase for convenience.
+The approved Scheduling Operations Workspace is a long-term product direction, not one large implementation. Every phase is narrow, independently reviewable, independently testable, and independently deployable. Later-phase business logic must not be bundled into an earlier phase for convenience.
 
-## Phase 0: Architecture Inspection and Documentation
+Scheduling remains part of the existing application. No phase creates a separate web application, authentication system, database, deployment, client directory, or staff directory.
+
+## Permanent Boundaries
+
+- Scheduling owns operational intent: staffing demand, scheduling profiles, availability, assignments, planned appointments, zones, capacity, and travel feasibility.
+- Existing clinical modules own sessions, SOAP notes, treatment plans, assessments, 97155 `planChangeLog/sessionId` behavior, and delivered-service facts.
+- Billing owns claims and payment workflows.
+- Existing clients and users are referenced by stable IDs.
+- Scheduled, delivered, finalized, and billing-ready hours remain separate calculations.
+- Appointment changes never silently update sessions, SOAP notes, finalized records, amendments, or `planChangeLog`.
+- Matching is explainable administrator decision support and never performs automatic assignment.
+
+## Phase 1: Read-only Weekly Clinical-record Calendar — Complete
+
+Delivered scope:
+
+- Scheduling navigation for authorized admin and BCBA users
+- Monday-through-Sunday weekly calendar
+- Today, Previous Week, and Next Week controls
+- Client and service-code filters
+- Existing saved sessions displayed as read-only completed clinical records
+- Date-range loading through a separate scheduling data cache
+- Loading, error, and empty states
+
+Preserved boundaries:
+
+- No appointment records
+- No session or SOAP mutation
+- No treatment-plan or `planChangeLog` mutation
+- Existing clinical records remain authoritative
+
+## Phase 2: Scheduling Workspace Shell
 
 Scope:
 
-- Record current persistence, identity, session, authorization, navigation, and deployment patterns.
-- Define scheduling boundaries and protected workflows.
-- Approve the feature specification and roadmap.
+- Convert the current Scheduling page into an internal workspace.
+- Add sub-navigation for Calendar, Staffing, Availability, Zones, and Capacity.
+- Preserve the existing weekly calendar as the functional Calendar subview.
+- Add intentional empty states for Staffing, Availability, Zones, and Capacity.
+- Preserve direct navigation to the Scheduling workspace.
+- Do not add domain storage, mutation APIs, forms, matching, capacity, availability, or zone business logic.
 
 Acceptance criteria:
 
-- `PROJECT_CONTEXT.md`, `SCHEDULING_FEATURE_SPEC.md`, and `ROADMAP.md` are reviewed and approved.
-- The 97155 `planChangeLog/sessionId` boundary is documented.
-- SOAP draft, finalization, and amendment protections are documented.
-- No runtime code, data, or schema is changed.
+- Authorized users can switch among all five workspace subviews.
+- Calendar behavior and visible-range loading remain unchanged.
+- Each nonfunctional subview clearly identifies its future purpose and does not imply that data is being calculated.
+- Existing role and agency visibility rules remain unchanged.
+- No runtime mutation, persistence collection, or new domain API is introduced.
+- Existing calendar, startup, lazy-loading, SOAP, billing, graph, and 97155 regression tests remain green.
 
-## Phase 1: Scheduling Navigation and Read-only Weekly Calendar Shell
+## Phase 3: Zone Management
 
 Scope:
 
-- Add Scheduling navigation for admin and BCBA.
-- Add Monday-through-Sunday calendar layout.
-- Add Today, Previous Week, and Next Week controls.
-- Add client and service-code filters.
-- Display existing saved sessions as read-only completed clinical records.
-- Use a separate scheduling data cache.
+- Add configurable agency-scoped zones.
+- Support ZIP-code associations.
+- Support adjacent-zone relationships.
+- Support default same-zone and adjacent-zone travel-buffer rules.
+- Support active/inactive status.
+- Assign a client's primary zone by stable `clientId`.
+- Assign an RBT's primary and secondary zones by stable `userId`.
+- Support `Other / Manual Review`.
+
+Initial seed candidates:
+
+- West Kendall
+- Kendall
+- Doral
+- Cutler Bay
+- Homestead
+- Miami Lakes
+- Other / Manual Review
 
 Acceptance criteria:
 
-- Direct URL navigation to `?view=schedule` works.
-- Unauthorized roles do not see the navigation item.
-- Week transitions work across month and year boundaries.
-- Existing sessions load only for the visible date range.
-- Loading, error, and empty states render correctly.
-- No appointment, session, SOAP, plan-change, or database mutation occurs.
-- Existing startup, lazy-loading, SOAP, graph, billing, and 97155 tests remain green.
+- Zone names and relationships are configurable rather than hard-coded into matching or scheduling behavior.
+- ZIP associations use canonical validated values.
+- Adjacency cannot self-reference and is treated symmetrically.
+- Unmapped or ambiguous ZIP codes route to manual review.
+- Inactive zones remain available for historical references but cannot be newly assigned without an explicit corrective action.
+- Client and RBT references use existing stable IDs.
+- Zone changes are agency-scoped, version checked where applicable, and audited.
+- No appointments, matching scores, or live travel calculations are introduced.
 
-## Phase 2: Appointment Storage Model and API
+## Phase 4: Scheduling Profiles
 
 Scope:
 
-- Add backward-compatible `appointments: []` application state.
-- Add appointment sanitization and validation.
-- Add agency-scoped date-range read API.
-- Add create/update/cancel API foundations without exposing UI mutations.
-- Add appointment audit events.
-- Add optimistic appointment version checks.
+Create separate scheduling-owned profile records that extend existing clients and users without duplicating their authoritative identities.
+
+Client scheduling profile:
+
+- `clientId`
+- Assigned zone
+- Service locations
+- Preferred setting
+- Structured weekly availability
+- Weekend permission
+- Language preference
+- Experience requirement
+- Transportation or caregiver restrictions
+- Staffing status
+- Assigned BCBA reference
+
+RBT scheduling profile:
+
+- `userId`
+- Primary zone
+- Secondary zones
+- Structured weekly availability
+- Maximum weekly hours
+- Minimum desired hours
+- Travel radius or travel preference
+- Language
+- Experience areas
+- Age-group preference
+- Service-setting preference
+- Weekend availability
+- Transportation reliability
+- Supervisor reference
+- Employment scheduling status
 
 Acceptance criteria:
 
-- Missing legacy `appointments` state defaults to an empty array.
-- Appointment reads are agency scoped.
-- Invalid client, provider, service code, time range, or timezone is rejected.
-- Concurrent stale updates receive a conflict response.
-- Backup and restore preserve appointments.
-- No SQL migration is required.
-- Existing client/session/note state remains byte-for-byte unaffected by appointment-only operations, excluding expected audit additions.
+- Each profile references an existing agency-compatible client or user.
+- Profile fields are scheduling-specific.
+- Authentication, legal identity, clinical credentials, HR records, pay rates, and assessment data are not duplicated.
+- Availability uses structured weekday, time, timezone, and effective-date values.
+- Invalid, overnight, or inverted availability windows are rejected unless explicitly supported.
+- Updates are version checked and audited.
+- No eligibility ranking or appointment business logic is introduced.
 
-## Phase 3: Individual Appointment Create, Edit, and Cancel
+## Phase 5: Staffing Queue
 
 Scope:
 
-- Add appointment form.
-- Support create, edit, confirm, cancel, and explicit reschedule.
-- Show validation and authorization-date warnings.
-- Keep the calendar non-draggable.
+- Add an operational staffing queue initially based on existing clients.
+- Support staffing demand and required weekly hours.
+- Support administrator-managed staffing progression.
+- Preserve partial staffing and remaining unfilled hours.
+
+Statuses:
+
+- `referral_received`
+- `benefits_verified`
+- `assessment_pending`
+- `authorization_pending`
+- `ready_for_staffing`
+- `partial_staffing`
+- `fully_staffed`
+- `on_hold`
+- `services_started`
 
 Acceptance criteria:
 
-- Authorized users can manage one appointment.
-- Cancellation preserves appointment history.
-- Rescheduling preserves the original record and links the replacement.
-- Completed or linked appointments enforce restricted edit rules.
-- Every mutation produces an audit event.
-- No clinical session or SOAP note is created or changed.
+- Queue records reference existing clients by stable ID.
+- The queue does not create duplicate referral, assessment, benefits, authorization, or clinical records.
+- Status changes are explicit, agency-scoped, and audited.
+- Partial staffing retains both staffed and unstaffed quantities.
+- The UI distinguishes operational stage labels from evidence stored in authoritative modules.
+- A complete referral-management system remains deferred.
 
-## Phase 4: Recurring Appointments
+## Phase 6: Eligibility Filtering
 
 Scope:
 
-- Add recurrence series.
-- Support weekly rules, selected weekdays, end date, and occurrence limit.
-- Support editing one occurrence or future occurrences.
-- Generate stable occurrence IDs.
+Filter incompatible RBTs using hard constraints:
+
+- Inactive provider
+- Agency mismatch
+- Availability mismatch
+- Payer or credential incompatibility
+- Zone restrictions
+- Maximum-hours violation
+- Schedule overlap
+- Language requirement
+- Required experience
+- Supervision restriction
 
 Acceptance criteria:
 
-- Series creation is bounded and validated.
-- One occurrence can be cancelled without rewriting unrelated occurrences.
-- Editing future occurrences preserves past occurrences.
-- Daylight-saving transitions preserve intended local appointment time.
-- Series actions are audited.
+- Eligibility uses stable `clientId` and `userId` references.
+- All hard constraints are evaluated before ranking.
+- Ineligible candidates receive explicit disqualifier reasons.
+- Ineligible candidates are not scored.
+- Results do not expose unauthorized client information.
+- The same inputs produce deterministic eligibility results.
+- No automatic assignment occurs.
 
-## Phase 5: Staff Availability
+## Phase 7: Explainable Matching
 
 Scope:
 
-- Add recurring staff availability rules.
-- Add effective dates and timezone.
-- Display availability on scheduling views.
-- Warn when appointments fall outside availability.
+Rank only eligible RBTs using configurable weighted factors:
+
+- Same primary zone
+- Schedule compatibility
+- Travel burden
+- Desired additional hours
+- Same supervising BCBA
+- Language match
+- Relevant experience
 
 Acceptance criteria:
 
-- Availability can be created, edited, deactivated, and date bounded.
-- Overnight and invalid rules are rejected unless explicitly supported.
-- Availability warnings are deterministic and tested.
-- Existing appointments are not automatically moved.
+- Only eligible candidates enter ranking.
+- Weight configuration is agency-scoped and validated.
+- Every recommendation shows reasons, warnings, relevant inputs, and disqualifiers where applicable.
+- Recommendations indicate when material inputs have become stale.
+- An administrator explicitly accepts, rejects, or defers a recommendation.
+- Administrator decisions are audited.
+- The system never assigns staff or publishes a schedule automatically.
 
-## Phase 6: PTO, Holidays, and Unavailable Time
+## Phase 8: Manual Appointment Scheduling
 
 Scope:
 
-- Add dated provider unavailable time.
-- Add agency holidays and closures.
-- Display blocked time on calendars.
+- Add backward-compatible appointment and recurrence records.
+- Create one appointment.
+- Edit and confirm an appointment.
+- Cancel with a reason.
+- Reschedule explicitly while preserving the original record.
+- Create and manage bounded recurring schedules.
+- Record appointment audit history.
+- Show authorized-versus-scheduled warnings.
+- Calculate weekly scheduled hours.
 
 Acceptance criteria:
 
-- Full-day and partial-day blocks work.
-- Agency and provider scope are enforced.
-- Existing appointments remain present and receive warnings.
-- Block creation does not silently cancel appointments.
-- Changes are audited.
+- Missing legacy scheduling collections default safely without requiring historical backfill.
+- Reads and mutations are authenticated, role checked, and agency scoped.
+- Client and provider references use stable IDs.
+- Invalid service codes, providers, time ranges, timezones, recurrence rules, and authorization periods are rejected or handled through an explicitly permitted override.
+- Stable appointment and occurrence IDs are preserved.
+- Stale concurrent updates receive a version conflict.
+- Cancellation preserves history.
+- Rescheduling links a replacement instead of rewriting the original.
+- Daylight-saving transitions preserve intended local recurrence time.
+- Scheduled hours are never reported as delivered, finalized, or billing-ready hours.
+- No clinical session or SOAP record is created or changed.
 
-## Phase 7: Scheduling Conflict Detection
+## Phase 9: Conflict and Travel Buffer Detection
 
 Scope:
 
-- Detect client and provider overlap.
-- Detect availability and unavailable-time conflicts.
-- Detect inactive-record and authorization-period conflicts.
-- Add explicit conflict override with reason.
+- Detect provider overlap.
+- Detect client overlap.
+- Detect client and provider availability violations.
+- Apply same-zone default buffers.
+- Apply adjacent-zone default buffers.
+- Require manual review for nonadjacent zones.
+- Require manual review for unmapped or `Other / Manual Review` zones.
+- Support permissioned conflict overrides with reasons.
 
 Acceptance criteria:
 
-- Half-open interval behavior is tested.
-- Cancelled appointments are excluded.
-- Create, update, and recurrence validation use the same conflict engine.
-- Conflict responses identify reasons and permitted record references.
-- Overrides require permission, reason, and audit event.
+- Time conflicts use timezone-aware instants and half-open intervals.
+- Cancelled appointments are excluded from active overlap checks.
+- Create, update, and recurrence flows use the same conflict rules.
+- Travel buffers come from configurable zone relationships.
+- Zone-buffer warnings do not automatically move, cancel, or reassign appointments.
+- Nonadjacent transitions are not represented as precise route calculations.
+- Overrides require permission, reason, and audit history.
+- No geocoding, live traffic, or route optimization is introduced.
 
-## Phase 8: Client and Therapist Schedule Views
+## Phase 10: Capacity Dashboard
 
 Scope:
 
-- Add client-specific calendar and agenda.
-- Add provider-specific calendar and agenda.
-- Add RBT own-schedule access after reliable provider-user assignment exists.
+Show operational supply and demand by:
+
+- Zone
+- Provider type
+- Service code
+- Time band
+
+Measures:
+
+- Client hours needed
+- RBT hours available
+- Staffing gap
+- Partially staffed hours
+- Coverage percentage
 
 Acceptance criteria:
 
-- Client views show only permitted client data.
-- RBTs see only their assigned appointments.
-- Admin and BCBA views remain agency scoped.
-- Provider filtering uses `userId`, never therapist-name matching.
-- Empty and inactive-user behavior is defined and tested.
+- Capacity measures reconcile to profile, availability, staffing-demand, assignment, and appointment sources.
+- Supply and demand are not stored as unexplained duplicate totals.
+- Filters preserve agency scope.
+- Missing or incomplete profile data is visible rather than silently treated as zero.
+- Scheduled hours remain separate from delivered, finalized, and billing-ready hours.
+- No payroll, recruitment, or automatic staffing actions are introduced.
 
-## Phase 9: Appointment-to-Session and SOAP-note Linkage
+## Phase 11: Appointment-to-Session Linkage
+
+This phase begins only after manual and recurring appointment workflows are stable.
 
 Scope:
 
-- Start a permitted session from an appointment.
-- Persist `appointmentId` on the new clinical record and `sessionId` on the appointment.
-- Support explicit linkage to 97151/97155 note-history records.
+- Start a permitted clinical record from an appointment.
+- Store explicit bidirectional appointment/session references.
+- Support explicit linkage to appropriate 97151 or 97155 note-history records.
 - Show scheduled-versus-delivered discrepancies.
 
 Acceptance criteria:
 
-- Link creation is idempotent.
+- Link creation is explicit and idempotent.
 - Existing unlinked sessions remain valid.
+- Historical links require user confirmation.
+- Therapist-name matching is prohibited.
 - Appointment edits do not change linked sessions.
 - Linked-session edits do not rewrite appointments.
-- Finalized SOAP notes remain locked.
 - Appointment cancellation does not delete clinical records.
-- 97155 `planChangeLog.sessionId` matching remains unchanged.
-- The full SOAP and 97155 regression suites pass.
+- Finalized SOAP notes remain locked.
+- 97155 `planChangeLog.sessionId` behavior remains unchanged.
+- Scheduling never rewrites `planChangeLog`, note histories, finalized snapshots, or amendments.
+- Full SOAP, session, billing, and 97155 regression suites remain green.
 
-## Phase 10: Authorization Utilization Tracking
+## Phase 12: Advanced Features
 
-Scope:
+Potential separately approved capabilities:
 
-- Report approved, scheduled, delivered, finalized/billing-ready, and remaining quantities.
-- Add threshold warnings.
-- Add authorized override handling.
+- Geocoding
+- Live travel times
+- Schedule proposals
+- Mobile RBT workflow
+- Notifications
+- Operational exception queues
+- Expanded intake pipeline
+- Advanced operational reporting
 
-Acceptance criteria:
+Each capability requires its own scope, privacy review, validation rules, acceptance criteria, and deployment decision. Inclusion in this phase is not authorization to bundle these capabilities together.
 
-- Scheduled time is never counted as delivered.
-- Cancelled and no-show appointments consume no delivered units.
-- Legacy `parent-training` sessions count as 97156.
-- Date-range boundaries are tested.
-- String-based legacy authorization values are safely parsed.
-- Override actions are permission checked and audited.
+## Explicitly Deferred
 
-## Phase 11: Travel and Geographic Scheduling Support
-
-Scope:
-
-- Add structured reusable locations.
-- Add address snapshots to appointments.
-- Add optional coordinates and travel buffers.
-- Add basic geographic feasibility warnings.
-
-Acceptance criteria:
-
-- Existing free-text settings remain supported.
-- Changing a reusable location does not rewrite historical appointment snapshots.
-- Travel warnings do not automatically move appointments.
-- No route optimization is implemented.
-- Address and coordinate access follows agency permissions.
-
-## Phase 12: Payroll and Productivity Reporting
-
-Scope:
-
-- Add internal reports comparing scheduled, delivered, cancelled, and documented time.
-- Report provider utilization and documentation completion.
-- Support date, provider, client, service-code, and agency filters.
-
-Acceptance criteria:
-
-- Reports use immutable appointment/session linkage.
-- Scheduled and delivered quantities remain separate.
-- Unlinked sessions and appointments are reported explicitly.
-- Report totals reconcile to source records.
-- No payroll export or payroll-system integration is implemented.
-- No automatic billing is implemented.
-
-## Deferred Beyond This Roadmap
-
+- Automatic staff assignment
+- Automatic schedule publishing
 - Google Calendar synchronization
 - SMS reminders
 - Route optimization
 - Payroll exports
+- Automatic billing
+- HR records
+- Credentialing source records
+- Full referral-management system
+- Full benefits-verification system
 - Drag-and-drop scheduling
 - Waitlists
 - Open-shift boards
-- Automatic billing
-- Credentialing
-- Human-resources functionality
