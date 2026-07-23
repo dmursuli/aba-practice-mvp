@@ -67,6 +67,7 @@
           <button type="button" class="view-tab" data-view-button="clients">Clients</button>
           <button type="button" class="view-tab" data-view-button="users">Users</button>
           <button type="button" class="view-tab active" data-view-button="session">Session</button>
+          <button type="button" class="view-tab" data-view-button="schedule">Scheduling</button>
           <button type="button" class="view-tab" data-view-button="intake">Intake Interview</button>
           <button type="button" class="view-tab" data-view-button="workflow">Workflow</button>
           <button type="button" class="view-tab" data-view-button="plan">Treatment plan</button>
@@ -1256,6 +1257,49 @@
         <p class="form-message" id="billing-message" role="status"></p>
         <div id="billing-summary" class="summary-strip"></div>
         <div id="billing-table" class="audit-log-table"></div>
+      </section>
+    </main>
+
+    <main class="schedule-shell hidden" data-view-panel="schedule">
+      <section class="schedule-panel" aria-labelledby="schedule-title">
+        <div class="schedule-heading">
+          <div class="section-heading">
+            <p class="eyebrow">Clinical history</p>
+            <h2 id="schedule-title">Weekly schedule</h2>
+            <p class="muted">Read-only completed clinical records for the visible week.</p>
+          </div>
+          <div class="schedule-week-controls" aria-label="Week navigation">
+            <button type="button" class="secondary-button" id="schedule-previous-week">Previous Week</button>
+            <button type="button" class="secondary-button" id="schedule-today">Today</button>
+            <button type="button" class="secondary-button" id="schedule-next-week">Next Week</button>
+          </div>
+        </div>
+        <div class="schedule-toolbar">
+          <div>
+            <span class="schedule-range-label">Visible week</span>
+            <strong id="schedule-week-range"></strong>
+          </div>
+          <div class="schedule-filters">
+            <label>
+              Client
+              <select id="schedule-client-filter">
+                <option value="">All clients</option>
+              </select>
+            </label>
+            <label>
+              Service code
+              <select id="schedule-service-filter">
+                <option value="">All service codes</option>
+                <option value="97151">97151</option>
+                <option value="97153">97153</option>
+                <option value="97155">97155</option>
+                <option value="97156">97156</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <p class="form-message schedule-message" id="schedule-message" role="status" aria-live="polite"></p>
+        <div id="schedule-week-grid" class="schedule-week-grid" aria-label="Monday through Sunday completed session calendar"></div>
       </section>
     </main>
 

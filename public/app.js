@@ -12,6 +12,13 @@ const state = {
   programs: [],
   behaviors: [],
   sessions: [],
+  scheduleSessions: [],
+  scheduleWeekStart: "",
+  scheduleLoadedStartDate: "",
+  scheduleLoadedEndDate: "",
+  scheduleLoading: false,
+  scheduleLoadError: "",
+  scheduleRequestId: 0,
   clientSessionCounts: {},
   clientSessionSummaries: {},
   auditLog: [],
@@ -83,8 +90,8 @@ const state = {
 };
 
 const roleViews = {
-  admin: ["clients", "users", "session", "intake", "workflow", "plan", "parent", "graphs", "import", "report", "soap", "billing", "health", "audit"],
-  bcba: ["clients", "session", "intake", "workflow", "plan", "parent", "graphs", "import", "report", "soap", "billing", "health", "audit"],
+  admin: ["clients", "users", "session", "schedule", "intake", "workflow", "plan", "parent", "graphs", "import", "report", "soap", "billing", "health", "audit"],
+  bcba: ["clients", "session", "schedule", "intake", "workflow", "plan", "parent", "graphs", "import", "report", "soap", "billing", "health", "audit"],
   rbt: ["session", "graphs", "soap"],
   "read-only": ["graphs", "report", "soap"]
 };
@@ -288,6 +295,14 @@ const exportBillingCsvButton = document.querySelector("#export-billing-csv");
 const billingMessage = document.querySelector("#billing-message");
 const billingSummary = document.querySelector("#billing-summary");
 const billingTable = document.querySelector("#billing-table");
+const schedulePreviousWeekButton = document.querySelector("#schedule-previous-week");
+const scheduleTodayButton = document.querySelector("#schedule-today");
+const scheduleNextWeekButton = document.querySelector("#schedule-next-week");
+const scheduleWeekRange = document.querySelector("#schedule-week-range");
+const scheduleClientFilter = document.querySelector("#schedule-client-filter");
+const scheduleServiceFilter = document.querySelector("#schedule-service-filter");
+const scheduleMessage = document.querySelector("#schedule-message");
+const scheduleWeekGrid = document.querySelector("#schedule-week-grid");
 const healthMessage = document.querySelector("#health-message");
 const healthSummary = document.querySelector("#health-summary");
 const healthReportTable = document.querySelector("#health-report-table");
@@ -1130,6 +1145,11 @@ function bindEvents() {
   });
   refreshBillingExportButton.addEventListener("click", renderBillingExport);
   exportBillingCsvButton.addEventListener("click", exportBillingCsv);
+  schedulePreviousWeekButton?.addEventListener("click", () => changeScheduleWeek(-7));
+  scheduleTodayButton?.addEventListener("click", showCurrentScheduleWeek);
+  scheduleNextWeekButton?.addEventListener("click", () => changeScheduleWeek(7));
+  scheduleClientFilter?.addEventListener("change", renderSchedule);
+  scheduleServiceFilter?.addEventListener("change", renderSchedule);
   runHealthCheckButton.addEventListener("click", runDataHealthCheck);
   exportHealthCsvButton.addEventListener("click", () => exportHealthReport("csv"));
   exportHealthJsonButton.addEventListener("click", () => exportHealthReport("json"));
@@ -1430,6 +1450,13 @@ function resetSensitiveState() {
   state.programs = [];
   state.behaviors = [];
   state.sessions = [];
+  state.scheduleSessions = [];
+  state.scheduleWeekStart = "";
+  state.scheduleLoadedStartDate = "";
+  state.scheduleLoadedEndDate = "";
+  state.scheduleLoading = false;
+  state.scheduleLoadError = "";
+  state.scheduleRequestId += 1;
   state.clientSessionCounts = {};
   state.clientSessionSummaries = {};
   state.auditLog = [];
@@ -2895,6 +2922,7 @@ function render() {
   renderAuditLog();
   renderDataHealth();
   renderUsers();
+  renderSchedule();
   if (currentView() === "report") renderFunderReportPreview();
 }
 
@@ -3420,6 +3448,7 @@ async function switchView(view) {
   if (viewNeedsClientSessions(view) || viewNeedsAllVisibleSessions(view)) {
     await ensureSessionDataForView(view, { clientId: state.activeClientId });
   }
+  if (view === "schedule") await ensureScheduleWeekLoaded();
   if (view === "graphs") renderCharts();
   if (view === "import") {
     void refreshHistoricalImportBatches(false);
@@ -3431,6 +3460,200 @@ async function switchView(view) {
   if (view === "health") runDataHealthCheck();
   if (view === "users") refreshUsers(false);
   syncWorkspaceUrl(view);
+}
+
+function scheduleDateValue(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function scheduleMonday(date = new Date()) {
+  const monday = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const daysSinceMonday = (monday.getDay() + 6) % 7;
+  monday.setDate(monday.getDate() - daysSinceMonday);
+  return monday;
+}
+
+function addScheduleDays(date, days) {
+  const result = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+function ensureScheduleWeekStart() {
+  const selected = parseDateOnly(state.scheduleWeekStart);
+  if (selected) return selected;
+  const monday = scheduleMonday(new Date());
+  state.scheduleWeekStart = scheduleDateValue(monday);
+  return monday;
+}
+
+function scheduleWeekRangeValues() {
+  const start = ensureScheduleWeekStart();
+  const end = addScheduleDays(start, 6);
+  return {
+    start,
+    end,
+    startDate: scheduleDateValue(start),
+    endDate: scheduleDateValue(end)
+  };
+}
+
+function scheduleWeekDates() {
+  const { start } = scheduleWeekRangeValues();
+  return Array.from({ length: 7 }, (_, index) => addScheduleDays(start, index));
+}
+
+function changeScheduleWeek(days) {
+  const start = ensureScheduleWeekStart();
+  state.scheduleWeekStart = scheduleDateValue(addScheduleDays(start, days));
+  void ensureScheduleWeekLoaded({ force: true });
+}
+
+function showCurrentScheduleWeek() {
+  state.scheduleWeekStart = scheduleDateValue(scheduleMonday(new Date()));
+  void ensureScheduleWeekLoaded({ force: true });
+}
+
+function canonicalScheduleServiceCode(session) {
+  const serviceType = String(session?.serviceType || "").trim();
+  if (serviceType === "parent-training") return "97156";
+  return serviceType || "97153";
+}
+
+function scheduleSessionSummary(session) {
+  return {
+    id: String(session?.id || ""),
+    clientId: String(session?.clientId || ""),
+    date: String(session?.date || "").slice(0, 10),
+    serviceCode: canonicalScheduleServiceCode(session),
+    startTime: String(session?.startTime || ""),
+    endTime: String(session?.endTime || ""),
+    setting: String(session?.setting || "")
+  };
+}
+
+async function ensureScheduleWeekLoaded({ force = false } = {}) {
+  const { startDate, endDate } = scheduleWeekRangeValues();
+  if (!force
+    && state.scheduleLoadedStartDate === startDate
+    && state.scheduleLoadedEndDate === endDate
+    && !state.scheduleLoadError) {
+    renderSchedule();
+    return;
+  }
+
+  const requestId = state.scheduleRequestId + 1;
+  state.scheduleRequestId = requestId;
+  state.scheduleLoading = true;
+  state.scheduleLoadError = "";
+  renderSchedule();
+
+  try {
+    const payload = await getVisibleSessions({ startDate, endDate });
+    if (requestId !== state.scheduleRequestId) return;
+    state.scheduleSessions = (payload.sessions || []).map(scheduleSessionSummary);
+    state.scheduleLoadedStartDate = startDate;
+    state.scheduleLoadedEndDate = endDate;
+  } catch (error) {
+    if (requestId !== state.scheduleRequestId) return;
+    state.scheduleSessions = [];
+    state.scheduleLoadedStartDate = "";
+    state.scheduleLoadedEndDate = "";
+    state.scheduleLoadError = error.message || "Unable to load completed sessions for this week.";
+  } finally {
+    if (requestId !== state.scheduleRequestId) return;
+    state.scheduleLoading = false;
+    renderSchedule();
+  }
+}
+
+function renderScheduleFilters() {
+  if (!scheduleClientFilter) return;
+  const selectedClientId = scheduleClientFilter.value;
+  scheduleClientFilter.innerHTML = [
+    '<option value="">All clients</option>',
+    ...state.clients.map((client) => (
+      `<option value="${escapeHtml(client.id)}">${escapeHtml(client.name)}</option>`
+    ))
+  ].join("");
+  scheduleClientFilter.value = state.clients.some((client) => client.id === selectedClientId)
+    ? selectedClientId
+    : "";
+}
+
+function filteredScheduleSessions() {
+  const clientId = scheduleClientFilter?.value || "";
+  const serviceCode = scheduleServiceFilter?.value || "";
+  return state.scheduleSessions
+    .filter((session) => (
+      (!clientId || session.clientId === clientId)
+      && (!serviceCode || session.serviceCode === serviceCode)
+    ))
+    .sort((a, b) => (
+      a.date.localeCompare(b.date)
+      || a.startTime.localeCompare(b.startTime)
+      || a.endTime.localeCompare(b.endTime)
+      || a.id.localeCompare(b.id)
+    ));
+}
+
+function scheduleClientName(clientId) {
+  return state.clients.find((client) => client.id === clientId)?.name || "Unknown client";
+}
+
+function scheduleTimeLabel(session) {
+  if (session.startTime && session.endTime) return `${session.startTime}–${session.endTime}`;
+  return session.startTime || session.endTime || "Time not entered";
+}
+
+function renderSchedule() {
+  if (!scheduleWeekGrid || !scheduleWeekRange || !scheduleMessage) return;
+  const { startDate, endDate } = scheduleWeekRangeValues();
+  renderScheduleFilters();
+  scheduleWeekRange.textContent = `${formatDate(startDate)} – ${formatDate(endDate)}`;
+
+  if (state.scheduleLoading) {
+    scheduleMessage.textContent = "Loading completed sessions...";
+    scheduleWeekGrid.innerHTML = '<div class="schedule-state">Loading completed sessions for the visible week...</div>';
+    return;
+  }
+
+  if (state.scheduleLoadError) {
+    scheduleMessage.textContent = state.scheduleLoadError;
+    scheduleWeekGrid.innerHTML = '<div class="schedule-state schedule-state-error">Completed clinical records could not be loaded.</div>';
+    return;
+  }
+
+  const sessions = filteredScheduleSessions();
+  scheduleMessage.textContent = sessions.length ? "" : "No completed sessions for this week";
+  scheduleWeekGrid.innerHTML = scheduleWeekDates().map((date) => {
+    const dateValue = scheduleDateValue(date);
+    const daySessions = sessions.filter((session) => session.date === dateValue);
+    const dayName = date.toLocaleDateString(undefined, { weekday: "long" });
+    const dayDate = date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return `
+      <section class="schedule-day" aria-label="${escapeHtml(`${dayName}, ${formatDate(dateValue)}`)}">
+        <div class="schedule-day-heading">
+          <strong>${escapeHtml(dayName)}</strong>
+          <span>${escapeHtml(dayDate)}</span>
+        </div>
+        <div class="schedule-day-records">
+          ${daySessions.length ? daySessions.map((session) => `
+            <article class="schedule-record">
+              <span class="schedule-record-label">Completed session</span>
+              <strong>${escapeHtml(scheduleClientName(session.clientId))}</strong>
+              <span>${escapeHtml(session.serviceCode)} · ${escapeHtml(scheduleTimeLabel(session))}</span>
+              ${session.setting ? `<span>${escapeHtml(session.setting)}</span>` : ""}
+            </article>
+          `).join("") : '<span class="schedule-day-empty">No completed sessions</span>'}
+        </div>
+      </section>
+    `;
+  }).join("");
 }
 
 function handleReportSectionNavClick(event) {
