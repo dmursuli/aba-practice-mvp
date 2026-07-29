@@ -72,8 +72,9 @@ textarea {
 }
 
 .brand img {
-  width: 58px;
-  height: 58px;
+  width: 92px;
+  height: auto;
+  max-height: 62px;
   object-fit: contain;
 }
 
@@ -553,8 +554,9 @@ textarea {
 }
 
 .site-footer img {
-  width: 72px;
-  height: 72px;
+  width: 118px;
+  height: auto;
+  max-height: 82px;
   object-fit: contain;
   margin-bottom: 8px;
 }
@@ -582,6 +584,11 @@ textarea {
 
   .brand span {
     display: none;
+  }
+
+  .brand img {
+    width: 78px;
+    max-height: 52px;
   }
 
   .nav-toggle {

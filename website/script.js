@@ -6,12 +6,14 @@ const formStatus = document.querySelector("#form-status");
 navToggle?.addEventListener("click", () => {
   const isOpen = siteNav.classList.toggle("open");
   navToggle.setAttribute("aria-expanded", String(isOpen));
+  navToggle.setAttribute("aria-label", isOpen ? "Close navigation" : "Open navigation");
 });
 
 siteNav?.querySelectorAll("a").forEach((link) => {
   link.addEventListener("click", () => {
     siteNav.classList.remove("open");
     navToggle?.setAttribute("aria-expanded", "false");
+    navToggle?.setAttribute("aria-label", "Open navigation");
   });
 });
 

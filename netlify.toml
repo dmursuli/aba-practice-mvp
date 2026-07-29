@@ -29,3 +29,8 @@
   for = "/triumph-apple-touch-icon.png"
   [headers.values]
     Cache-Control = "no-cache, no-store, must-revalidate"
+
+[[headers]]
+  for = "/apple-touch-icon.png"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"

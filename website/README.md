@@ -1,6 +1,6 @@
-# Triumph Behavioral Website
+# Triumph Behavioral Care LLC Website
 
-This is a standalone static marketing site for Triumph Behavioral. It is separate from the clinical webapp in `public/`.
+This is a standalone static marketing site for Triumph Behavioral Care LLC. It is separate from the clinical webapp in `public/`.
 
 Open `index.html` directly in a browser to preview it.
 
@@ -9,6 +9,7 @@ Open `index.html` directly in a browser to preview it.
 - `index.html` - Homepage content and structure.
 - `styles.css` - Custom visual system matched to the webapp.
 - `script.js` - Mobile navigation and consultation email behavior.
+- `assets/` - Local logo and social-sharing image assets.
 - `robots.txt` - Search crawler instructions for static hosting.
 - `sitemap.xml` - Minimal sitemap for the one-page launch site.
 - `domain-migration-plan.md` - DNS migration plan that keeps `app.triumphbehavioral.com` safe.

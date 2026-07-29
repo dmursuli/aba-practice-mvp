@@ -1,4 +1,4 @@
-# Triumph Behavioral Website Style Notes
+# Triumph Behavioral Care LLC Website Style Notes
 
 The live site at https://triumphbehavioral.com is served by Squarespace, so there is no editable website source in this workspace. The styling layer in `website/squarespace-custom.css` is intended for Squarespace Custom CSS.
 
