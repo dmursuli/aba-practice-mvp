@@ -1,6 +1,6 @@
-# Triumph Behavioral Care LLC Website
+# Triumph Behavioral Care Website
 
-This is a standalone static marketing site for Triumph Behavioral Care LLC. It is separate from the clinical webapp in `public/`.
+This is a standalone static marketing site for Triumph Behavioral Care. It is separate from the clinical webapp in `public/`.
 
 Open `index.html` directly in a browser to preview it.
 
