@@ -19,6 +19,7 @@ const state = {
   scheduleLoading: false,
   scheduleLoadError: "",
   scheduleRequestId: 0,
+  activeScheduleSubview: "calendar",
   clientSessionCounts: {},
   clientSessionSummaries: {},
   auditLog: [],
@@ -303,6 +304,7 @@ const scheduleClientFilter = document.querySelector("#schedule-client-filter");
 const scheduleServiceFilter = document.querySelector("#schedule-service-filter");
 const scheduleMessage = document.querySelector("#schedule-message");
 const scheduleWeekGrid = document.querySelector("#schedule-week-grid");
+const scheduleSubviewButtons = document.querySelectorAll("[data-schedule-subview-button]");
 const healthMessage = document.querySelector("#health-message");
 const healthSummary = document.querySelector("#health-summary");
 const healthReportTable = document.querySelector("#health-report-table");
@@ -1150,6 +1152,11 @@ function bindEvents() {
   scheduleNextWeekButton?.addEventListener("click", () => changeScheduleWeek(7));
   scheduleClientFilter?.addEventListener("change", renderSchedule);
   scheduleServiceFilter?.addEventListener("change", renderSchedule);
+  scheduleSubviewButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      void switchScheduleSubview(button.dataset.scheduleSubviewButton);
+    });
+  });
   runHealthCheckButton.addEventListener("click", runDataHealthCheck);
   exportHealthCsvButton.addEventListener("click", () => exportHealthReport("csv"));
   exportHealthJsonButton.addEventListener("click", () => exportHealthReport("json"));
@@ -3448,7 +3455,7 @@ async function switchView(view) {
   if (viewNeedsClientSessions(view) || viewNeedsAllVisibleSessions(view)) {
     await ensureSessionDataForView(view, { clientId: state.activeClientId });
   }
-  if (view === "schedule") await ensureScheduleWeekLoaded();
+  if (view === "schedule") await switchScheduleSubview(state.activeScheduleSubview);
   if (view === "graphs") renderCharts();
   if (view === "import") {
     void refreshHistoricalImportBatches(false);
@@ -3468,6 +3475,21 @@ function scheduleDateValue(date) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+async function switchScheduleSubview(subview) {
+  const allowedSubviews = ["calendar", "staffing", "availability", "zones", "capacity"];
+  const selectedSubview = allowedSubviews.includes(subview) ? subview : "calendar";
+  state.activeScheduleSubview = selectedSubview;
+  document.querySelectorAll("[data-schedule-subview-button]").forEach((button) => {
+    const isActive = button.dataset.scheduleSubviewButton === selectedSubview;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", String(isActive));
+  });
+  document.querySelectorAll("[data-schedule-subview-panel]").forEach((panel) => {
+    panel.classList.toggle("hidden", panel.dataset.scheduleSubviewPanel !== selectedSubview);
+  });
+  if (selectedSubview === "calendar") await ensureScheduleWeekLoaded();
 }
 
 function scheduleMonday(date = new Date()) {

@@ -648,6 +648,47 @@ button:focus-visible {
   overflow: hidden;
 }
 
+.schedule-subnav {
+  display: flex;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.schedule-subnav .domain-tab {
+  flex: 0 0 auto;
+}
+
+.schedule-subview {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.schedule-subview.hidden,
+.schedule-empty-state.hidden {
+  display: none;
+}
+
+.schedule-empty-state {
+  min-height: 360px;
+  padding: clamp(28px, 6vw, 72px) 20px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #f8fbff;
+  text-align: center;
+}
+
+.schedule-empty-state-content {
+  max-width: 620px;
+  margin: 0 auto;
+}
+
+.schedule-empty-state h3 {
+  margin: 4px 0 10px;
+}
+
 .schedule-heading,
 .schedule-toolbar,
 .schedule-filters,

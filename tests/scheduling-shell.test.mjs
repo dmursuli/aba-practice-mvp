@@ -35,12 +35,20 @@ function asyncFunctionSource(name) {
   throw new Error(`Unable to read ${name}`);
 }
 
-test("Scheduling navigation and panel are present without placeholder subviews", () => {
+test("Scheduling workspace has five subviews with Calendar active", () => {
   assert.match(htmlSource, /data-view-button="schedule">Scheduling</);
   assert.match(htmlSource, /data-view-panel="schedule"/);
+  assert.match(htmlSource, /id="schedule-workspace-title">Scheduling workspace</);
   assert.match(htmlSource, /id="schedule-week-grid"/);
-  assert.doesNotMatch(htmlSource, /data-view-button="schedule-(day|therapist|client)"/);
-  assert.doesNotMatch(htmlSource, />Day View<|>Therapist View<|>Client View</);
+  const subviewButtons = htmlSource.match(/data-schedule-subview-button="(?:calendar|staffing|availability|zones|capacity)"/g) || [];
+  const subviewPanels = htmlSource.match(/data-schedule-subview-panel="(?:calendar|staffing|availability|zones|capacity)"/g) || [];
+  assert.equal(subviewButtons.length, 5);
+  assert.equal(subviewPanels.length, 5);
+  assert.match(htmlSource, /data-schedule-subview-button="calendar"[^>]*aria-selected="true"/);
+  assert.match(htmlSource, /data-schedule-subview-panel="staffing"[\s\S]*No staffing business logic is active yet/);
+  assert.match(htmlSource, /data-schedule-subview-panel="availability"[\s\S]*No availability records or calculations are active yet/);
+  assert.match(htmlSource, /data-schedule-subview-panel="zones"[\s\S]*No zone configuration or assignment is active yet/);
+  assert.match(htmlSource, /data-schedule-subview-panel="capacity"[\s\S]*No capacity calculations are active yet/);
 });
 
 test("Scheduling is available only to admin and BCBA roles", () => {
@@ -55,7 +63,16 @@ test("Scheduling is available only to admin and BCBA roles", () => {
 
   const switchBlock = asyncFunctionSource("switchView");
   assert.match(switchBlock, /if \(!allowedViews\(\)\.includes\(view\)\)/);
-  assert.match(switchBlock, /if \(view === "schedule"\) await ensureScheduleWeekLoaded\(\);/);
+  assert.match(switchBlock, /if \(view === "schedule"\) await switchScheduleSubview\(state\.activeScheduleSubview\);/);
+});
+
+test("workspace subnavigation changes panels and loads data only for Calendar", () => {
+  const block = asyncFunctionSource("switchScheduleSubview");
+  assert.match(appSource, /activeScheduleSubview:\s*"calendar"/);
+  assert.match(block, /\["calendar", "staffing", "availability", "zones", "capacity"\]/);
+  assert.match(block, /button\.setAttribute\("aria-selected", String\(isActive\)\)/);
+  assert.match(block, /panel\.classList\.toggle\("hidden"/);
+  assert.match(block, /if \(selectedSubview === "calendar"\) await ensureScheduleWeekLoaded\(\);/);
 });
 
 test("week helpers render Monday through Sunday across month and year boundaries", () => {
@@ -128,10 +145,13 @@ test("calendar is responsive without a page-level horizontal calendar layout", (
   assert.match(cssSource, /@media \(max-width: 1100px\)[\s\S]*?\.schedule-week-grid\s*\{[^}]*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
   assert.match(cssSource, /@media \(max-width: 780px\)[\s\S]*?\.schedule-week-grid\s*\{[^}]*grid-template-columns:\s*1fr/);
   assert.match(cssSource, /\.schedule-panel\s*\{[^}]*overflow:\s*hidden/s);
+  assert.match(cssSource, /\.schedule-subview\.hidden,\s*\.schedule-empty-state\.hidden\s*\{[^}]*display:\s*none/s);
 });
 
-test("Phase 1 source contains no scheduling persistence or mutation API", () => {
+test("workspace shell contains no scheduling persistence, mutation, or Zone Management logic", () => {
   assert.doesNotMatch(appSource, /appointments\s*:/);
   assert.doesNotMatch(appSource, /createAppointment|updateAppointment|deleteAppointment|cancelAppointment/);
+  assert.doesNotMatch(appSource, /schedulingZones\s*:|zoneZip|zoneAdjacency|createZone|updateZone|deleteZone/);
   assert.doesNotMatch(htmlSource, /drag-and-drop|draggable|Create appointment|Edit appointment/);
+  assert.doesNotMatch(htmlSource, /Create zone|Edit zone|ZIP-code association|travel-buffer rule/);
 });

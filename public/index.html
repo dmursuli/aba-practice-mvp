@@ -1261,45 +1261,93 @@
     </main>
 
     <main class="schedule-shell hidden" data-view-panel="schedule">
-      <section class="schedule-panel" aria-labelledby="schedule-title">
-        <div class="schedule-heading">
-          <div class="section-heading">
-            <p class="eyebrow">Clinical history</p>
-            <h2 id="schedule-title">Weekly schedule</h2>
-            <p class="muted">Read-only completed clinical records for the visible week.</p>
-          </div>
-          <div class="schedule-week-controls" aria-label="Week navigation">
-            <button type="button" class="secondary-button" id="schedule-previous-week">Previous Week</button>
-            <button type="button" class="secondary-button" id="schedule-today">Today</button>
-            <button type="button" class="secondary-button" id="schedule-next-week">Next Week</button>
-          </div>
+      <section class="schedule-panel" aria-labelledby="schedule-workspace-title">
+        <div class="section-heading">
+          <p class="eyebrow">Operations</p>
+          <h2 id="schedule-workspace-title">Scheduling workspace</h2>
+          <p class="muted">Coordinate the agency's scheduling operations from one workspace.</p>
         </div>
-        <div class="schedule-toolbar">
-          <div>
-            <span class="schedule-range-label">Visible week</span>
-            <strong id="schedule-week-range"></strong>
+
+        <nav class="schedule-subnav" aria-label="Scheduling workspace views" role="tablist">
+          <button type="button" class="domain-tab active" id="schedule-tab-calendar" data-schedule-subview-button="calendar" role="tab" aria-controls="schedule-subview-calendar" aria-selected="true">Calendar</button>
+          <button type="button" class="domain-tab" id="schedule-tab-staffing" data-schedule-subview-button="staffing" role="tab" aria-controls="schedule-subview-staffing" aria-selected="false">Staffing</button>
+          <button type="button" class="domain-tab" id="schedule-tab-availability" data-schedule-subview-button="availability" role="tab" aria-controls="schedule-subview-availability" aria-selected="false">Availability</button>
+          <button type="button" class="domain-tab" id="schedule-tab-zones" data-schedule-subview-button="zones" role="tab" aria-controls="schedule-subview-zones" aria-selected="false">Zones</button>
+          <button type="button" class="domain-tab" id="schedule-tab-capacity" data-schedule-subview-button="capacity" role="tab" aria-controls="schedule-subview-capacity" aria-selected="false">Capacity</button>
+        </nav>
+
+        <div class="schedule-subview" id="schedule-subview-calendar" data-schedule-subview-panel="calendar" role="tabpanel" aria-labelledby="schedule-tab-calendar">
+          <div class="schedule-heading">
+            <div class="section-heading">
+              <p class="eyebrow">Clinical history</p>
+              <h3 id="schedule-title">Weekly calendar</h3>
+              <p class="muted">Read-only completed clinical records for the visible week.</p>
+            </div>
+            <div class="schedule-week-controls" aria-label="Week navigation">
+              <button type="button" class="secondary-button" id="schedule-previous-week">Previous Week</button>
+              <button type="button" class="secondary-button" id="schedule-today">Today</button>
+              <button type="button" class="secondary-button" id="schedule-next-week">Next Week</button>
+            </div>
           </div>
-          <div class="schedule-filters">
-            <label>
-              Client
-              <select id="schedule-client-filter">
-                <option value="">All clients</option>
-              </select>
-            </label>
-            <label>
-              Service code
-              <select id="schedule-service-filter">
-                <option value="">All service codes</option>
-                <option value="97151">97151</option>
-                <option value="97153">97153</option>
-                <option value="97155">97155</option>
-                <option value="97156">97156</option>
-              </select>
-            </label>
+          <div class="schedule-toolbar">
+            <div>
+              <span class="schedule-range-label">Visible week</span>
+              <strong id="schedule-week-range"></strong>
+            </div>
+            <div class="schedule-filters">
+              <label>
+                Client
+                <select id="schedule-client-filter">
+                  <option value="">All clients</option>
+                </select>
+              </label>
+              <label>
+                Service code
+                <select id="schedule-service-filter">
+                  <option value="">All service codes</option>
+                  <option value="97151">97151</option>
+                  <option value="97153">97153</option>
+                  <option value="97155">97155</option>
+                  <option value="97156">97156</option>
+                </select>
+              </label>
+            </div>
           </div>
+          <p class="form-message schedule-message" id="schedule-message" role="status" aria-live="polite"></p>
+          <div id="schedule-week-grid" class="schedule-week-grid" aria-label="Monday through Sunday completed session calendar"></div>
         </div>
-        <p class="form-message schedule-message" id="schedule-message" role="status" aria-live="polite"></p>
-        <div id="schedule-week-grid" class="schedule-week-grid" aria-label="Monday through Sunday completed session calendar"></div>
+
+        <section class="schedule-empty-state hidden" id="schedule-subview-staffing" data-schedule-subview-panel="staffing" role="tabpanel" aria-labelledby="schedule-tab-staffing">
+          <div class="schedule-empty-state-content">
+            <p class="eyebrow">Planned workspace</p>
+            <h3>Staffing</h3>
+            <p class="muted">Staffing queues, eligibility review, and matching support will be introduced in future phases. No staffing business logic is active yet.</p>
+          </div>
+        </section>
+
+        <section class="schedule-empty-state hidden" id="schedule-subview-availability" data-schedule-subview-panel="availability" role="tabpanel" aria-labelledby="schedule-tab-availability">
+          <div class="schedule-empty-state-content">
+            <p class="eyebrow">Planned workspace</p>
+            <h3>Availability</h3>
+            <p class="muted">Client and staff scheduling availability will be introduced in a future phase. No availability records or calculations are active yet.</p>
+          </div>
+        </section>
+
+        <section class="schedule-empty-state hidden" id="schedule-subview-zones" data-schedule-subview-panel="zones" role="tabpanel" aria-labelledby="schedule-tab-zones">
+          <div class="schedule-empty-state-content">
+            <p class="eyebrow">Planned workspace</p>
+            <h3>Zones</h3>
+            <p class="muted">Configurable service zones will be introduced in the dedicated Zone Management phase. No zone configuration or assignment is active yet.</p>
+          </div>
+        </section>
+
+        <section class="schedule-empty-state hidden" id="schedule-subview-capacity" data-schedule-subview-panel="capacity" role="tabpanel" aria-labelledby="schedule-tab-capacity">
+          <div class="schedule-empty-state-content">
+            <p class="eyebrow">Planned workspace</p>
+            <h3>Capacity</h3>
+            <p class="muted">Operational supply-and-demand reporting will be introduced in a future phase. No capacity calculations are active yet.</p>
+          </div>
+        </section>
       </section>
     </main>
 
