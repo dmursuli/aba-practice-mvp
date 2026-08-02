@@ -802,6 +802,16 @@ button:focus-visible {
   text-transform: uppercase;
 }
 
+.schedule-appointment-record {
+  border-color: #d7c5f2;
+  border-left-color: #7654a8;
+  background: #faf7ff;
+}
+
+.schedule-appointment-record .schedule-record-label {
+  color: #654293;
+}
+
 .schedule-day-empty {
   color: var(--muted);
   font-size: 0.86rem;
@@ -1736,6 +1746,36 @@ button:focus-visible {
   box-shadow: 0 24px 64px rgba(15, 23, 42, 0.18);
 }
 
+.appointment-modal-panel {
+  width: min(860px, calc(100vw - 32px));
+}
+
+.appointment-modal-panel fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.appointment-form-grid {
+  align-items: start;
+}
+
+.appointment-form-grid .field-help {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.appointment-note-field {
+  grid-column: 1 / -1;
+}
+
+.appointment-form-actions {
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
 .program-graph-modal-panel .chart-panel {
   padding: 0;
 }
@@ -1996,6 +2036,15 @@ button:disabled {
 
   .schedule-day {
     min-height: 0;
+  }
+
+  .appointment-note-field {
+    grid-column: auto;
+  }
+
+  .appointment-form-actions,
+  .appointment-form-actions > * {
+    width: 100%;
   }
 
   body {

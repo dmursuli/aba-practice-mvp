@@ -1279,11 +1279,12 @@
         <div class="schedule-subview" id="schedule-subview-calendar" data-schedule-subview-panel="calendar" role="tabpanel" aria-labelledby="schedule-tab-calendar">
           <div class="schedule-heading">
             <div class="section-heading">
-              <p class="eyebrow">Clinical history</p>
+              <p class="eyebrow">Calendar</p>
               <h3 id="schedule-title">Weekly calendar</h3>
-              <p class="muted">Read-only completed clinical records for the visible week.</p>
+              <p class="muted">Read-only completed clinical records and scheduled appointments for the visible week.</p>
             </div>
             <div class="schedule-week-controls" aria-label="Week navigation">
+              <button type="button" class="primary-button hidden" id="schedule-add-appointment">Add Appointment</button>
               <button type="button" class="secondary-button" id="schedule-previous-week">Previous Week</button>
               <button type="button" class="secondary-button" id="schedule-today">Today</button>
               <button type="button" class="secondary-button" id="schedule-next-week">Next Week</button>
@@ -1314,7 +1315,7 @@
             </div>
           </div>
           <p class="form-message schedule-message" id="schedule-message" role="status" aria-live="polite"></p>
-          <div id="schedule-week-grid" class="schedule-week-grid" aria-label="Monday through Sunday completed session calendar"></div>
+          <div id="schedule-week-grid" class="schedule-week-grid" aria-label="Monday through Sunday sessions and appointments calendar"></div>
         </div>
 
         <section class="schedule-empty-state hidden" id="schedule-subview-staffing" data-schedule-subview-panel="staffing" role="tabpanel" aria-labelledby="schedule-tab-staffing">
@@ -2000,6 +2001,99 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
         <button type="button" class="icon-button" data-remove aria-label="Remove behavior">x</button>
       </div>
     </template>
+
+    <div id="appointment-modal" class="modal-shell hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-appointment></div>
+      <section class="modal-panel appointment-modal-panel" role="dialog" aria-modal="true" aria-labelledby="appointment-modal-title">
+        <div class="block-heading">
+          <div>
+            <p class="eyebrow">Scheduling</p>
+            <h3 id="appointment-modal-title">Add appointment</h3>
+          </div>
+          <button type="button" class="secondary-button" data-close-appointment>Close</button>
+        </div>
+        <p class="muted">Create one scheduled appointment. This does not create a clinical session or SOAP note.</p>
+        <p class="form-message" id="appointment-form-message" role="status" aria-live="polite"></p>
+        <form id="appointment-form">
+          <fieldset id="appointment-form-fields">
+            <div class="form-grid appointment-form-grid">
+              <label>
+                Client
+                <select name="clientId" required>
+                  <option value="">Loading active clients…</option>
+                </select>
+              </label>
+              <label>
+                Service code
+                <select name="serviceCode" required>
+                  <option value="">Select a service code</option>
+                  <option value="97151">97151</option>
+                  <option value="97153">97153</option>
+                  <option value="97155">97155</option>
+                  <option value="97156">97156</option>
+                </select>
+              </label>
+              <label>
+                Primary provider
+                <select name="providerUserId" required>
+                  <option value="">Select a service code first</option>
+                </select>
+              </label>
+              <label>
+                Date
+                <input type="date" name="date" required>
+              </label>
+              <label>
+                Start time
+                <input type="time" name="startTime" required>
+              </label>
+              <label>
+                End time
+                <input type="time" name="endTime" required>
+              </label>
+              <label>
+                Time zone
+                <select name="timeZone" required>
+                  <option value="America/New_York">Eastern — America/New_York</option>
+                  <option value="America/Chicago">Central — America/Chicago</option>
+                  <option value="America/Denver">Mountain — America/Denver</option>
+                  <option value="America/Phoenix">Arizona — America/Phoenix</option>
+                  <option value="America/Los_Angeles">Pacific — America/Los_Angeles</option>
+                  <option value="UTC">UTC</option>
+                </select>
+              </label>
+              <label>
+                Setting type
+                <select name="settingType" required>
+                  <option value="">Select a setting</option>
+                  <option value="home">Home</option>
+                  <option value="clinic">Clinic</option>
+                  <option value="school">School</option>
+                  <option value="community">Community</option>
+                  <option value="telehealth">Telehealth</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>
+                Service Location
+                <select name="serviceLocationIndex" required>
+                  <option value="">Select a client first</option>
+                </select>
+                <span class="field-help" id="appointment-location-help">Locations are reused from the Client Profile.</span>
+              </label>
+              <label class="appointment-note-field">
+                Operational scheduling note
+                <textarea name="notes" rows="3"></textarea>
+              </label>
+            </div>
+          </fieldset>
+          <div class="form-actions appointment-form-actions">
+            <button type="button" class="secondary-button" data-close-appointment>Close</button>
+            <button type="submit" class="primary-button" id="appointment-submit">Create Appointment</button>
+          </div>
+        </form>
+      </section>
+    </div>
 
     <div id="program-graph-modal" class="modal-shell hidden" aria-hidden="true">
       <div class="modal-backdrop" data-close-program-graph></div>

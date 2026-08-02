@@ -1,4 +1,4 @@
-import { createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setupVerificationEmail, touchSession, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { createAppointment, createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setupVerificationEmail, touchSession, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -13,6 +13,14 @@ const state = {
   behaviors: [],
   sessions: [],
   scheduleSessions: [],
+  scheduleAppointments: [],
+  appointmentClients: [],
+  appointmentProviders: [],
+  appointmentServiceLocations: [],
+  appointmentOptionsLoaded: false,
+  appointmentOptionsLoading: false,
+  appointmentSubmitting: false,
+  scheduleSuccessMessage: "",
   scheduleWeekStart: "",
   scheduleLoadedStartDate: "",
   scheduleLoadedEndDate: "",
@@ -305,6 +313,14 @@ const scheduleServiceFilter = document.querySelector("#schedule-service-filter")
 const scheduleMessage = document.querySelector("#schedule-message");
 const scheduleWeekGrid = document.querySelector("#schedule-week-grid");
 const scheduleSubviewButtons = document.querySelectorAll("[data-schedule-subview-button]");
+const scheduleAddAppointmentButton = document.querySelector("#schedule-add-appointment");
+const appointmentModal = document.querySelector("#appointment-modal");
+const appointmentForm = document.querySelector("#appointment-form");
+const appointmentFormFields = document.querySelector("#appointment-form-fields");
+const appointmentFormMessage = document.querySelector("#appointment-form-message");
+const appointmentLocationHelp = document.querySelector("#appointment-location-help");
+const appointmentSubmitButton = document.querySelector("#appointment-submit");
+const appointmentCloseButtons = document.querySelectorAll("[data-close-appointment]");
 const healthMessage = document.querySelector("#health-message");
 const healthSummary = document.querySelector("#health-summary");
 const healthReportTable = document.querySelector("#health-report-table");
@@ -1152,6 +1168,12 @@ function bindEvents() {
   scheduleNextWeekButton?.addEventListener("click", () => changeScheduleWeek(7));
   scheduleClientFilter?.addEventListener("change", renderSchedule);
   scheduleServiceFilter?.addEventListener("change", renderSchedule);
+  scheduleAddAppointmentButton?.addEventListener("click", openAppointmentForm);
+  appointmentForm?.elements?.clientId?.addEventListener("change", renderAppointmentServiceLocations);
+  appointmentForm?.elements?.serviceCode?.addEventListener("change", renderAppointmentProviderOptions);
+  appointmentForm?.elements?.serviceLocationIndex?.addEventListener("change", syncAppointmentSettingFromLocation);
+  appointmentForm?.addEventListener("submit", handleCreateAppointment);
+  appointmentCloseButtons.forEach((button) => button.addEventListener("click", closeAppointmentForm));
   scheduleSubviewButtons.forEach((button) => {
     button.addEventListener("click", () => {
       void switchScheduleSubview(button.dataset.scheduleSubviewButton);
@@ -1458,6 +1480,14 @@ function resetSensitiveState() {
   state.behaviors = [];
   state.sessions = [];
   state.scheduleSessions = [];
+  state.scheduleAppointments = [];
+  state.appointmentClients = [];
+  state.appointmentProviders = [];
+  state.appointmentServiceLocations = [];
+  state.appointmentOptionsLoaded = false;
+  state.appointmentOptionsLoading = false;
+  state.appointmentSubmitting = false;
+  state.scheduleSuccessMessage = "";
   state.scheduleWeekStart = "";
   state.scheduleLoadedStartDate = "";
   state.scheduleLoadedEndDate = "";
@@ -2929,6 +2959,7 @@ function render() {
   renderAuditLog();
   renderDataHealth();
   renderUsers();
+  renderScheduleAccessControls();
   renderSchedule();
   if (currentView() === "report") renderFunderReportPreview();
 }
@@ -3558,6 +3589,36 @@ function scheduleSessionSummary(session) {
   };
 }
 
+function scheduleAppointmentSummary(appointment) {
+  return {
+    id: String(appointment?.id || ""),
+    clientId: String(appointment?.clientId || ""),
+    serviceCode: String(appointment?.serviceCode || ""),
+    providerUserId: String(
+      (appointment?.providerAssignments || []).find((assignment) => assignment.assignmentRole === "primary")?.userId || ""
+    ),
+    scheduledStartAt: String(appointment?.scheduledStartAt || ""),
+    scheduledEndAt: String(appointment?.scheduledEndAt || ""),
+    timeZone: String(appointment?.timeZone || ""),
+    settingType: String(appointment?.settingType || ""),
+    status: String(appointment?.status || "scheduled")
+  };
+}
+
+async function ensureAppointmentOptions({ force = false } = {}) {
+  if (state.appointmentOptionsLoading) return;
+  if (state.appointmentOptionsLoaded && !force) return;
+  state.appointmentOptionsLoading = true;
+  try {
+    const payload = await getAppointmentOptions();
+    state.appointmentClients = payload.clients || [];
+    state.appointmentProviders = payload.providers || [];
+    state.appointmentOptionsLoaded = true;
+  } finally {
+    state.appointmentOptionsLoading = false;
+  }
+}
+
 async function ensureScheduleWeekLoaded({ force = false } = {}) {
   const { startDate, endDate } = scheduleWeekRangeValues();
   if (!force
@@ -3575,21 +3636,341 @@ async function ensureScheduleWeekLoaded({ force = false } = {}) {
   renderSchedule();
 
   try {
-    const payload = await getVisibleSessions({ startDate, endDate });
+    const [sessionPayload, appointmentPayload] = await Promise.all([
+      getVisibleSessions({ startDate, endDate }),
+      getAppointments({ startDate, endDate }),
+      ensureAppointmentOptions()
+    ]);
     if (requestId !== state.scheduleRequestId) return;
-    state.scheduleSessions = (payload.sessions || []).map(scheduleSessionSummary);
+    state.scheduleSessions = (sessionPayload.sessions || []).map(scheduleSessionSummary);
+    state.scheduleAppointments = (appointmentPayload.appointments || []).map(scheduleAppointmentSummary);
     state.scheduleLoadedStartDate = startDate;
     state.scheduleLoadedEndDate = endDate;
   } catch (error) {
     if (requestId !== state.scheduleRequestId) return;
     state.scheduleSessions = [];
+    state.scheduleAppointments = [];
     state.scheduleLoadedStartDate = "";
     state.scheduleLoadedEndDate = "";
-    state.scheduleLoadError = error.message || "Unable to load completed sessions for this week.";
+    state.scheduleLoadError = error.message || "Unable to load the schedule for this week.";
   } finally {
     if (requestId !== state.scheduleRequestId) return;
     state.scheduleLoading = false;
     renderSchedule();
+  }
+}
+
+function canCreateAppointments() {
+  return ["admin", "bcba"].includes(state.currentUser?.role || "");
+}
+
+function renderScheduleAccessControls() {
+  scheduleAddAppointmentButton?.classList.toggle("hidden", !canCreateAppointments());
+}
+
+function appointmentProviderRole(serviceCode) {
+  return serviceCode === "97153" ? "rbt" : ["97151", "97155", "97156"].includes(serviceCode) ? "bcba" : "";
+}
+
+function renderAppointmentClientOptions() {
+  const select = appointmentForm?.elements?.clientId;
+  if (!select) return;
+  const selectedId = select.value;
+  select.innerHTML = [
+    '<option value="">Select an active client</option>',
+    ...state.appointmentClients.map((client) => (
+      `<option value="${escapeHtml(client.id)}">${escapeHtml(client.name)}</option>`
+    ))
+  ].join("");
+  if (state.appointmentClients.some((client) => client.id === selectedId)) select.value = selectedId;
+}
+
+function canonicalAppointmentSettingType(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["home", "clinic", "school", "community", "telehealth", "other"].includes(normalized)
+    ? normalized
+    : "";
+}
+
+function normalizeClientServiceLocation(location, index = 0) {
+  if (typeof location === "string") {
+    const label = location.trim();
+    return label ? {
+      id: "",
+      label,
+      settingType: canonicalAppointmentSettingType(label),
+      addressLine1: "",
+      addressLine2: "",
+      city: "",
+      state: "",
+      postalCode: ""
+    } : null;
+  }
+  const address = location?.address || {};
+  const label = String(location?.label || location?.name || location?.settingType || location?.type || `Service location ${index + 1}`).trim();
+  if (!label) return null;
+  return {
+    id: String(location?.id || "").trim(),
+    label,
+    settingType: canonicalAppointmentSettingType(location?.settingType || location?.type || label),
+    addressLine1: String(location?.addressLine1 || address.line1 || "").trim(),
+    addressLine2: String(location?.addressLine2 || address.line2 || "").trim(),
+    city: String(location?.city || address.city || "").trim(),
+    state: String(location?.state || address.state || "").trim(),
+    postalCode: String(location?.postalCode || address.postalCode || address.zip || "").trim()
+  };
+}
+
+function clientServiceLocations(clientId) {
+  const client = state.clients.find((item) => item.id === clientId);
+  if (!client) return [];
+  const savedLocations = Array.isArray(client.serviceLocations)
+    ? client.serviceLocations
+    : Array.isArray(client.profile?.serviceLocations) ? client.profile.serviceLocations : [];
+  const locations = savedLocations
+    .map(normalizeClientServiceLocation)
+    .filter(Boolean);
+  if (locations.length) return locations;
+  const defaultLocation = normalizeClientServiceLocation(client.defaultSetting || "");
+  return defaultLocation ? [defaultLocation] : [];
+}
+
+function appointmentLocationIcon(location) {
+  const settingType = location?.settingType || canonicalAppointmentSettingType(location?.label);
+  return ({ home: "🏠", school: "🏫", clinic: "🏥", community: "🌳", telehealth: "💻" })[settingType] || "📍";
+}
+
+function selectedAppointmentServiceLocation(formData = null) {
+  const rawIndex = formData
+    ? String(formData.get("serviceLocationIndex") || "")
+    : String(appointmentForm?.elements?.serviceLocationIndex?.value || "");
+  if (!/^\d+$/.test(rawIndex)) return null;
+  return state.appointmentServiceLocations[Number(rawIndex)] || null;
+}
+
+function syncAppointmentSettingFromLocation() {
+  const settingSelect = appointmentForm?.elements?.settingType;
+  if (!settingSelect) return;
+  const location = selectedAppointmentServiceLocation();
+  settingSelect.value = location?.settingType || "";
+}
+
+function renderAppointmentServiceLocations() {
+  const select = appointmentForm?.elements?.serviceLocationIndex;
+  const clientId = appointmentForm?.elements?.clientId?.value || "";
+  if (!select) return;
+  state.appointmentServiceLocations = clientServiceLocations(clientId);
+  if (!clientId) {
+    select.innerHTML = '<option value="">Select a client first</option>';
+    if (appointmentLocationHelp) appointmentLocationHelp.textContent = "Locations are reused from the Client Profile.";
+    syncAppointmentSettingFromLocation();
+    return;
+  }
+  if (!state.appointmentServiceLocations.length) {
+    select.innerHTML = '<option value="">No saved service locations</option>';
+    if (appointmentLocationHelp) appointmentLocationHelp.textContent = "Add a default setting to the Client Profile before scheduling.";
+    syncAppointmentSettingFromLocation();
+    return;
+  }
+  const multipleLocations = state.appointmentServiceLocations.length > 1;
+  select.innerHTML = [
+    ...(multipleLocations ? ['<option value="">Select a service location</option>'] : []),
+    ...state.appointmentServiceLocations.map((location, index) => (
+      `<option value="${index}">${appointmentLocationIcon(location)} ${escapeHtml(location.label)}</option>`
+    ))
+  ].join("");
+  if (!multipleLocations) select.value = "0";
+  if (appointmentLocationHelp) {
+    appointmentLocationHelp.textContent = multipleLocations
+      ? "Choose one of the saved Client Profile locations."
+      : "Automatically selected from the Client Profile.";
+  }
+  syncAppointmentSettingFromLocation();
+}
+
+function renderAppointmentProviderOptions() {
+  const select = appointmentForm?.elements?.providerUserId;
+  if (!select) return;
+  const serviceCode = appointmentForm.elements.serviceCode.value;
+  const role = appointmentProviderRole(serviceCode);
+  const selectedId = select.value;
+  const providers = state.appointmentProviders.filter((provider) => provider.role === role);
+  select.innerHTML = [
+    `<option value="">${role ? "Select an active provider" : "Select a service code first"}</option>`,
+    ...providers.map((provider) => (
+      `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)} (${escapeHtml(provider.role.toUpperCase())})</option>`
+    ))
+  ].join("");
+  if (providers.some((provider) => provider.id === selectedId)) select.value = selectedId;
+}
+
+function setAppointmentFormBusy(isBusy) {
+  if (appointmentFormFields) appointmentFormFields.disabled = isBusy;
+  if (appointmentSubmitButton) {
+    appointmentSubmitButton.disabled = isBusy;
+    appointmentSubmitButton.textContent = state.appointmentSubmitting ? "Creating…" : "Create Appointment";
+  }
+}
+
+async function openAppointmentForm() {
+  if (!canCreateAppointments() || !appointmentModal || !appointmentForm) return;
+  appointmentModal.classList.remove("hidden");
+  appointmentModal.setAttribute("aria-hidden", "false");
+  appointmentFormMessage.textContent = "Loading active clients and eligible providers…";
+  setAppointmentFormBusy(true);
+  const { startDate, endDate } = scheduleWeekRangeValues();
+  appointmentForm.elements.date.min = startDate;
+  appointmentForm.elements.date.max = endDate;
+  appointmentForm.elements.date.value = startDate;
+  try {
+    await ensureAppointmentOptions({ force: true });
+    renderAppointmentClientOptions();
+    renderAppointmentServiceLocations();
+    renderAppointmentProviderOptions();
+    appointmentFormMessage.textContent = state.appointmentClients.length
+      ? ""
+      : "No active clients are available for your agency.";
+    setAppointmentFormBusy(false);
+    appointmentForm.elements.clientId.focus();
+  } catch (error) {
+    appointmentFormMessage.textContent = error.message || "Unable to load appointment form options.";
+  }
+}
+
+function closeAppointmentForm() {
+  if (state.appointmentSubmitting || !appointmentModal) return;
+  appointmentModal.classList.add("hidden");
+  appointmentModal.setAttribute("aria-hidden", "true");
+  appointmentFormMessage.textContent = "";
+  appointmentForm?.reset();
+}
+
+function zonedAppointmentTimestamp(dateValue, timeValue, timeZone) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue) || !/^\d{2}:\d{2}$/.test(timeValue) || !timeZone) return "";
+  const [year, month, day] = dateValue.split("-").map(Number);
+  const [hour, minute] = timeValue.split(":").map(Number);
+  const targetUtc = Date.UTC(year, month - 1, day, hour, minute);
+  let instant = targetUtc;
+  let formatter;
+  try {
+    formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  } catch {
+    return "";
+  }
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const parts = Object.fromEntries(formatter.formatToParts(new Date(instant)).map((part) => [part.type, part.value]));
+    const observedUtc = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute));
+    instant += targetUtc - observedUtc;
+  }
+  const verified = Object.fromEntries(formatter.formatToParts(new Date(instant)).map((part) => [part.type, part.value]));
+  if (`${verified.year}-${verified.month}-${verified.day}` !== dateValue || `${verified.hour}:${verified.minute}` !== timeValue) return "";
+  const offsetMinutes = Math.round((targetUtc - instant) / 60000);
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absoluteOffset = Math.abs(offsetMinutes);
+  const offset = `${sign}${String(Math.floor(absoluteOffset / 60)).padStart(2, "0")}:${String(absoluteOffset % 60).padStart(2, "0")}`;
+  return `${dateValue}T${timeValue}:00${offset}`;
+}
+
+function appointmentFormPayload(formData) {
+  const date = String(formData.get("date") || "");
+  const timeZone = String(formData.get("timeZone") || "");
+  const serviceLocation = selectedAppointmentServiceLocation(formData) || {};
+  return {
+    clientId: String(formData.get("clientId") || ""),
+    serviceCode: String(formData.get("serviceCode") || ""),
+    providerAssignments: [{
+      userId: String(formData.get("providerUserId") || ""),
+      assignmentRole: "primary"
+    }],
+    scheduledStartAt: zonedAppointmentTimestamp(date, String(formData.get("startTime") || ""), timeZone),
+    scheduledEndAt: zonedAppointmentTimestamp(date, String(formData.get("endTime") || ""), timeZone),
+    timeZone,
+    settingType: String(formData.get("settingType") || ""),
+    locationId: String(serviceLocation.id || ""),
+    locationSnapshot: {
+      label: String(serviceLocation.label || ""),
+      addressLine1: String(serviceLocation.addressLine1 || ""),
+      addressLine2: String(serviceLocation.addressLine2 || ""),
+      city: String(serviceLocation.city || ""),
+      state: String(serviceLocation.state || ""),
+      postalCode: String(serviceLocation.postalCode || "")
+    },
+    notes: String(formData.get("notes") || "").trim()
+  };
+}
+
+function validateAppointmentForm(formData) {
+  const errors = [];
+  const required = [
+    ["clientId", "Client"],
+    ["serviceCode", "Service code"],
+    ["providerUserId", "Primary provider"],
+    ["date", "Date"],
+    ["startTime", "Start time"],
+    ["endTime", "End time"],
+    ["timeZone", "Time zone"],
+    ["settingType", "Setting type"],
+    ["serviceLocationIndex", "Service Location"]
+  ];
+  required.forEach(([name, label]) => {
+    if (!String(formData.get(name) || "").trim()) errors.push(`${label} is required.`);
+  });
+  if (String(formData.get("clientId") || "") && !state.appointmentServiceLocations.length) {
+    errors.push("The selected client has no saved service location. Update the Client Profile before scheduling.");
+  }
+  const serviceCode = String(formData.get("serviceCode") || "");
+  if (serviceCode && !["97151", "97153", "97155", "97156"].includes(serviceCode)) {
+    errors.push("Choose a supported service code.");
+  }
+  const date = String(formData.get("date") || "");
+  const { startDate, endDate } = scheduleWeekRangeValues();
+  if (date && (date < startDate || date > endDate)) errors.push("Date must be within the visible calendar week.");
+  const startTime = String(formData.get("startTime") || "");
+  const endTime = String(formData.get("endTime") || "");
+  if (startTime && endTime && endTime <= startTime) {
+    errors.push("End time must be after start time; cross-midnight appointments are not supported.");
+  }
+  const timeZone = String(formData.get("timeZone") || "");
+  if (date && startTime && timeZone && !zonedAppointmentTimestamp(date, startTime, timeZone)) {
+    errors.push("Start time is not valid in the selected time zone.");
+  }
+  if (date && endTime && timeZone && !zonedAppointmentTimestamp(date, endTime, timeZone)) {
+    errors.push("End time is not valid in the selected time zone.");
+  }
+  return [...new Set(errors)];
+}
+
+async function handleCreateAppointment(event) {
+  event.preventDefault();
+  if (state.appointmentSubmitting || !appointmentForm) return;
+  const formData = new FormData(appointmentForm);
+  const errors = validateAppointmentForm(formData);
+  if (errors.length) {
+    appointmentFormMessage.textContent = errors.join(" ");
+    return;
+  }
+  state.appointmentSubmitting = true;
+  appointmentFormMessage.textContent = "Creating appointment…";
+  setAppointmentFormBusy(true);
+  try {
+    await createAppointment(appointmentFormPayload(formData));
+    state.scheduleSuccessMessage = "Appointment created successfully.";
+    state.appointmentSubmitting = false;
+    closeAppointmentForm();
+    await ensureScheduleWeekLoaded({ force: true });
+  } catch (error) {
+    appointmentFormMessage.textContent = error.message || "Unable to create the appointment.";
+  } finally {
+    state.appointmentSubmitting = false;
+    setAppointmentFormBusy(false);
   }
 }
 
@@ -3623,6 +4004,21 @@ function filteredScheduleSessions() {
     ));
 }
 
+function filteredScheduleAppointments() {
+  const clientId = scheduleClientFilter?.value || "";
+  const serviceCode = scheduleServiceFilter?.value || "";
+  return state.scheduleAppointments
+    .filter((appointment) => (
+      (!clientId || appointment.clientId === clientId)
+      && (!serviceCode || appointment.serviceCode === serviceCode)
+    ))
+    .sort((a, b) => (
+      a.scheduledStartAt.localeCompare(b.scheduledStartAt)
+      || a.scheduledEndAt.localeCompare(b.scheduledEndAt)
+      || a.id.localeCompare(b.id)
+    ));
+}
+
 function scheduleClientName(clientId) {
   return state.clients.find((client) => client.id === clientId)?.name || "Unknown client";
 }
@@ -3632,6 +4028,49 @@ function scheduleTimeLabel(session) {
   return session.startTime || session.endTime || "Time not entered";
 }
 
+function scheduleAppointmentDate(appointment) {
+  if (!appointment.scheduledStartAt || !appointment.timeZone) return "";
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: appointment.timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(new Date(appointment.scheduledStartAt));
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+  } catch {
+    return "";
+  }
+}
+
+function scheduleAppointmentTimeLabel(appointment) {
+  try {
+    const formatter = new Intl.DateTimeFormat(undefined, {
+      timeZone: appointment.timeZone,
+      hour: "numeric",
+      minute: "2-digit"
+    });
+    return `${formatter.format(new Date(appointment.scheduledStartAt))}–${formatter.format(new Date(appointment.scheduledEndAt))}`;
+  } catch {
+    return "Time unavailable";
+  }
+}
+
+function scheduleProviderName(userId) {
+  return state.appointmentProviders.find((provider) => provider.id === userId)?.name || "Unknown provider";
+}
+
+function scheduleSettingLabel(settingType) {
+  const value = String(settingType || "").replaceAll("_", " ").trim();
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : "Setting not entered";
+}
+
+function scheduleStatusLabel(status) {
+  const value = String(status || "scheduled").replaceAll("_", " ").trim();
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : "Scheduled";
+}
+
 function renderSchedule() {
   if (!scheduleWeekGrid || !scheduleWeekRange || !scheduleMessage) return;
   const { startDate, endDate } = scheduleWeekRangeValues();
@@ -3639,22 +4078,26 @@ function renderSchedule() {
   scheduleWeekRange.textContent = `${formatDate(startDate)} – ${formatDate(endDate)}`;
 
   if (state.scheduleLoading) {
-    scheduleMessage.textContent = "Loading completed sessions...";
-    scheduleWeekGrid.innerHTML = '<div class="schedule-state">Loading completed sessions for the visible week...</div>';
+    scheduleMessage.textContent = "Loading sessions and appointments…";
+    scheduleWeekGrid.innerHTML = '<div class="schedule-state">Loading the visible calendar week…</div>';
     return;
   }
 
   if (state.scheduleLoadError) {
     scheduleMessage.textContent = state.scheduleLoadError;
-    scheduleWeekGrid.innerHTML = '<div class="schedule-state schedule-state-error">Completed clinical records could not be loaded.</div>';
+    scheduleWeekGrid.innerHTML = '<div class="schedule-state schedule-state-error">The visible calendar week could not be loaded.</div>';
     return;
   }
 
   const sessions = filteredScheduleSessions();
-  scheduleMessage.textContent = sessions.length ? "" : "No completed sessions for this week";
+  const appointments = filteredScheduleAppointments();
+  scheduleMessage.textContent = state.scheduleSuccessMessage
+    || (sessions.length || appointments.length ? "" : "No sessions or appointments for this week");
+  state.scheduleSuccessMessage = "";
   scheduleWeekGrid.innerHTML = scheduleWeekDates().map((date) => {
     const dateValue = scheduleDateValue(date);
     const daySessions = sessions.filter((session) => session.date === dateValue);
+    const dayAppointments = appointments.filter((appointment) => scheduleAppointmentDate(appointment) === dateValue);
     const dayName = date.toLocaleDateString(undefined, { weekday: "long" });
     const dayDate = date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
     return `
@@ -3664,14 +4107,24 @@ function renderSchedule() {
           <span>${escapeHtml(dayDate)}</span>
         </div>
         <div class="schedule-day-records">
-          ${daySessions.length ? daySessions.map((session) => `
+          ${dayAppointments.map((appointment) => `
+            <article class="schedule-record schedule-appointment-record">
+              <span class="schedule-record-label">Scheduled appointment</span>
+              <strong>${escapeHtml(scheduleClientName(appointment.clientId))}</strong>
+              <span>${escapeHtml(appointment.serviceCode)} · ${escapeHtml(scheduleAppointmentTimeLabel(appointment))}</span>
+              <span>${escapeHtml(scheduleProviderName(appointment.providerUserId))}</span>
+              <span>${escapeHtml(scheduleSettingLabel(appointment.settingType))} · ${escapeHtml(scheduleStatusLabel(appointment.status))}</span>
+            </article>
+          `).join("")}
+          ${daySessions.map((session) => `
             <article class="schedule-record">
               <span class="schedule-record-label">Completed session</span>
               <strong>${escapeHtml(scheduleClientName(session.clientId))}</strong>
               <span>${escapeHtml(session.serviceCode)} · ${escapeHtml(scheduleTimeLabel(session))}</span>
               ${session.setting ? `<span>${escapeHtml(session.setting)}</span>` : ""}
             </article>
-          `).join("") : '<span class="schedule-day-empty">No completed sessions</span>'}
+          `).join("")}
+          ${dayAppointments.length || daySessions.length ? "" : '<span class="schedule-day-empty">No sessions or appointments</span>'}
         </div>
       </section>
     `;
