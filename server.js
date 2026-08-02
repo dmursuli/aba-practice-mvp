@@ -29,6 +29,23 @@ const sessions = new Map();
 const preservedDrafts = new Map();
 const AGENCIES = ["Triumph ABA", "One Clinical Care"];
 const DEFAULT_AGENCY = AGENCIES[0];
+const APPOINTMENT_SERVICE_CODES = new Set(["97151", "97153", "97155", "97156"]);
+const APPOINTMENT_STATUSES = new Set(["scheduled", "confirmed", "completed", "cancelled", "no_show"]);
+const APPOINTMENT_CANCELLATION_REASONS = new Set([
+  "client_cancelled",
+  "provider_cancelled",
+  "authorization_issue",
+  "illness",
+  "weather",
+  "agency_cancelled",
+  "other"
+]);
+const APPOINTMENT_PROVIDER_ROLES = {
+  "97151": new Set(["bcba"]),
+  "97153": new Set(["rbt"]),
+  "97155": new Set(["bcba"]),
+  "97156": new Set(["bcba"])
+};
 
 function envNumber(name, fallback) {
   const raw = Number(process.env[name]);
@@ -57,6 +74,7 @@ let cachedDbCaCert = null;
 let cachedDbCaCertKey = null;
 let emailModulePromise = null;
 let emailTransportPromise = null;
+let appointmentMutationQueue = Promise.resolve();
 const verificationDebugDeliveries = [];
 
 const contentTypes = {
@@ -88,6 +106,12 @@ async function readDbWithUsers() {
   if (ensureClientNoteHistories(db)) changed = true;
   if (ensureUserSecurityDefaults(db)) changed = true;
   if (changed) await writeDb(db);
+  return db;
+}
+
+async function readSchedulingDb() {
+  const db = await readDb();
+  if (ensureAppointmentsState(db)) await writeDb(db);
   return db;
 }
 
@@ -640,6 +664,7 @@ function ensureAgencyScoping(db) {
   db.users = Array.isArray(db.users) ? db.users : [];
   db.clients = Array.isArray(db.clients) ? db.clients : [];
   db.sessions = Array.isArray(db.sessions) ? db.sessions : [];
+  if (ensureAppointmentsState(db)) changed = true;
   db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
   if (!Array.isArray(db.historicalImportBatches)) {
     db.historicalImportBatches = [];
@@ -705,8 +730,27 @@ function ensureAgencyScoping(db) {
   return changed;
 }
 
+function ensureAppointmentsState(db) {
+  let changed = false;
+  if (!Array.isArray(db.appointments)) {
+    db.appointments = [];
+    changed = true;
+  }
+  db.appointments.forEach((appointment) => {
+    const client = (db.clients || []).find((item) => item.id === appointment.clientId);
+    const fallbackAgency = normalizeAgency(client?.agency);
+    const normalizedAgency = normalizeAgency(appointment.agency, fallbackAgency);
+    if (appointment.agency !== normalizedAgency) {
+      appointment.agency = normalizedAgency;
+      changed = true;
+    }
+  });
+  return changed;
+}
+
 export function resetRuntimeState() {
   sessions.clear();
+  appointmentMutationQueue = Promise.resolve();
 }
 
 export function createAppServer() {
@@ -1057,6 +1101,181 @@ export function createAppServer() {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/appointments") {
+      const db = await readSchedulingDb();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const startDate = String(url.searchParams.get("startDate") || "");
+      const endDate = String(url.searchParams.get("endDate") || "");
+      const rangeErrors = validateAppointmentDateRange(startDate, endDate);
+      if (rangeErrors.length) {
+        sendJson(res, 400, { errors: rangeErrors });
+        return;
+      }
+      const appointments = visibleAppointments(db, actor)
+        .filter((appointment) => {
+          const serviceDate = appointmentLocalDate(appointment.scheduledStartAt, appointment.timeZone);
+          return serviceDate >= startDate && serviceDate <= endDate;
+        })
+        .sort((a, b) => (
+          String(a.scheduledStartAt || "").localeCompare(String(b.scheduledStartAt || ""))
+          || String(a.id || "").localeCompare(String(b.id || ""))
+        ))
+        .map(appointmentCalendarSummary);
+      sendJson(res, 200, { appointments, startDate, endDate });
+      return;
+    }
+
+    const appointmentMatch = url.pathname.match(/^\/api\/appointments\/([^/]+)$/);
+    if (req.method === "GET" && appointmentMatch) {
+      const db = await readSchedulingDb();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const appointment = (db.appointments || []).find((item) => item.id === appointmentMatch[1]);
+      if (!appointment) {
+        sendJson(res, 404, { errors: ["Appointment not found."] });
+        return;
+      }
+      if (!canAccessAgency(actor, appointment.agency)) {
+        sendJson(res, 403, { errors: ["You cannot access this appointment."] });
+        return;
+      }
+      sendJson(res, 200, appointment);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/appointments") {
+      await withAppointmentMutationLock(async () => {
+      const db = await readSchedulingDb();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const payload = await readBody(req);
+      const { appointment, errors } = createAppointmentRecord(payload, db, actor);
+      if (errors.length) {
+        sendJson(res, 400, { errors });
+        return;
+      }
+      db.appointments.unshift(appointment);
+      logAudit(db, req, actor, "appointment-created", {
+        clientId: appointment.clientId,
+        agency: appointment.agency,
+        details: appointmentAuditDetails(appointment)
+      });
+      await writeDb(db);
+      sendJson(res, 201, appointment);
+      return;
+      });
+      return;
+    }
+
+    if (req.method === "PUT" && appointmentMatch) {
+      await withAppointmentMutationLock(async () => {
+      const db = await readSchedulingDb();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const payload = await readBody(req);
+      const appointment = (db.appointments || []).find((item) => item.id === appointmentMatch[1]);
+      if (!appointment) {
+        sendJson(res, 404, { errors: ["Appointment not found."] });
+        return;
+      }
+      if (!canAccessAgency(actor, appointment.agency)) {
+        sendJson(res, 403, { errors: ["You cannot update this appointment."] });
+        return;
+      }
+      const expectedVersion = appointmentExpectedVersion(payload);
+      if (!expectedVersion) {
+        sendJson(res, 400, { errors: ["expectedVersion is required and must be a positive integer."] });
+        return;
+      }
+      if (expectedVersion !== appointment.version) {
+        sendJson(res, 409, {
+          errors: ["Appointment has changed. Reload it and try again."],
+          currentVersion: appointment.version
+        });
+        return;
+      }
+      const { appointment: updatedAppointment, errors } = updateAppointmentRecord(appointment, payload, db, actor);
+      if (errors.length) {
+        sendJson(res, 400, { errors });
+        return;
+      }
+      Object.assign(appointment, updatedAppointment);
+      logAudit(db, req, actor, "appointment-updated", {
+        clientId: appointment.clientId,
+        agency: appointment.agency,
+        details: appointmentAuditDetails(appointment)
+      });
+      await writeDb(db);
+      sendJson(res, 200, appointment);
+      return;
+      });
+      return;
+    }
+
+    const appointmentCancelMatch = url.pathname.match(/^\/api\/appointments\/([^/]+)\/cancel$/);
+    if (req.method === "POST" && appointmentCancelMatch) {
+      await withAppointmentMutationLock(async () => {
+      const db = await readSchedulingDb();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const payload = await readBody(req);
+      const appointment = (db.appointments || []).find((item) => item.id === appointmentCancelMatch[1]);
+      if (!appointment) {
+        sendJson(res, 404, { errors: ["Appointment not found."] });
+        return;
+      }
+      if (!canAccessAgency(actor, appointment.agency)) {
+        sendJson(res, 403, { errors: ["You cannot cancel this appointment."] });
+        return;
+      }
+      const expectedVersion = appointmentExpectedVersion(payload);
+      if (!expectedVersion) {
+        sendJson(res, 400, { errors: ["expectedVersion is required and must be a positive integer."] });
+        return;
+      }
+      if (expectedVersion !== appointment.version) {
+        sendJson(res, 409, {
+          errors: ["Appointment has changed. Reload it and try again."],
+          currentVersion: appointment.version
+        });
+        return;
+      }
+      const reason = String(payload.reason || "").trim();
+      if (!APPOINTMENT_CANCELLATION_REASONS.has(reason)) {
+        sendJson(res, 400, { errors: ["A supported cancellation reason is required."] });
+        return;
+      }
+      if (!canTransitionAppointmentStatus(appointment.status, "cancelled")) {
+        sendJson(res, 400, { errors: [`Appointment status cannot change from ${appointment.status} to cancelled.`] });
+        return;
+      }
+      const now = new Date().toISOString();
+      appointment.status = "cancelled";
+      appointment.cancellation = {
+        reason,
+        note: String(payload.note || "").trim(),
+        cancelledAt: now,
+        cancelledBy: actor.id
+      };
+      appointment.updatedAt = now;
+      appointment.updatedBy = actor.id;
+      appointment.version += 1;
+      logAudit(db, req, actor, "appointment-cancelled", {
+        clientId: appointment.clientId,
+        agency: appointment.agency,
+        details: {
+          ...appointmentAuditDetails(appointment),
+          cancellationReason: reason
+        }
+      });
+      await writeDb(db);
+      sendJson(res, 200, appointment);
+      return;
+      });
+      return;
+    }
+
     const historicalImportDuplicatesMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/historical-import-duplicates$/);
     if (req.method === "GET" && historicalImportDuplicatesMatch) {
       const db = await readDbWithUsers();
@@ -1175,6 +1394,7 @@ export function createAppServer() {
         details: {
           clients: (db.clients || []).length,
           sessions: (db.sessions || []).length,
+          appointments: (db.appointments || []).length,
           auditEntries: (db.auditLog || []).length
         }
       });
@@ -1203,6 +1423,7 @@ export function createAppServer() {
         details: {
           clients: (restoredDb.clients || []).length,
           sessions: (restoredDb.sessions || []).length,
+          appointments: (restoredDb.appointments || []).length,
           sourceExportedAt: payload.exportedAt || ""
         }
       });
@@ -2591,6 +2812,339 @@ function visibleSessions(db, user) {
   return (db.sessions || []).filter((session) => clientIds.has(session.clientId));
 }
 
+function visibleAppointments(db, user) {
+  return (db.appointments || []).filter((appointment) => canAccessAgency(user, appointment.agency));
+}
+
+function validateAppointmentDateRange(startDate, endDate) {
+  const errors = [];
+  if (!isValidDateOnly(startDate)) errors.push("startDate must be a valid YYYY-MM-DD date.");
+  if (!isValidDateOnly(endDate)) errors.push("endDate must be a valid YYYY-MM-DD date.");
+  if (!errors.length && endDate < startDate) errors.push("endDate must be on or after startDate.");
+  return errors;
+}
+
+function isValidDateOnly(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const [, year, month, day] = match.map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day;
+}
+
+function isValidIanaTimeZone(value) {
+  const timeZone = String(value || "").trim();
+  if (!timeZone) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isExplicitOffsetIsoTimestamp(value) {
+  const timestamp = String(value || "").trim();
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(timestamp)
+    && Number.isFinite(Date.parse(timestamp));
+}
+
+function appointmentLocalDate(timestamp, timeZone) {
+  if (!isExplicitOffsetIsoTimestamp(timestamp) || !isValidIanaTimeZone(timeZone)) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date(timestamp));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function sanitizeAppointmentProviderAssignments(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((assignment) => ({
+    userId: String(assignment?.userId || "").trim(),
+    assignmentRole: String(assignment?.assignmentRole || "").trim()
+  }));
+}
+
+function sanitizeAppointmentLocationSnapshot(value) {
+  return {
+    label: String(value?.label || "").trim(),
+    addressLine1: String(value?.addressLine1 || "").trim(),
+    addressLine2: String(value?.addressLine2 || "").trim(),
+    city: String(value?.city || "").trim(),
+    state: String(value?.state || "").trim(),
+    postalCode: String(value?.postalCode || "").trim()
+  };
+}
+
+function sanitizeAppointmentAuthorizationRef(value) {
+  return {
+    number: String(value?.number || "").trim(),
+    startDate: String(value?.startDate || "").trim(),
+    endDate: String(value?.endDate || "").trim()
+  };
+}
+
+function appointmentCoreFromPayload(payload, current = null) {
+  return {
+    clientId: String(payload.clientId ?? current?.clientId ?? "").trim(),
+    serviceCode: String(payload.serviceCode ?? current?.serviceCode ?? "").trim(),
+    providerAssignments: sanitizeAppointmentProviderAssignments(
+      payload.providerAssignments ?? current?.providerAssignments ?? []
+    ),
+    scheduledStartAt: String(payload.scheduledStartAt ?? current?.scheduledStartAt ?? "").trim(),
+    scheduledEndAt: String(payload.scheduledEndAt ?? current?.scheduledEndAt ?? "").trim(),
+    timeZone: String(payload.timeZone ?? current?.timeZone ?? "").trim(),
+    status: String(payload.status ?? current?.status ?? "scheduled").trim(),
+    settingType: String(payload.settingType ?? current?.settingType ?? "").trim(),
+    locationId: String(payload.locationId ?? current?.locationId ?? "").trim(),
+    locationSnapshot: sanitizeAppointmentLocationSnapshot(
+      payload.locationSnapshot ?? current?.locationSnapshot ?? {}
+    ),
+    authorizationRef: sanitizeAppointmentAuthorizationRef(
+      payload.authorizationRef ?? current?.authorizationRef ?? {}
+    ),
+    notes: String(payload.notes ?? current?.notes ?? "").trim()
+  };
+}
+
+function validateAppointmentRecord(appointment, db, actor) {
+  const errors = [];
+  const client = (db.clients || []).find((item) => item.id === appointment.clientId);
+  if (!client) {
+    errors.push("An existing client is required.");
+  } else {
+    if (client.status === "archived") errors.push("Client must be active.");
+    if (!canAccessClient(actor, client)) errors.push("You cannot schedule this client.");
+    if (normalizeAgency(client.agency) !== normalizeAgency(appointment.agency)) {
+      errors.push("Appointment agency must match the client agency.");
+    }
+  }
+
+  if (!APPOINTMENT_SERVICE_CODES.has(appointment.serviceCode)) {
+    errors.push("Service code must be one of 97151, 97153, 97155, or 97156.");
+  }
+
+  const assignments = appointment.providerAssignments || [];
+  const primaryAssignments = assignments.filter((assignment) => assignment.assignmentRole === "primary");
+  if (primaryAssignments.length !== 1) errors.push("Exactly one primary provider is required.");
+  if (assignments.some((assignment) => !["primary", "secondary"].includes(assignment.assignmentRole))) {
+    errors.push("Provider assignment role must be primary or secondary.");
+  }
+  if (assignments.some((assignment) => !assignment.userId)) errors.push("Every provider assignment requires a userId.");
+  if (new Set(assignments.map((assignment) => assignment.userId)).size !== assignments.length) {
+    errors.push("A provider can appear only once on an appointment.");
+  }
+  assignments.forEach((assignment) => {
+    if (!assignment.userId) return;
+    const provider = (db.users || []).find((user) => user.id === assignment.userId);
+    if (!provider) {
+      errors.push(`Provider ${assignment.userId} does not exist.`);
+      return;
+    }
+    if (provider.active === false) errors.push(`Provider ${assignment.userId} must be active.`);
+    if (userAgency(provider) !== normalizeAgency(appointment.agency)) {
+      errors.push(`Provider ${assignment.userId} must belong to the appointment agency.`);
+    }
+    const permittedRoles = APPOINTMENT_PROVIDER_ROLES[appointment.serviceCode];
+    if (permittedRoles && !permittedRoles.has(provider.role)) {
+      errors.push(`Provider ${assignment.userId} role is not permitted for service ${appointment.serviceCode}.`);
+    }
+  });
+
+  if (!isValidIanaTimeZone(appointment.timeZone)) errors.push("A valid IANA timezone is required.");
+  if (!isExplicitOffsetIsoTimestamp(appointment.scheduledStartAt)) {
+    errors.push("scheduledStartAt must be a valid ISO timestamp with an explicit offset.");
+  }
+  if (!isExplicitOffsetIsoTimestamp(appointment.scheduledEndAt)) {
+    errors.push("scheduledEndAt must be a valid ISO timestamp with an explicit offset.");
+  }
+  if (isExplicitOffsetIsoTimestamp(appointment.scheduledStartAt)
+    && isExplicitOffsetIsoTimestamp(appointment.scheduledEndAt)) {
+    if (Date.parse(appointment.scheduledEndAt) <= Date.parse(appointment.scheduledStartAt)) {
+      errors.push("scheduledEndAt must be after scheduledStartAt.");
+    }
+    if (isValidIanaTimeZone(appointment.timeZone)
+      && appointmentLocalDate(appointment.scheduledStartAt, appointment.timeZone)
+        !== appointmentLocalDate(appointment.scheduledEndAt, appointment.timeZone)) {
+      errors.push("Cross-midnight appointments are not supported.");
+    }
+  }
+  if (!APPOINTMENT_STATUSES.has(appointment.status)) errors.push("Appointment status is not supported.");
+  if (!appointment.settingType) errors.push("Setting type is required.");
+
+  const authorization = appointment.authorizationRef || {};
+  if (authorization.startDate && !isValidDateOnly(authorization.startDate)) {
+    errors.push("Authorization start date must use YYYY-MM-DD.");
+  }
+  if (authorization.endDate && !isValidDateOnly(authorization.endDate)) {
+    errors.push("Authorization end date must use YYYY-MM-DD.");
+  }
+  if (authorization.startDate && authorization.endDate && authorization.endDate < authorization.startDate) {
+    errors.push("Authorization end date must be on or after its start date.");
+  }
+  return errors;
+}
+
+function createAppointmentRecord(payload, db, actor) {
+  const errors = [];
+  if (payload.id) errors.push("Appointment ID is server-managed.");
+  if (payload.sessionId || payload.linkedAt || payload.linkedBy) {
+    errors.push("Clinical linkage is not available in this phase.");
+  }
+  if (payload.recurrenceSeriesId || payload.originalOccurrenceStartAt) {
+    errors.push("Recurring appointments are not available in this phase.");
+  }
+  if (payload.replacesAppointmentId || payload.replacedByAppointmentId) {
+    errors.push("Rescheduling links are not available in this phase.");
+  }
+  if (payload.cancellation) errors.push("Use the cancellation endpoint to cancel an appointment.");
+  if (payload.status && payload.status !== "scheduled") errors.push("New appointments must start as scheduled.");
+
+  const client = (db.clients || []).find((item) => item.id === String(payload.clientId || "").trim());
+  if (payload.agency && client && String(payload.agency).trim() !== normalizeAgency(client.agency)) {
+    errors.push("Appointment agency must match the client agency.");
+  }
+  const now = new Date().toISOString();
+  const appointment = {
+    id: crypto.randomUUID(),
+    agency: normalizeAgency(client?.agency || actor?.agency),
+    ...appointmentCoreFromPayload(payload),
+    status: "scheduled",
+    recurrenceSeriesId: "",
+    originalOccurrenceStartAt: "",
+    sessionId: "",
+    linkedAt: "",
+    linkedBy: "",
+    cancellation: null,
+    replacesAppointmentId: "",
+    replacedByAppointmentId: "",
+    createdAt: now,
+    createdBy: actor.id,
+    updatedAt: now,
+    updatedBy: actor.id,
+    version: 1
+  };
+  errors.push(...validateAppointmentRecord(appointment, db, actor));
+  return { appointment, errors: [...new Set(errors)] };
+}
+
+function updateAppointmentRecord(current, payload, db, actor) {
+  const errors = [];
+  if (current.status === "cancelled") errors.push("Cancelled appointments cannot be updated.");
+  if (payload.id !== undefined && payload.id !== current.id) errors.push("Appointment ID is immutable.");
+  if (payload.agency !== undefined && String(payload.agency).trim() !== String(current.agency || "")) {
+    errors.push("Appointment agency is immutable.");
+  }
+  for (const field of ["sessionId", "linkedAt", "linkedBy"]) {
+    if (payload[field] !== undefined && String(payload[field] || "") !== String(current[field] || "")) {
+      errors.push(`${field} is immutable outside the explicit linkage workflow.`);
+    }
+  }
+  for (const field of ["recurrenceSeriesId", "originalOccurrenceStartAt", "replacesAppointmentId", "replacedByAppointmentId"]) {
+    if (payload[field] !== undefined && String(payload[field] || "") !== String(current[field] || "")) {
+      errors.push(`${field} is not editable in this phase.`);
+    }
+  }
+  if (payload.cancellation !== undefined && JSON.stringify(payload.cancellation) !== JSON.stringify(current.cancellation)) {
+    errors.push("Use the cancellation endpoint to change cancellation data.");
+  }
+  if (payload.status === "cancelled") errors.push("Use the cancellation endpoint to cancel an appointment.");
+  for (const field of ["createdAt", "createdBy"]) {
+    if (payload[field] !== undefined && String(payload[field] || "") !== String(current[field] || "")) {
+      errors.push(`${field} is server-managed and immutable.`);
+    }
+  }
+
+  const core = appointmentCoreFromPayload(payload, current);
+  if (!canTransitionAppointmentStatus(current.status, core.status)) {
+    errors.push(`Appointment status cannot change from ${current.status} to ${core.status}.`);
+  }
+  const now = new Date().toISOString();
+  const appointment = {
+    ...current,
+    ...core,
+    agency: current.agency,
+    id: current.id,
+    sessionId: current.sessionId || "",
+    linkedAt: current.linkedAt || "",
+    linkedBy: current.linkedBy || "",
+    cancellation: current.cancellation || null,
+    recurrenceSeriesId: current.recurrenceSeriesId || "",
+    originalOccurrenceStartAt: current.originalOccurrenceStartAt || "",
+    replacesAppointmentId: current.replacesAppointmentId || "",
+    replacedByAppointmentId: current.replacedByAppointmentId || "",
+    createdAt: current.createdAt,
+    createdBy: current.createdBy,
+    updatedAt: now,
+    updatedBy: actor.id,
+    version: current.version + 1
+  };
+  errors.push(...validateAppointmentRecord(appointment, db, actor));
+  return { appointment, errors: [...new Set(errors)] };
+}
+
+function canTransitionAppointmentStatus(fromStatus, toStatus) {
+  const transitions = {
+    scheduled: new Set(["scheduled", "confirmed", "completed", "cancelled", "no_show"]),
+    confirmed: new Set(["scheduled", "confirmed", "completed", "cancelled", "no_show"]),
+    completed: new Set(["completed"]),
+    no_show: new Set(["no_show"]),
+    cancelled: new Set(["cancelled"])
+  };
+  return Boolean(transitions[fromStatus]?.has(toStatus));
+}
+
+function appointmentExpectedVersion(payload) {
+  const version = Number(payload?.expectedVersion);
+  return Number.isInteger(version) && version > 0 ? version : 0;
+}
+
+async function withAppointmentMutationLock(operation) {
+  const run = appointmentMutationQueue.then(operation, operation);
+  appointmentMutationQueue = run.catch(() => {});
+  return run;
+}
+
+function appointmentCalendarSummary(appointment) {
+  return {
+    id: appointment.id,
+    agency: appointment.agency,
+    clientId: appointment.clientId,
+    serviceCode: appointment.serviceCode,
+    providerAssignments: appointment.providerAssignments || [],
+    scheduledStartAt: appointment.scheduledStartAt,
+    scheduledEndAt: appointment.scheduledEndAt,
+    timeZone: appointment.timeZone,
+    status: appointment.status,
+    settingType: appointment.settingType,
+    locationId: appointment.locationId || "",
+    locationSnapshot: appointment.locationSnapshot || sanitizeAppointmentLocationSnapshot(),
+    authorizationRef: appointment.authorizationRef || sanitizeAppointmentAuthorizationRef(),
+    recurrenceSeriesId: appointment.recurrenceSeriesId || "",
+    originalOccurrenceStartAt: appointment.originalOccurrenceStartAt || "",
+    sessionId: appointment.sessionId || "",
+    version: appointment.version
+  };
+}
+
+function appointmentAuditDetails(appointment) {
+  return {
+    appointmentId: appointment.id,
+    serviceCode: appointment.serviceCode,
+    status: appointment.status,
+    scheduledStartAt: appointment.scheduledStartAt,
+    scheduledEndAt: appointment.scheduledEndAt,
+    providerUserIds: (appointment.providerAssignments || []).map((assignment) => assignment.userId),
+    version: appointment.version
+  };
+}
+
 function filterSessions(sessions, { clientId = "", startDate = "", endDate = "", serviceType = "" } = {}) {
   return (sessions || []).filter((session) => {
     if (clientId && session.clientId !== clientId) return false;
@@ -2708,7 +3262,7 @@ function publicUser(user) {
 }
 
 function redactDb(db, user) {
-  const { users, auditLog, ...publicDb } = db;
+  const { users, auditLog, appointments, ...publicDb } = db;
   return {
     ...publicDb,
     clients: visibleClients(db, user),
@@ -2718,7 +3272,7 @@ function redactDb(db, user) {
 }
 
 function bootstrapDb(db, user) {
-  const { users, auditLog, sessions, ...publicDb } = db;
+  const { users, auditLog, sessions, appointments, ...publicDb } = db;
   return {
     ...publicDb,
     clients: visibleClients(db, user),
@@ -2738,6 +3292,7 @@ function practiceBackupPayload(db) {
     data: {
       clients: db.clients || [],
       sessions: db.sessions || [],
+      appointments: db.appointments || [],
       historicalImportBatches: db.historicalImportBatches || [],
       auditLog: db.auditLog || [],
       users: (db.users || []).map(publicUser)
@@ -2749,7 +3304,7 @@ function restorePracticeBackup(currentDb, backup) {
   if (!backup || backup.app !== "ABA Practice MVP" || !backup.data) {
     throw new Error("That file is not a valid ABA Practice MVP backup.");
   }
-  const { clients, sessions, historicalImportBatches, auditLog } = backup.data;
+  const { clients, sessions, appointments, historicalImportBatches, auditLog } = backup.data;
   if (!Array.isArray(clients) || !Array.isArray(sessions)) {
     throw new Error("Backup must include clients and sessions.");
   }
@@ -2757,6 +3312,7 @@ function restorePracticeBackup(currentDb, backup) {
     ...currentDb,
     clients,
     sessions,
+    appointments: Array.isArray(appointments) ? appointments : [],
     historicalImportBatches: Array.isArray(historicalImportBatches) ? historicalImportBatches : [],
     auditLog: Array.isArray(auditLog) ? auditLog : [],
     users: currentDb.users || []
