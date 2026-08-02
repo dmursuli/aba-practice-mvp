@@ -98,6 +98,26 @@ export async function getVisibleSessions({ clientId = "", startDate = "", endDat
   return fetchWithTimeout(url.pathname + url.search, timeoutMs);
 }
 
+export async function getAppointments({ startDate = "", endDate = "", timeoutMs = 15000 } = {}) {
+  const url = new URL("/api/appointments", window.location.origin);
+  if (startDate) url.searchParams.set("startDate", startDate);
+  if (endDate) url.searchParams.set("endDate", endDate);
+  return fetchWithTimeout(url.pathname + url.search, timeoutMs);
+}
+
+export async function getAppointmentOptions({ timeoutMs = 15000 } = {}) {
+  return fetchWithTimeout("/api/appointment-options", timeoutMs);
+}
+
+export async function createAppointment(appointment) {
+  const response = await fetch("/api/appointments", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(appointment)
+  });
+  return parseResponse(response);
+}
+
 export async function getHistoricalImportBatches({ clientId = "" } = {}) {
   const url = new URL("/api/historical-imports", window.location.origin);
   if (clientId) url.searchParams.set("clientId", clientId);

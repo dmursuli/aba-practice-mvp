@@ -1126,6 +1126,27 @@ export function createAppServer() {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/appointment-options") {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const agency = userAgency(actor);
+      const clients = (db.clients || [])
+        .filter((client) => client.status !== "archived" && normalizeAgency(client.agency) === agency)
+        .map((client) => ({ id: client.id, name: client.name, agency: normalizeAgency(client.agency) }))
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+      const providers = (db.users || [])
+        .filter((provider) => (
+          provider.active !== false
+          && ["bcba", "rbt"].includes(provider.role)
+          && userAgency(provider) === agency
+        ))
+        .map((provider) => ({ id: provider.id, name: provider.name, role: provider.role }))
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+      sendJson(res, 200, { clients, providers });
+      return;
+    }
+
     const appointmentMatch = url.pathname.match(/^\/api\/appointments\/([^/]+)$/);
     if (req.method === "GET" && appointmentMatch) {
       const db = await readSchedulingDb();

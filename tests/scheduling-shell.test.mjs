@@ -98,7 +98,8 @@ test("the weekly request is date bounded and uses a separate minimal cache", () 
 
   assert.match(appSource, /scheduleSessions:\s*\[\]/);
   assert.match(loadBlock, /getVisibleSessions\(\{ startDate, endDate \}\)/);
-  assert.match(loadBlock, /state\.scheduleSessions = \(payload\.sessions \|\| \[\]\)\.map\(scheduleSessionSummary\)/);
+  assert.match(loadBlock, /state\.scheduleSessions = \(sessionPayload\.sessions \|\| \[\]\)\.map\(scheduleSessionSummary\)/);
+  assert.match(loadBlock, /state\.scheduleAppointments = \(appointmentPayload\.appointments \|\| \[\]\)\.map\(scheduleAppointmentSummary\)/);
   assert.doesNotMatch(loadBlock, /state\.sessions\s*=/);
   assert.match(summaryBlock, /clientId:/);
   assert.match(summaryBlock, /serviceCode:/);
@@ -118,14 +119,14 @@ test("legacy caregiver training is displayed under canonical service code 97156"
   assert.equal(context.canonicalScheduleServiceCode({}), "97153");
 });
 
-test("calendar records are explicitly historical and have loading, error, and empty states", () => {
+test("calendar preserves historical labels and adds read-only appointment records", () => {
   const block = functionSource("renderSchedule");
 
   assert.match(block, /Completed session/);
-  assert.match(block, /Loading completed sessions/);
-  assert.match(block, /Completed clinical records could not be loaded/);
-  assert.match(block, /No completed sessions for this week/);
-  assert.doesNotMatch(block, /appointment/i);
+  assert.match(block, /Scheduled appointment/);
+  assert.match(block, /Loading sessions and appointments/);
+  assert.match(block, /visible calendar week could not be loaded/);
+  assert.match(block, /No sessions or appointments for this week/);
   assert.doesNotMatch(block, /soapNote|providerSignature|therapist/);
 });
 
@@ -148,10 +149,11 @@ test("calendar is responsive without a page-level horizontal calendar layout", (
   assert.match(cssSource, /\.schedule-subview\.hidden,\s*\.schedule-empty-state\.hidden\s*\{[^}]*display:\s*none/s);
 });
 
-test("workspace shell contains no scheduling persistence, mutation, or Zone Management logic", () => {
-  assert.doesNotMatch(appSource, /appointments\s*:/);
-  assert.doesNotMatch(appSource, /createAppointment|updateAppointment|deleteAppointment|cancelAppointment/);
+test("Phase 3A adds creation only and contains no later scheduling or Zone Management logic", () => {
+  assert.match(appSource, /createAppointment/);
+  assert.doesNotMatch(appSource, /updateAppointment|deleteAppointment|cancelAppointment|confirmAppointment|rescheduleAppointment/);
   assert.doesNotMatch(appSource, /schedulingZones\s*:|zoneZip|zoneAdjacency|createZone|updateZone|deleteZone/);
-  assert.doesNotMatch(htmlSource, /drag-and-drop|draggable|Create appointment|Edit appointment/);
+  assert.match(htmlSource, /Add Appointment/);
+  assert.doesNotMatch(htmlSource, /drag-and-drop|draggable|Edit appointment|Cancel appointment|Confirm appointment|Reschedule appointment/);
   assert.doesNotMatch(htmlSource, /Create zone|Edit zone|ZIP-code association|travel-buffer rule/);
 });

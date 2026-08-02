@@ -178,6 +178,59 @@ test("appointment endpoints require authentication and Scheduling roles", async 
   assert.equal(readOnlyRead.response.status, 403);
 });
 
+test("appointment options are active, eligible, same-agency, and available to admin and BCBA", async () => {
+  await resetDb({
+    ...baseDb,
+    clients: [
+      clinicalClient,
+      { ...clinicalClient, id: "archived-client", name: "Archived Client", status: "archived" },
+      { ...clinicalClient, id: "other-client", name: "Other Client", agency: "One Clinical Care" }
+    ]
+  });
+  const adminCookie = await loginAs();
+  const deactivate = await request("/api/users/user-rbt", {
+    method: "PUT",
+    cookie: adminCookie,
+    body: {
+      name: "RBT User",
+      email: "rbt@local.test",
+      role: "rbt",
+      agency: "Triumph ABA",
+      active: false
+    }
+  });
+  assert.equal(deactivate.response.status, 200);
+  const otherProvider = await request("/api/users", {
+    method: "POST",
+    cookie: adminCookie,
+    body: {
+      username: "options-other-rbt",
+      email: "options-other-rbt@example.test",
+      name: "Other Agency RBT",
+      password: "other123",
+      role: "rbt",
+      agency: "One Clinical Care"
+    }
+  });
+  assert.equal(otherProvider.response.status, 201);
+
+  const adminOptions = await request("/api/appointment-options", { cookie: adminCookie });
+  assert.equal(adminOptions.response.status, 200);
+  assert.deepEqual(adminOptions.json.clients.map((client) => client.id), ["client-1"]);
+  assert.deepEqual(adminOptions.json.providers.map((provider) => provider.id), ["user-bcba"]);
+  assert.ok(adminOptions.json.providers.every((provider) => ["bcba", "rbt"].includes(provider.role)));
+  assert.ok(adminOptions.json.providers.every((provider) => !["email", "username", "agency"].some((key) => key in provider)));
+
+  const bcbaCookie = await loginAs("bcba", "bcba123");
+  const bcbaOptions = await request("/api/appointment-options", { cookie: bcbaCookie });
+  assert.equal(bcbaOptions.response.status, 200);
+  assert.deepEqual(bcbaOptions.json.clients.map((client) => client.id), ["client-1"]);
+
+  const readOnlyCookie = await loginAs("readonly", "readonly123");
+  const readOnlyOptions = await request("/api/appointment-options", { cookie: readOnlyCookie });
+  assert.equal(readOnlyOptions.response.status, 403);
+});
+
 test("create validates canonical service codes, providers, timestamps, timezone, and active client", async () => {
   await resetDb();
   const cookie = await loginAs();
