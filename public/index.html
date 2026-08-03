@@ -2063,23 +2063,16 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
                 </select>
               </label>
               <label>
-                Setting type
-                <select name="settingType" required>
-                  <option value="">Select a setting</option>
-                  <option value="home">Home</option>
-                  <option value="clinic">Clinic</option>
-                  <option value="school">School</option>
-                  <option value="community">Community</option>
-                  <option value="telehealth">Telehealth</option>
-                  <option value="other">Other</option>
-                </select>
-              </label>
-              <label>
                 Service Location
                 <select name="serviceLocationIndex" required>
                   <option value="">Select a client first</option>
                 </select>
                 <span class="field-help" id="appointment-location-help">Locations are reused from the Client Profile.</span>
+              </label>
+              <label>
+                Setting
+                <input type="text" id="appointment-setting-display" readonly placeholder="Select a service location">
+                <span class="field-help">Determined automatically by the selected service location.</span>
               </label>
               <label class="appointment-note-field">
                 Operational scheduling note
@@ -2092,6 +2085,24 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
             <button type="submit" class="primary-button" id="appointment-submit">Create Appointment</button>
           </div>
         </form>
+      </section>
+    </div>
+
+    <div id="appointment-details-modal" class="modal-shell hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-appointment-details></div>
+      <section class="modal-panel appointment-details-panel" role="dialog" aria-modal="true" aria-labelledby="appointment-details-title">
+        <div class="block-heading">
+          <div>
+            <p class="eyebrow">Scheduling</p>
+            <h3 id="appointment-details-title">Scheduled appointment</h3>
+          </div>
+          <button type="button" class="secondary-button" data-close-appointment-details>Close</button>
+        </div>
+        <p class="muted">Read-only operational appointment information. No clinical record is loaded or changed.</p>
+        <div id="appointment-details-content" aria-live="polite"></div>
+        <div class="form-actions appointment-details-actions">
+          <button type="button" class="secondary-button" data-close-appointment-details>Close</button>
+        </div>
       </section>
     </div>
 

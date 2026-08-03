@@ -1,4 +1,4 @@
-import { createAppointment, createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setupVerificationEmail, touchSession, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { createAppointment, createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setupVerificationEmail, touchSession, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -20,6 +20,11 @@ const state = {
   appointmentOptionsLoaded: false,
   appointmentOptionsLoading: false,
   appointmentSubmitting: false,
+  selectedAppointmentId: "",
+  selectedAppointmentDetails: null,
+  appointmentDetailsLoading: false,
+  appointmentDetailsError: "",
+  appointmentDetailsRequestId: 0,
   scheduleSuccessMessage: "",
   scheduleWeekStart: "",
   scheduleLoadedStartDate: "",
@@ -319,8 +324,12 @@ const appointmentForm = document.querySelector("#appointment-form");
 const appointmentFormFields = document.querySelector("#appointment-form-fields");
 const appointmentFormMessage = document.querySelector("#appointment-form-message");
 const appointmentLocationHelp = document.querySelector("#appointment-location-help");
+const appointmentSettingDisplay = document.querySelector("#appointment-setting-display");
 const appointmentSubmitButton = document.querySelector("#appointment-submit");
 const appointmentCloseButtons = document.querySelectorAll("[data-close-appointment]");
+const appointmentDetailsModal = document.querySelector("#appointment-details-modal");
+const appointmentDetailsContent = document.querySelector("#appointment-details-content");
+const appointmentDetailsCloseButtons = document.querySelectorAll("[data-close-appointment-details]");
 const healthMessage = document.querySelector("#health-message");
 const healthSummary = document.querySelector("#health-summary");
 const healthReportTable = document.querySelector("#health-report-table");
@@ -1166,14 +1175,16 @@ function bindEvents() {
   schedulePreviousWeekButton?.addEventListener("click", () => changeScheduleWeek(-7));
   scheduleTodayButton?.addEventListener("click", showCurrentScheduleWeek);
   scheduleNextWeekButton?.addEventListener("click", () => changeScheduleWeek(7));
-  scheduleClientFilter?.addEventListener("change", renderSchedule);
-  scheduleServiceFilter?.addEventListener("change", renderSchedule);
+  scheduleClientFilter?.addEventListener("change", handleScheduleFilterChange);
+  scheduleServiceFilter?.addEventListener("change", handleScheduleFilterChange);
+  scheduleWeekGrid?.addEventListener("click", handleScheduleAppointmentSelection);
   scheduleAddAppointmentButton?.addEventListener("click", openAppointmentForm);
   appointmentForm?.elements?.clientId?.addEventListener("change", renderAppointmentServiceLocations);
   appointmentForm?.elements?.serviceCode?.addEventListener("change", renderAppointmentProviderOptions);
   appointmentForm?.elements?.serviceLocationIndex?.addEventListener("change", syncAppointmentSettingFromLocation);
   appointmentForm?.addEventListener("submit", handleCreateAppointment);
   appointmentCloseButtons.forEach((button) => button.addEventListener("click", closeAppointmentForm));
+  appointmentDetailsCloseButtons.forEach((button) => button.addEventListener("click", closeAppointmentDetails));
   scheduleSubviewButtons.forEach((button) => {
     button.addEventListener("click", () => {
       void switchScheduleSubview(button.dataset.scheduleSubviewButton);
@@ -1190,6 +1201,7 @@ function bindEvents() {
     }
   });
   window.addEventListener("aba-auth-error", (event) => handleAuthFailureEvent(event.detail));
+  window.addEventListener("keydown", handleAppointmentDetailsKeydown);
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) {
       if (!state.currentUser && !state.authChallenge) showLogin();
@@ -1487,6 +1499,11 @@ function resetSensitiveState() {
   state.appointmentOptionsLoaded = false;
   state.appointmentOptionsLoading = false;
   state.appointmentSubmitting = false;
+  state.selectedAppointmentId = "";
+  state.selectedAppointmentDetails = null;
+  state.appointmentDetailsLoading = false;
+  state.appointmentDetailsError = "";
+  state.appointmentDetailsRequestId += 1;
   state.scheduleSuccessMessage = "";
   state.scheduleWeekStart = "";
   state.scheduleLoadedStartDate = "";
@@ -3477,6 +3494,7 @@ async function switchView(view) {
   if (!allowedViews().includes(view)) {
     view = allowedViews()[0] || "session";
   }
+  if (view !== "schedule") closeAppointmentDetails();
   document.querySelectorAll("[data-view-button]").forEach((button) => {
     button.classList.toggle("active", button.dataset.viewButton === view);
   });
@@ -3511,6 +3529,7 @@ function scheduleDateValue(date) {
 async function switchScheduleSubview(subview) {
   const allowedSubviews = ["calendar", "staffing", "availability", "zones", "capacity"];
   const selectedSubview = allowedSubviews.includes(subview) ? subview : "calendar";
+  if (selectedSubview !== "calendar") closeAppointmentDetails();
   state.activeScheduleSubview = selectedSubview;
   document.querySelectorAll("[data-schedule-subview-button]").forEach((button) => {
     const isActive = button.dataset.scheduleSubviewButton === selectedSubview;
@@ -3561,12 +3580,14 @@ function scheduleWeekDates() {
 }
 
 function changeScheduleWeek(days) {
+  closeAppointmentDetails();
   const start = ensureScheduleWeekStart();
   state.scheduleWeekStart = scheduleDateValue(addScheduleDays(start, days));
   void ensureScheduleWeekLoaded({ force: true });
 }
 
 function showCurrentScheduleWeek() {
+  closeAppointmentDetails();
   state.scheduleWeekStart = scheduleDateValue(scheduleMonday(new Date()));
   void ensureScheduleWeekLoaded({ force: true });
 }
@@ -3687,9 +3708,13 @@ function renderAppointmentClientOptions() {
 
 function canonicalAppointmentSettingType(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  return ["home", "clinic", "school", "community", "telehealth", "other"].includes(normalized)
-    ? normalized
-    : "";
+  if (["home", "clinic", "school", "community", "telehealth", "other"].includes(normalized)) return normalized;
+  if (/\b(home|house)\b/.test(normalized)) return "home";
+  if (/\bschool\b/.test(normalized)) return "school";
+  if (/\bclinic\b/.test(normalized)) return "clinic";
+  if (/\bcommunity\b/.test(normalized)) return "community";
+  if (/\btelehealth\b/.test(normalized)) return "telehealth";
+  return normalized ? "other" : "";
 }
 
 function normalizeClientServiceLocation(location, index = 0) {
@@ -3731,7 +3756,22 @@ function clientServiceLocations(clientId) {
     .map(normalizeClientServiceLocation)
     .filter(Boolean);
   if (locations.length) return locations;
-  const defaultLocation = normalizeClientServiceLocation(client.defaultSetting || "");
+  return legacyDefaultSettingLocations(client.defaultSetting);
+}
+
+function legacyDefaultSettingLocations(defaultSetting) {
+  const rawValue = String(defaultSetting || "").trim();
+  if (!rawValue) return [];
+  const recognizedTypes = [...rawValue.toLowerCase().matchAll(/\b(home|clinic|school|community|telehealth)\b/g)]
+    .map((match) => match[1])
+    .filter((settingType, index, values) => values.indexOf(settingType) === index);
+  if (recognizedTypes.length > 1) {
+    return recognizedTypes.map((settingType) => normalizeClientServiceLocation({
+      label: settingType.charAt(0).toUpperCase() + settingType.slice(1),
+      settingType
+    })).filter(Boolean);
+  }
+  const defaultLocation = normalizeClientServiceLocation(rawValue);
   return defaultLocation ? [defaultLocation] : [];
 }
 
@@ -3749,10 +3789,10 @@ function selectedAppointmentServiceLocation(formData = null) {
 }
 
 function syncAppointmentSettingFromLocation() {
-  const settingSelect = appointmentForm?.elements?.settingType;
-  if (!settingSelect) return;
   const location = selectedAppointmentServiceLocation();
-  settingSelect.value = location?.settingType || "";
+  if (appointmentSettingDisplay) {
+    appointmentSettingDisplay.value = location?.settingType ? scheduleSettingLabel(location.settingType) : "";
+  }
 }
 
 function renderAppointmentServiceLocations() {
@@ -3893,7 +3933,7 @@ function appointmentFormPayload(formData) {
     scheduledStartAt: zonedAppointmentTimestamp(date, String(formData.get("startTime") || ""), timeZone),
     scheduledEndAt: zonedAppointmentTimestamp(date, String(formData.get("endTime") || ""), timeZone),
     timeZone,
-    settingType: String(formData.get("settingType") || ""),
+    settingType: canonicalAppointmentSettingType(serviceLocation.settingType || serviceLocation.label),
     locationId: String(serviceLocation.id || ""),
     locationSnapshot: {
       label: String(serviceLocation.label || ""),
@@ -3917,7 +3957,6 @@ function validateAppointmentForm(formData) {
     ["startTime", "Start time"],
     ["endTime", "End time"],
     ["timeZone", "Time zone"],
-    ["settingType", "Setting type"],
     ["serviceLocationIndex", "Service Location"]
   ];
   required.forEach(([name, label]) => {
@@ -3925,6 +3964,10 @@ function validateAppointmentForm(formData) {
   });
   if (String(formData.get("clientId") || "") && !state.appointmentServiceLocations.length) {
     errors.push("The selected client has no saved service location. Update the Client Profile before scheduling.");
+  }
+  const serviceLocation = selectedAppointmentServiceLocation(formData);
+  if (serviceLocation && !canonicalAppointmentSettingType(serviceLocation.settingType || serviceLocation.label)) {
+    errors.push("The selected service location does not have a usable setting.");
   }
   const serviceCode = String(formData.get("serviceCode") || "");
   if (serviceCode && !["97151", "97153", "97155", "97156"].includes(serviceCode)) {
@@ -4071,6 +4114,207 @@ function scheduleStatusLabel(status) {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : "Scheduled";
 }
 
+function scheduleAppointmentColorClass(serviceCode) {
+  return ["97151", "97153", "97155", "97156"].includes(serviceCode) ? `schedule-cpt-${serviceCode}` : "";
+}
+
+function appointmentPrimaryProviderId(appointment) {
+  return String((appointment?.providerAssignments || [])
+    .find((assignment) => assignment.assignmentRole === "primary")?.userId || "");
+}
+
+function appointmentDetailDateTime(timestamp, timeZone, options) {
+  if (!timestamp) return "Unavailable";
+  try {
+    return new Intl.DateTimeFormat(undefined, { timeZone, ...options }).format(new Date(timestamp));
+  } catch {
+    return "Unavailable";
+  }
+}
+
+function appointmentDurationLabel(appointment) {
+  const durationMinutes = Math.round((Date.parse(appointment?.scheduledEndAt) - Date.parse(appointment?.scheduledStartAt)) / 60000);
+  if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) return "Unavailable";
+  const hours = Math.floor(durationMinutes / 60);
+  const minutes = durationMinutes % 60;
+  return [hours ? `${hours} hr` : "", minutes ? `${minutes} min` : ""].filter(Boolean).join(" ");
+}
+
+function appointmentLocationLabel(appointment) {
+  const location = appointment?.locationSnapshot || {};
+  const label = String(location.label || "").trim();
+  const legacyLocations = legacyDefaultSettingLocations(label);
+  if (legacyLocations.length > 1) {
+    const storedSetting = canonicalAppointmentSettingType(appointment?.settingType);
+    return legacyLocations.find((item) => item.settingType === storedSetting)?.label
+      || scheduleSettingLabel(storedSetting);
+  }
+  return label || "Location not entered";
+}
+
+function appointmentGeographicZone(appointment) {
+  const location = appointment?.locationSnapshot || {};
+  return String(
+    location.zoneName
+    || location.zoneLabel
+    || location.geographicZone
+    || appointment?.zoneName
+    || appointment?.zoneLabel
+    || appointment?.geographicZone
+    || appointment?.zoneId
+    || ""
+  ).trim();
+}
+
+function renderAppointmentDetails() {
+  if (!appointmentDetailsContent) return;
+  if (state.appointmentDetailsLoading) {
+    appointmentDetailsContent.innerHTML = '<div class="schedule-state">Loading appointment details…</div>';
+    return;
+  }
+  if (state.appointmentDetailsError) {
+    appointmentDetailsContent.innerHTML = `
+      <div class="schedule-state schedule-state-error">
+        <strong>Appointment unavailable</strong>
+        <span>${escapeHtml(state.appointmentDetailsError)}</span>
+      </div>
+    `;
+    return;
+  }
+  const appointment = state.selectedAppointmentDetails;
+  if (!appointment) {
+    appointmentDetailsContent.innerHTML = '<div class="schedule-state">Appointment details are unavailable.</div>';
+    return;
+  }
+  const timeZone = String(appointment.timeZone || "");
+  const date = appointmentDetailDateTime(appointment.scheduledStartAt, timeZone, {
+    weekday: "long", year: "numeric", month: "long", day: "numeric"
+  });
+  const startTime = appointmentDetailDateTime(appointment.scheduledStartAt, timeZone, { hour: "numeric", minute: "2-digit" });
+  const endTime = appointmentDetailDateTime(appointment.scheduledEndAt, timeZone, { hour: "numeric", minute: "2-digit" });
+  const createdAt = appointmentDetailDateTime(appointment.createdAt, undefined, { dateStyle: "medium", timeStyle: "short" });
+  const updatedAt = appointmentDetailDateTime(appointment.updatedAt, undefined, { dateStyle: "medium", timeStyle: "short" });
+  const summaryDate = appointmentDetailDateTime(appointment.scheduledStartAt, timeZone, {
+    weekday: "long", month: "long", day: "numeric"
+  });
+  const timeRange = scheduleAppointmentTimeLabel(appointment);
+  const clientName = scheduleClientName(appointment.clientId);
+  const providerName = scheduleProviderName(appointmentPrimaryProviderId(appointment));
+  const status = scheduleStatusLabel(appointment.status);
+  const zone = appointmentGeographicZone(appointment) || "Not assigned";
+  const note = String(appointment.notes || "").trim();
+  appointmentDetailsContent.innerHTML = `
+    <div class="appointment-details-summary ${escapeHtml(scheduleAppointmentColorClass(appointment.serviceCode))}">
+      <span class="schedule-record-label">Scheduled appointment</span>
+      <strong class="appointment-summary-title">${escapeHtml(appointment.serviceCode || "Unavailable")} <span aria-hidden="true">•</span> ${escapeHtml(status)}</strong>
+      <span class="appointment-summary-client">${escapeHtml(clientName)}</span>
+      <span>${escapeHtml(summaryDate)}</span>
+      <span>${escapeHtml(timeRange)}</span>
+      <span class="appointment-summary-provider"><b>Primary provider:</b> ${escapeHtml(providerName)}</span>
+    </div>
+    <div class="appointment-details-sections">
+      <section class="appointment-detail-group" aria-labelledby="appointment-detail-summary-title">
+        <h4 id="appointment-detail-summary-title">Appointment summary</h4>
+        <dl class="appointment-details-grid">
+          <div><dt>Client</dt><dd>${escapeHtml(clientName)}</dd></div>
+          <div><dt>Primary provider</dt><dd>${escapeHtml(providerName)}</dd></div>
+          <div><dt>Service code</dt><dd>${escapeHtml(appointment.serviceCode || "Unavailable")}</dd></div>
+          <div><dt>Status</dt><dd>${escapeHtml(status)}</dd></div>
+        </dl>
+      </section>
+      <section class="appointment-detail-group" aria-labelledby="appointment-detail-schedule-title">
+        <h4 id="appointment-detail-schedule-title">Schedule</h4>
+        <dl class="appointment-details-grid">
+          <div><dt>Date</dt><dd>${escapeHtml(date)}</dd></div>
+          <div><dt>Start time</dt><dd>${escapeHtml(startTime)}</dd></div>
+          <div><dt>End time</dt><dd>${escapeHtml(endTime)}</dd></div>
+          <div><dt>Duration</dt><dd>${escapeHtml(appointmentDurationLabel(appointment))}</dd></div>
+          <div><dt>Time zone</dt><dd>${escapeHtml(timeZone || "Unavailable")}</dd></div>
+        </dl>
+      </section>
+      <section class="appointment-detail-group" aria-labelledby="appointment-detail-location-title">
+        <h4 id="appointment-detail-location-title">Location</h4>
+        <dl class="appointment-details-grid">
+          <div><dt>Service location</dt><dd>${escapeHtml(appointmentLocationLabel(appointment))}</dd></div>
+          <div><dt>Setting</dt><dd>${escapeHtml(scheduleSettingLabel(appointment.settingType))}</dd></div>
+          <div><dt>Geographic zone</dt><dd>${escapeHtml(zone)}</dd></div>
+        </dl>
+      </section>
+      <section class="appointment-detail-group" aria-labelledby="appointment-detail-administrative-title">
+        <h4 id="appointment-detail-administrative-title">Administrative</h4>
+        <dl class="appointment-details-grid">
+          <div><dt>Created</dt><dd>${escapeHtml(createdAt)}</dd></div>
+          <div><dt>Updated</dt><dd>${escapeHtml(updatedAt)}</dd></div>
+        </dl>
+      </section>
+    </div>
+    ${note ? `
+      <section class="appointment-operational-note" aria-labelledby="appointment-operational-note-title">
+        <h4 id="appointment-operational-note-title">Operational scheduling note</h4>
+        <p>${escapeHtml(note)}</p>
+      </section>
+    ` : ""}
+  `;
+}
+
+async function openAppointmentDetails(appointmentId) {
+  if (!appointmentDetailsModal || !appointmentId) return;
+  const requestId = state.appointmentDetailsRequestId + 1;
+  state.appointmentDetailsRequestId = requestId;
+  state.selectedAppointmentId = appointmentId;
+  state.selectedAppointmentDetails = null;
+  state.appointmentDetailsLoading = true;
+  state.appointmentDetailsError = "";
+  appointmentDetailsModal.classList.remove("hidden");
+  appointmentDetailsModal.setAttribute("aria-hidden", "false");
+  renderAppointmentDetails();
+  appointmentDetailsModal.querySelector("[data-close-appointment-details]")?.focus();
+  try {
+    const appointment = await getAppointment(appointmentId);
+    if (requestId !== state.appointmentDetailsRequestId || state.selectedAppointmentId !== appointmentId) return;
+    state.selectedAppointmentDetails = appointment;
+  } catch (error) {
+    if (requestId !== state.appointmentDetailsRequestId || state.selectedAppointmentId !== appointmentId) return;
+    state.appointmentDetailsError = error.message || "Unable to load this appointment.";
+  } finally {
+    if (requestId !== state.appointmentDetailsRequestId || state.selectedAppointmentId !== appointmentId) return;
+    state.appointmentDetailsLoading = false;
+    renderAppointmentDetails();
+  }
+}
+
+function closeAppointmentDetails() {
+  state.appointmentDetailsRequestId += 1;
+  state.selectedAppointmentId = "";
+  state.selectedAppointmentDetails = null;
+  state.appointmentDetailsLoading = false;
+  state.appointmentDetailsError = "";
+  appointmentDetailsModal?.classList.add("hidden");
+  appointmentDetailsModal?.setAttribute("aria-hidden", "true");
+  if (appointmentDetailsContent) appointmentDetailsContent.innerHTML = "";
+}
+
+function handleScheduleAppointmentSelection(event) {
+  const appointmentButton = event.target.closest("[data-schedule-appointment-id]");
+  if (!appointmentButton) return;
+  void openAppointmentDetails(appointmentButton.dataset.scheduleAppointmentId);
+}
+
+function handleAppointmentDetailsKeydown(event) {
+  if (event.key === "Escape" && !appointmentDetailsModal?.classList.contains("hidden")) closeAppointmentDetails();
+}
+
+function handleScheduleFilterChange() {
+  renderSchedule();
+}
+
+function closeUnavailableAppointmentDetails(visibleAppointments) {
+  if (state.selectedAppointmentId
+    && !visibleAppointments.some((appointment) => appointment.id === state.selectedAppointmentId)) {
+    closeAppointmentDetails();
+  }
+}
+
 function renderSchedule() {
   if (!scheduleWeekGrid || !scheduleWeekRange || !scheduleMessage) return;
   const { startDate, endDate } = scheduleWeekRangeValues();
@@ -4091,6 +4335,7 @@ function renderSchedule() {
 
   const sessions = filteredScheduleSessions();
   const appointments = filteredScheduleAppointments();
+  closeUnavailableAppointmentDetails(appointments);
   scheduleMessage.textContent = state.scheduleSuccessMessage
     || (sessions.length || appointments.length ? "" : "No sessions or appointments for this week");
   state.scheduleSuccessMessage = "";
@@ -4108,13 +4353,13 @@ function renderSchedule() {
         </div>
         <div class="schedule-day-records">
           ${dayAppointments.map((appointment) => `
-            <article class="schedule-record schedule-appointment-record">
+            <button type="button" class="schedule-record schedule-appointment-record ${escapeHtml(scheduleAppointmentColorClass(appointment.serviceCode))}" data-schedule-appointment-id="${escapeHtml(appointment.id)}" aria-label="Open scheduled appointment details for ${escapeHtml(scheduleClientName(appointment.clientId))}, service ${escapeHtml(appointment.serviceCode)}">
               <span class="schedule-record-label">Scheduled appointment</span>
               <strong>${escapeHtml(scheduleClientName(appointment.clientId))}</strong>
               <span>${escapeHtml(appointment.serviceCode)} · ${escapeHtml(scheduleAppointmentTimeLabel(appointment))}</span>
               <span>${escapeHtml(scheduleProviderName(appointment.providerUserId))}</span>
               <span>${escapeHtml(scheduleSettingLabel(appointment.settingType))} · ${escapeHtml(scheduleStatusLabel(appointment.status))}</span>
-            </article>
+            </button>
           `).join("")}
           ${daySessions.map((session) => `
             <article class="schedule-record">
