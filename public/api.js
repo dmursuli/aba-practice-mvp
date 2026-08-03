@@ -105,6 +105,10 @@ export async function getAppointments({ startDate = "", endDate = "", timeoutMs 
   return fetchWithTimeout(url.pathname + url.search, timeoutMs);
 }
 
+export async function getAppointment(appointmentId, { timeoutMs = 15000 } = {}) {
+  return fetchWithTimeout(`/api/appointments/${encodeURIComponent(appointmentId)}`, timeoutMs);
+}
+
 export async function getAppointmentOptions({ timeoutMs = 15000 } = {}) {
   return fetchWithTimeout("/api/appointment-options", timeoutMs);
 }

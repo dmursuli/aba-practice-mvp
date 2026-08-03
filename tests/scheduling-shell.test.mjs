@@ -137,8 +137,9 @@ test("client and canonical service-code filters are wired to read-only rerenderi
   assert.match(htmlSource, /<option value="">All service codes<\/option>/);
   assert.match(htmlSource, /<option value="97153">97153<\/option>/);
   assert.match(htmlSource, /<option value="97156">97156<\/option>/);
-  assert.match(appSource, /scheduleClientFilter\?\.addEventListener\("change", renderSchedule\)/);
-  assert.match(appSource, /scheduleServiceFilter\?\.addEventListener\("change", renderSchedule\)/);
+  assert.match(appSource, /scheduleClientFilter\?\.addEventListener\("change", handleScheduleFilterChange\)/);
+  assert.match(appSource, /scheduleServiceFilter\?\.addEventListener\("change", handleScheduleFilterChange\)/);
+  assert.match(functionSource("handleScheduleFilterChange"), /renderSchedule\(\)/);
 });
 
 test("calendar is responsive without a page-level horizontal calendar layout", () => {
@@ -149,8 +150,9 @@ test("calendar is responsive without a page-level horizontal calendar layout", (
   assert.match(cssSource, /\.schedule-subview\.hidden,\s*\.schedule-empty-state\.hidden\s*\{[^}]*display:\s*none/s);
 });
 
-test("Phase 3A adds creation only and contains no later scheduling or Zone Management logic", () => {
+test("Phase 3A.2 adds read-only details without later scheduling or Zone Management logic", () => {
   assert.match(appSource, /createAppointment/);
+  assert.match(appSource, /getAppointment/);
   assert.doesNotMatch(appSource, /updateAppointment|deleteAppointment|cancelAppointment|confirmAppointment|rescheduleAppointment/);
   assert.doesNotMatch(appSource, /schedulingZones\s*:|zoneZip|zoneAdjacency|createZone|updateZone|deleteZone/);
   assert.match(htmlSource, /Add Appointment/);
