@@ -76,6 +76,16 @@ let emailModulePromise = null;
 let emailTransportPromise = null;
 let appointmentMutationQueue = Promise.resolve();
 const verificationDebugDeliveries = [];
+const CLIENT_SERVICE_LOCATION_SETTING_TYPES = new Set(["home", "school", "clinic", "community", "other"]);
+const CLIENT_SERVICE_LOCATION_ZONES = new Set([
+  "Homestead", "Florida City", "Princeton", "Goulds", "Cutler Bay", "Palmetto Bay",
+  "Kendall", "West Kendall", "Tamiami", "Fontainebleau",
+  "Coral Gables", "South Miami", "Westchester", "Flagami", "Little Havana",
+  "Hialeah", "Hialeah Gardens", "Miami Lakes", "Doral", "Medley",
+  "North Miami", "North Miami Beach", "Aventura", "Sunny Isles Beach", "Bal Harbour",
+  "Bay Harbor Islands", "Surfside", "Downtown Miami", "Brickell", "Edgewater", "Wynwood",
+  "Midtown", "Design District", "Miami Beach", "Key Biscayne"
+]);
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -1640,6 +1650,133 @@ export function createAppServer() {
       return;
     }
 
+    const serviceLocationCollectionMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/service-locations$/);
+    if (req.method === "POST" && serviceLocationCollectionMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const client = db.clients.find((item) => item.id === serviceLocationCollectionMatch[1]);
+      if (!client) {
+        sendJson(res, 404, { errors: ["Client not found."] });
+        return;
+      }
+      if (!canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
+      const payload = await readBody(req);
+      const existingLocations = clientServiceLocationRecords(client);
+      const now = new Date().toISOString();
+      const { location, errors } = sanitizeClientServiceLocation(payload, { now });
+      if (errors.length) {
+        sendJson(res, 400, { errors });
+        return;
+      }
+      location.id = crypto.randomUUID();
+      location.createdAt = now;
+      location.updatedAt = now;
+      if (!existingLocations.some((item) => item.isActive !== false)) location.isPrimary = true;
+      const nextLocations = location.isPrimary
+        ? existingLocations.map((item) => ({ ...item, isPrimary: false }))
+        : existingLocations;
+      setClientServiceLocationRecords(client, [...nextLocations, location]);
+      client.updatedAt = now;
+      logAudit(db, req, actor, "client-service-location-created", {
+        clientId: client.id,
+        details: clientServiceLocationAuditDetails(location)
+      });
+      await writeDb(db);
+      sendJson(res, 201, client);
+      return;
+    }
+
+    const serviceLocationMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/service-locations\/([^/]+)$/);
+    if (req.method === "PUT" && serviceLocationMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const client = db.clients.find((item) => item.id === serviceLocationMatch[1]);
+      if (!client) {
+        sendJson(res, 404, { errors: ["Client not found."] });
+        return;
+      }
+      if (!canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
+      const locations = clientServiceLocationRecords(client);
+      const index = locations.findIndex((item) => item.id === serviceLocationMatch[2]);
+      if (index < 0) {
+        sendJson(res, 404, { errors: ["Service location not found."] });
+        return;
+      }
+      const payload = await readBody(req);
+      const now = new Date().toISOString();
+      const { location, errors } = sanitizeClientServiceLocation(payload, { current: locations[index], now });
+      if (errors.length) {
+        sendJson(res, 400, { errors });
+        return;
+      }
+      const nextLocations = locations.map((item, locationIndex) => {
+        if (locationIndex === index) return location;
+        return location.isPrimary ? { ...item, isPrimary: false } : item;
+      });
+      setClientServiceLocationRecords(client, nextLocations);
+      client.updatedAt = now;
+      logAudit(db, req, actor, "client-service-location-updated", {
+        clientId: client.id,
+        details: clientServiceLocationAuditDetails(location)
+      });
+      await writeDb(db);
+      sendJson(res, 200, client);
+      return;
+    }
+
+    const serviceLocationActionMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/service-locations\/([^/]+)\/(deactivate|primary)$/);
+    if (req.method === "POST" && serviceLocationActionMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const client = db.clients.find((item) => item.id === serviceLocationActionMatch[1]);
+      if (!client) {
+        sendJson(res, 404, { errors: ["Client not found."] });
+        return;
+      }
+      if (!canAccessClient(actor, client)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
+      const locations = clientServiceLocationRecords(client);
+      const index = locations.findIndex((item) => item.id === serviceLocationActionMatch[2]);
+      if (index < 0) {
+        sendJson(res, 404, { errors: ["Service location not found."] });
+        return;
+      }
+      const action = serviceLocationActionMatch[3];
+      if (action === "primary" && locations[index].isActive === false) {
+        sendJson(res, 400, { errors: ["An inactive service location cannot be Primary."] });
+        return;
+      }
+      const now = new Date().toISOString();
+      const nextLocations = locations.map((item, locationIndex) => {
+        if (action === "primary") {
+          return { ...item, isPrimary: locationIndex === index, updatedAt: locationIndex === index ? now : item.updatedAt };
+        }
+        if (locationIndex === index) return { ...item, isActive: false, isPrimary: false, updatedAt: now };
+        return item;
+      });
+      setClientServiceLocationRecords(client, nextLocations);
+      client.updatedAt = now;
+      const updatedLocation = nextLocations[index];
+      logAudit(db, req, actor, action === "primary" ? "client-service-location-primary-set" : "client-service-location-deactivated", {
+        clientId: client.id,
+        details: clientServiceLocationAuditDetails(updatedLocation)
+      });
+      await writeDb(db);
+      sendJson(res, 200, client);
+      return;
+    }
+
     const workflowMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/workflow$/);
     if (req.method === "PUT" && workflowMatch) {
       const db = await readDbWithUsers();
@@ -2895,11 +3032,13 @@ function sanitizeAppointmentProviderAssignments(value) {
 function sanitizeAppointmentLocationSnapshot(value) {
   return {
     label: String(value?.label || "").trim(),
+    zone: String(value?.zone || "").trim(),
     addressLine1: String(value?.addressLine1 || "").trim(),
     addressLine2: String(value?.addressLine2 || "").trim(),
     city: String(value?.city || "").trim(),
     state: String(value?.state || "").trim(),
-    postalCode: String(value?.postalCode || "").trim()
+    postalCode: String(value?.postalCode || "").trim(),
+    operationalNote: String(value?.operationalNote || "").trim()
   };
 }
 
@@ -2909,6 +3048,94 @@ function sanitizeAppointmentAuthorizationRef(value) {
     startDate: String(value?.startDate || "").trim(),
     endDate: String(value?.endDate || "").trim()
   };
+}
+
+function clientServiceLocationRecords(client) {
+  return Array.isArray(client?.profile?.serviceLocations) ? client.profile.serviceLocations : [];
+}
+
+function setClientServiceLocationRecords(client, serviceLocations) {
+  client.profile = {
+    ...(client.profile || {}),
+    serviceLocations
+  };
+}
+
+function sanitizeClientServiceLocation(payload = {}, { current = null, now = new Date().toISOString() } = {}) {
+  const settingType = String(payload.settingType ?? current?.settingType ?? "").trim().toLowerCase();
+  const zone = String(payload.zone ?? current?.zone ?? "").trim();
+  const name = String(payload.name ?? current?.name ?? "").trim();
+  const isActive = current ? current.isActive !== false : true;
+  const isPrimary = Boolean(payload.isPrimary ?? current?.isPrimary ?? false);
+  const address = payload.address || {};
+  const errors = [];
+  if (!name) errors.push("Location name is required.");
+  if (!CLIENT_SERVICE_LOCATION_SETTING_TYPES.has(settingType)) {
+    errors.push("Setting type must be home, school, clinic, community, or other.");
+  }
+  if (!CLIENT_SERVICE_LOCATION_ZONES.has(zone)) errors.push("Choose an approved geographic zone.");
+  if (!isActive && isPrimary) errors.push("An inactive service location cannot be Primary.");
+  return {
+    errors,
+    location: {
+      id: String(current?.id || ""),
+      name,
+      settingType,
+      zone,
+      address: {
+        line1: String(address.line1 ?? current?.address?.line1 ?? "").trim(),
+        line2: String(address.line2 ?? current?.address?.line2 ?? "").trim(),
+        city: String(address.city ?? current?.address?.city ?? "").trim(),
+        state: String(address.state ?? current?.address?.state ?? "FL").trim(),
+        postalCode: String(address.postalCode ?? current?.address?.postalCode ?? "").trim()
+      },
+      operationalNote: String(payload.operationalNote ?? current?.operationalNote ?? "").trim(),
+      isPrimary,
+      isActive,
+      createdAt: String(current?.createdAt || now),
+      updatedAt: now
+    }
+  };
+}
+
+function clientServiceLocationAuditDetails(location) {
+  return {
+    locationId: location.id,
+    name: location.name,
+    settingType: location.settingType,
+    zone: location.zone,
+    isPrimary: location.isPrimary,
+    isActive: location.isActive
+  };
+}
+
+function structuredClientServiceLocations(client) {
+  const locations = clientServiceLocationRecords(client);
+  return locations.length ? locations : Array.isArray(client?.serviceLocations) ? client.serviceLocations : [];
+}
+
+function applyStructuredServiceLocationToAppointment(appointment, client, { profileOnly = false } = {}) {
+  const structuredLocations = profileOnly
+    ? clientServiceLocationRecords(client)
+    : structuredClientServiceLocations(client);
+  if (!structuredLocations.length) {
+    return profileOnly ? ["Choose an active service location saved in the Client Profile."] : [];
+  }
+  const location = structuredLocations.find((item) => item.id === appointment.locationId && item.isActive !== false);
+  if (!location) return ["Choose an active service location saved in the Client Profile."];
+  appointment.settingType = String(location.settingType || "").trim().toLowerCase();
+  appointment.locationId = String(location.id || "");
+  appointment.locationSnapshot = sanitizeAppointmentLocationSnapshot({
+    label: location.name || location.label,
+    zone: location.zone,
+    addressLine1: location.address?.line1 ?? location.addressLine1,
+    addressLine2: location.address?.line2 ?? location.addressLine2,
+    city: location.address?.city ?? location.city,
+    state: location.address?.state ?? location.state,
+    postalCode: location.address?.postalCode ?? location.postalCode,
+    operationalNote: location.operationalNote
+  });
+  return [];
 }
 
 function appointmentCoreFromPayload(payload, current = null) {
@@ -3051,6 +3278,7 @@ function createAppointmentRecord(payload, db, actor) {
     updatedBy: actor.id,
     version: 1
   };
+  if (client) errors.push(...applyStructuredServiceLocationToAppointment(appointment, client));
   errors.push(...validateAppointmentRecord(appointment, db, actor));
   return { appointment, errors: [...new Set(errors)] };
 }
@@ -3059,6 +3287,9 @@ function updateAppointmentRecord(current, payload, db, actor) {
   const errors = [];
   if (current.status === "cancelled") errors.push("Cancelled appointments cannot be updated.");
   if (payload.id !== undefined && payload.id !== current.id) errors.push("Appointment ID is immutable.");
+  if (payload.clientId !== undefined && String(payload.clientId || "").trim() !== String(current.clientId || "")) {
+    errors.push("Appointment clientId is immutable.");
+  }
   if (payload.agency !== undefined && String(payload.agency).trim() !== String(current.agency || "")) {
     errors.push("Appointment agency is immutable.");
   }
@@ -3082,7 +3313,10 @@ function updateAppointmentRecord(current, payload, db, actor) {
     }
   }
 
-  const core = appointmentCoreFromPayload(payload, current);
+  const locationIdWasProvided = Object.prototype.hasOwnProperty.call(payload, "locationId");
+  const requestedLocationId = String(payload.locationId || "").trim();
+  const locationChanged = locationIdWasProvided && requestedLocationId !== String(current.locationId || "");
+  const core = appointmentCoreFromPayload({ ...payload, clientId: current.clientId }, current);
   if (!canTransitionAppointmentStatus(current.status, core.status)) {
     errors.push(`Appointment status cannot change from ${current.status} to ${core.status}.`);
   }
@@ -3106,6 +3340,14 @@ function updateAppointmentRecord(current, payload, db, actor) {
     updatedBy: actor.id,
     version: current.version + 1
   };
+  if (locationChanged) {
+    const client = (db.clients || []).find((item) => item.id === current.clientId);
+    if (client) errors.push(...applyStructuredServiceLocationToAppointment(appointment, client, { profileOnly: true }));
+  } else {
+    appointment.locationId = current.locationId || "";
+    appointment.settingType = current.settingType || "";
+    appointment.locationSnapshot = current.locationSnapshot || sanitizeAppointmentLocationSnapshot();
+  }
   errors.push(...validateAppointmentRecord(appointment, db, actor));
   return { appointment, errors: [...new Set(errors)] };
 }
@@ -3668,6 +3910,7 @@ function createClientRecord(payload, existingClients, actor = null) {
 }
 
 function updateClientRecord(client, payload, actor = null) {
+  const existingServiceLocations = clientServiceLocationRecords(client);
   client.name = text(payload.name);
   client.agency = canEditClientAgency(actor)
     ? normalizeAgency(payload.agency, client.agency)
@@ -3677,7 +3920,8 @@ function updateClientRecord(client, payload, actor = null) {
   client.status = payload.status === "archived" ? "archived" : "active";
   client.profile = {
     ...sanitizeClientProfile(payload),
-    documents: client.profile?.documents || []
+    documents: client.profile?.documents || [],
+    ...(existingServiceLocations.length ? { serviceLocations: existingServiceLocations } : {})
   };
   client.updatedAt = new Date().toISOString();
 }

@@ -198,6 +198,40 @@ export async function updateClientProfile(clientId, profile) {
   return parseResponse(response);
 }
 
+export async function createClientServiceLocation(clientId, location) {
+  const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/service-locations`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(location)
+  });
+  return parseResponse(response);
+}
+
+export async function updateClientServiceLocation(clientId, locationId, location) {
+  const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/service-locations/${encodeURIComponent(locationId)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(location)
+  });
+  return parseResponse(response);
+}
+
+export async function deactivateClientServiceLocation(clientId, locationId) {
+  const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/service-locations/${encodeURIComponent(locationId)}/deactivate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" }
+  });
+  return parseResponse(response);
+}
+
+export async function setPrimaryClientServiceLocation(clientId, locationId) {
+  const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/service-locations/${encodeURIComponent(locationId)}/primary`, {
+    method: "POST",
+    headers: { "content-type": "application/json" }
+  });
+  return parseResponse(response);
+}
+
 export async function updateClientGraphPhaseLines(clientId, graphPhaseLines) {
   const response = await fetch(`/api/clients/${clientId}/graph-phase-lines`, {
     method: "PUT",

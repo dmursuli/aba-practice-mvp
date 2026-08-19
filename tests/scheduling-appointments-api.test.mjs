@@ -152,6 +152,28 @@ async function createAppointment(cookie, overrides = {}) {
   });
 }
 
+async function createServiceLocation(cookie, clientId = "client-1", overrides = {}) {
+  return request(`/api/clients/${clientId}/service-locations`, {
+    method: "POST",
+    cookie,
+    body: {
+      name: "Home",
+      settingType: "home",
+      zone: "West Kendall",
+      address: {
+        line1: "123 Saved Way",
+        line2: "Unit 4",
+        city: "Miami",
+        state: "FL",
+        postalCode: "33186"
+      },
+      operationalNote: "Use side gate.",
+      isPrimary: true,
+      ...overrides
+    }
+  });
+}
+
 test("legacy state initializes appointments without a migration", async () => {
   await resetDb();
   const cookie = await loginAs();
@@ -465,6 +487,223 @@ test("updates increment versions and reject stale or immutable linkage writes", 
   });
   assert.equal(cancelledThroughUpdate.response.status, 400);
   assert.match(cancelledThroughUpdate.json.errors.join(" "), /cancellation endpoint/);
+});
+
+test("updates keep client identity immutable and preserve it when omitted", async () => {
+  await resetDb({
+    ...baseDb,
+    clients: [
+      clinicalClient,
+      { ...clinicalClient, id: "client-2", name: "Other Clinical Sentinel" }
+    ]
+  });
+  const cookie = await loginAs();
+  const created = await createAppointment(cookie);
+  const before = await readDbFile();
+
+  const changedClient = await request(`/api/appointments/${created.json.id}`, {
+    method: "PUT",
+    cookie,
+    body: { expectedVersion: 1, clientId: "client-2", notes: "Must not move clients" }
+  });
+  assert.equal(changedClient.response.status, 400);
+  assert.match(changedClient.json.errors.join(" "), /clientId is immutable/);
+  let persisted = await readDbFile();
+  assert.equal(persisted.appointments[0].clientId, "client-1");
+  assert.equal(persisted.appointments[0].version, 1);
+  assert.deepEqual(persisted.clients, before.clients);
+  assert.deepEqual(persisted.sessions, before.sessions);
+
+  const omittedClient = await request(`/api/appointments/${created.json.id}`, {
+    method: "PUT",
+    cookie,
+    body: { expectedVersion: 1, notes: "Client remains unchanged" }
+  });
+  assert.equal(omittedClient.response.status, 200);
+  assert.equal(omittedClient.json.clientId, "client-1");
+  assert.equal(omittedClient.json.version, 2);
+  persisted = await readDbFile();
+  assert.equal(persisted.appointments[0].clientId, "client-1");
+  assert.deepEqual(persisted.clients, before.clients);
+  assert.deepEqual(persisted.sessions, before.sessions);
+});
+
+test("location changes resolve an active location from the appointment client and rebuild its snapshot", async () => {
+  await resetDb();
+  const cookie = await loginAs();
+  const created = await createAppointment(cookie, {
+    locationSnapshot: { label: "Legacy home", zone: "Legacy zone", addressLine1: "Old address" }
+  });
+  const locationResult = await createServiceLocation(cookie, "client-1", {
+    name: "School",
+    settingType: "school",
+    zone: "Doral",
+    address: { line1: "456 School Way", line2: "Room 10", city: "Miami", state: "FL", postalCode: "33101" },
+    operationalNote: "Dismissal is at 2:15."
+  });
+  assert.equal(locationResult.response.status, 201);
+  const location = locationResult.json.profile.serviceLocations[0];
+  const clinicalBeforeUpdate = await readDbFile();
+
+  const updated = await request(`/api/appointments/${created.json.id}`, {
+    method: "PUT",
+    cookie,
+    body: {
+      expectedVersion: 1,
+      locationId: location.id,
+      settingType: "clinic",
+      locationSnapshot: {
+        label: "Spoofed clinic",
+        zone: "Miami Beach",
+        addressLine1: "Wrong address",
+        operationalNote: "Untrusted note"
+      }
+    }
+  });
+  assert.equal(updated.response.status, 200);
+  assert.equal(updated.json.version, 2);
+  assert.equal(updated.json.locationId, location.id);
+  assert.equal(updated.json.settingType, "school");
+  assert.deepEqual(updated.json.locationSnapshot, {
+    label: "School",
+    zone: "Doral",
+    addressLine1: "456 School Way",
+    addressLine2: "Room 10",
+    city: "Miami",
+    state: "FL",
+    postalCode: "33101",
+    operationalNote: "Dismissal is at 2:15."
+  });
+  const persisted = await readDbFile();
+  assert.deepEqual(persisted.clients, clinicalBeforeUpdate.clients);
+  assert.deepEqual(persisted.sessions, clinicalBeforeUpdate.sessions);
+  assert.deepEqual(persisted.clients[0].planChangeLog, clinicalBeforeUpdate.clients[0].planChangeLog);
+  assert.deepEqual(persisted.clients[0].note97151History, clinicalBeforeUpdate.clients[0].note97151History);
+  assert.deepEqual(persisted.clients[0].note97155History, clinicalBeforeUpdate.clients[0].note97155History);
+});
+
+test("location updates reject inactive and other-client IDs without mutating the appointment", async () => {
+  await resetDb({
+    ...baseDb,
+    clients: [
+      clinicalClient,
+      { ...clinicalClient, id: "client-2", name: "Other Clinical Sentinel" }
+    ]
+  });
+  const cookie = await loginAs();
+  const created = await createAppointment(cookie);
+  const inactiveResult = await createServiceLocation(cookie, "client-1", { name: "Old Clinic", settingType: "clinic", zone: "Kendall" });
+  const inactiveLocation = inactiveResult.json.profile.serviceLocations[0];
+  const deactivated = await request(`/api/clients/client-1/service-locations/${inactiveLocation.id}/deactivate`, {
+    method: "POST",
+    cookie
+  });
+  assert.equal(deactivated.response.status, 200);
+  const otherResult = await createServiceLocation(cookie, "client-2", { name: "Other Home" });
+  const otherLocation = otherResult.json.profile.serviceLocations[0];
+  const before = await readDbFile();
+
+  for (const locationId of [inactiveLocation.id, otherLocation.id, "missing-location-id"]) {
+    const rejected = await request(`/api/appointments/${created.json.id}`, {
+      method: "PUT",
+      cookie,
+      body: { expectedVersion: 1, locationId, settingType: "home", locationSnapshot: { label: "Spoofed" } }
+    });
+    assert.equal(rejected.response.status, 400);
+    assert.match(rejected.json.errors.join(" "), /active service location saved in the Client Profile/);
+  }
+  const persisted = await readDbFile();
+  assert.deepEqual(persisted.appointments, before.appointments);
+  assert.deepEqual(persisted.clients, before.clients);
+  assert.deepEqual(persisted.sessions, before.sessions);
+});
+
+test("legacy location snapshots stay unchanged until a new structured location is selected", async () => {
+  await resetDb();
+  const cookie = await loginAs();
+  const legacySnapshot = {
+    label: "Legacy caregiver home",
+    zone: "Legacy manual zone",
+    addressLine1: "789 Old Way",
+    addressLine2: "",
+    city: "Miami",
+    state: "FL",
+    postalCode: "33101",
+    operationalNote: "Legacy operational note"
+  };
+  const created = await createAppointment(cookie, { settingType: "home", locationId: "", locationSnapshot: legacySnapshot });
+  const missingLocation = await request(`/api/appointments/${created.json.id}`, {
+    method: "PUT",
+    cookie,
+    body: { expectedVersion: 1, locationId: "missing-location-id", settingType: "clinic" }
+  });
+  assert.equal(missingLocation.response.status, 400);
+  assert.match(missingLocation.json.errors.join(" "), /active service location saved in the Client Profile/);
+  const locationResult = await createServiceLocation(cookie, "client-1", { name: "Current Home" });
+  const location = locationResult.json.profile.serviceLocations[0];
+
+  const preserved = await request(`/api/appointments/${created.json.id}`, {
+    method: "PUT",
+    cookie,
+    body: {
+      expectedVersion: 1,
+      notes: "Operational note updated",
+      settingType: "clinic",
+      locationSnapshot: { label: "Untrusted replacement", zone: "Doral" }
+    }
+  });
+  assert.equal(preserved.response.status, 200);
+  assert.equal(preserved.json.version, 2);
+  assert.equal(preserved.json.settingType, "home");
+  assert.deepEqual(preserved.json.locationSnapshot, legacySnapshot);
+
+  const replaced = await request(`/api/appointments/${created.json.id}`, {
+    method: "PUT",
+    cookie,
+    body: { expectedVersion: 2, locationId: location.id, locationSnapshot: legacySnapshot }
+  });
+  assert.equal(replaced.response.status, 200);
+  assert.equal(replaced.json.version, 3);
+  assert.equal(replaced.json.locationId, location.id);
+  assert.equal(replaced.json.locationSnapshot.label, "Current Home");
+  assert.equal(replaced.json.locationSnapshot.zone, "West Kendall");
+  assert.notDeepEqual(replaced.json.locationSnapshot, legacySnapshot);
+});
+
+test("all appointment linkage and history fields remain immutable on update", async () => {
+  await resetDb();
+  const cookie = await loginAs();
+  const created = await createAppointment(cookie);
+  const before = await readDbFile();
+  const rejected = await request(`/api/appointments/${created.json.id}`, {
+    method: "PUT",
+    cookie,
+    body: {
+      expectedVersion: 1,
+      id: "different-id",
+      agency: "One Clinical Care",
+      sessionId: "session-1",
+      linkedAt: "2026-08-19T12:00:00Z",
+      linkedBy: "user-admin",
+      recurrenceSeriesId: "series-1",
+      originalOccurrenceStartAt: "2026-08-03T09:00:00-04:00",
+      replacesAppointmentId: "old-appointment",
+      replacedByAppointmentId: "new-appointment",
+      cancellation: { reason: "other" },
+      createdAt: "2020-01-01T00:00:00Z",
+      createdBy: "different-user"
+    }
+  });
+  assert.equal(rejected.response.status, 400);
+  const errors = rejected.json.errors.join(" ");
+  for (const field of [
+    "Appointment ID", "agency", "sessionId", "linkedAt", "linkedBy", "recurrenceSeriesId",
+    "originalOccurrenceStartAt", "replacesAppointmentId", "replacedByAppointmentId", "cancellation", "createdAt", "createdBy"
+  ]) assert.match(errors, new RegExp(field, "i"));
+  const persisted = await readDbFile();
+  assert.deepEqual(persisted.appointments, before.appointments);
+  assert.deepEqual(persisted.clients, before.clients);
+  assert.deepEqual(persisted.sessions, before.sessions);
 });
 
 test("cancellation persists history and all appointment mutations are audited without changing clinical records", async () => {

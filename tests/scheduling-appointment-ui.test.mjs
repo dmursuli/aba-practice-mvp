@@ -69,10 +69,13 @@ test("service locations reuse Client Profile data and auto-select a single saved
         {
           id: "multiple",
           defaultSetting: "Clinic",
-          serviceLocations: [
-            { id: "home-1", label: "Home", settingType: "home", addressLine1: "123 Main" },
-            { id: "school-1", label: "School", settingType: "school", address: { city: "Miami", state: "FL" } }
-          ]
+          profile: {
+            serviceLocations: [
+              { id: "home-1", name: "Home", settingType: "home", zone: "West Kendall", address: { line1: "123 Main" }, isPrimary: true, isActive: true },
+              { id: "school-1", name: "School", settingType: "school", zone: "Doral", address: { city: "Miami", state: "FL" }, isActive: true },
+              { id: "old-clinic", name: "Old Clinic", settingType: "clinic", zone: "Kendall", isActive: false }
+            ]
+          }
         }
       ]
     }
@@ -93,6 +96,8 @@ test("service locations reuse Client Profile data and auto-select a single saved
   assert.equal(multiple.length, 2);
   assert.equal(multiple[0].id, "home-1");
   assert.equal(multiple[0].addressLine1, "123 Main");
+  assert.equal(multiple[0].zone, "West Kendall");
+  assert.equal(multiple[0].isPrimary, true);
   assert.equal(multiple[1].city, "Miami");
   context.state.clients.push({ id: "legacy-multiple", defaultSetting: "Home and clinic" });
   const legacyMultiple = context.clientServiceLocations("legacy-multiple");
@@ -100,7 +105,33 @@ test("service locations reuse Client Profile data and auto-select a single saved
   assert.deepEqual(Array.from(legacyMultiple, (location) => location.settingType), ["home", "clinic"]);
   assert.ok(legacyMultiple.every((location) => !location.label.includes("and")));
   assert.match(functionSource("renderAppointmentServiceLocations"), /if \(!multipleLocations\) select\.value = "0"/);
+  assert.match(functionSource("renderAppointmentServiceLocations"), /findIndex\(\(location\) => location\.isPrimary\)/);
+  assert.match(functionSource("renderAppointmentServiceLocations"), /select\.value = String\(primaryIndex\)/);
   assert.match(appSource, /clientId\?\.addEventListener\("change", renderAppointmentServiceLocations\)/);
+});
+
+test("Client Profile provides structured Service Location management without deletion", () => {
+  const section = htmlSource.slice(
+    htmlSource.indexOf('id="service-locations-title"'),
+    htmlSource.indexOf('aria-labelledby="mastery-criteria-title"')
+  );
+  assert.match(section, /Add Service Location/);
+  assert.match(section, /Edit Service Location|service-location-editor-title/);
+  assert.match(section, /Location name/);
+  assert.match(section, /Setting type/);
+  assert.match(section, /Geographic zone/);
+  assert.match(section, /School locations do not require an address/);
+  assert.match(section, /Physical address <span>\(optional\)<\/span>/);
+  for (const value of ["home", "school", "clinic", "community", "other"]) {
+    assert.match(section, new RegExp(`<option value="${value}">`));
+  }
+  for (const zone of ["Homestead", "West Kendall", "Coral Gables", "Doral", "Aventura", "Miami Beach"]) {
+    assert.match(section, new RegExp(`<option value="${zone}">`));
+  }
+  assert.doesNotMatch(section, /Delete Service Location|data-service-location-action="delete"/i);
+  assert.match(functionSource("renderClientServiceLocations"), /No structured Service Locations are saved/);
+  assert.match(functionSource("handleServiceLocationAction", { async: true }), /deactivateClientServiceLocation/);
+  assert.match(functionSource("handleServiceLocationAction", { async: true }), /setPrimaryClientServiceLocation/);
 });
 
 test("selected service location is stored through the existing appointment snapshot", () => {
@@ -108,6 +139,7 @@ test("selected service location is stored through the existing appointment snaps
   assert.match(payload, /selectedAppointmentServiceLocation\(formData\)/);
   assert.match(payload, /locationId: String\(serviceLocation\.id/);
   assert.match(payload, /label: String\(serviceLocation\.label/);
+  assert.match(payload, /zone: String\(serviceLocation\.zone/);
   assert.match(payload, /addressLine1: String\(serviceLocation\.addressLine1/);
   assert.doesNotMatch(payload, /formData\.get\("(?:locationLabel|addressLine1|addressLine2|city|state|postalCode)"\)/);
   assert.match(functionSource("validateAppointmentForm"), /no saved service location\. Update the Client Profile before scheduling/);
@@ -118,6 +150,8 @@ test("selected service location is stored through the existing appointment snaps
         id: "school-1",
         label: "School",
         settingType: "school",
+        zone: "Doral",
+        operationalNote: "School dismissal 2:15.",
         addressLine1: "456 School Way",
         addressLine2: "Room 10",
         city: "Miami",
@@ -152,7 +186,9 @@ test("selected service location is stored through the existing appointment snaps
   const createdPayload = context.appointmentFormPayload(formData);
   assert.equal(createdPayload.locationId, "school-1");
   assert.equal(createdPayload.locationSnapshot.label, "School");
+  assert.equal(createdPayload.locationSnapshot.zone, "Doral");
   assert.equal(createdPayload.locationSnapshot.addressLine1, "456 School Way");
+  assert.equal(createdPayload.locationSnapshot.operationalNote, "School dismissal 2:15.");
   assert.equal(createdPayload.settingType, "school");
   assert.equal(createdPayload.notes, "Use side gate.");
 });
@@ -279,6 +315,18 @@ test("details show only operational appointment information in logical groups", 
     assert.doesNotMatch(renderer, new RegExp(forbidden, "i"));
   }
   assert.doesNotMatch(htmlSource.slice(htmlSource.indexOf('id="appointment-details-modal"'), htmlSource.indexOf('id="program-graph-modal"')), /Edit|Cancel|Confirm|Reschedule|Save/);
+});
+
+test("appointment details display the canonical snapshot zone and preserve the legacy fallback", () => {
+  const context = {};
+  vm.runInNewContext(functionSource("appointmentGeographicZone"), context);
+  assert.equal(context.appointmentGeographicZone({
+    locationSnapshot: { label: "Dad's home", zone: "Tamiami" }
+  }), "Tamiami");
+  assert.equal(context.appointmentGeographicZone({
+    locationSnapshot: { label: "Legacy home" }
+  }), "");
+  assert.match(functionSource("renderAppointmentDetails"), /appointmentGeographicZone\(appointment\) \|\| "Not assigned"/);
 });
 
 test("summary card shows service, status, client, date, time, and primary provider", () => {

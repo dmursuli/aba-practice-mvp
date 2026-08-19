@@ -1,4 +1,4 @@
-import { createAppointment, createAuditEvent, createClient, createSession, createUser, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setupVerificationEmail, touchSession, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { createAppointment, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -20,6 +20,8 @@ const state = {
   appointmentOptionsLoaded: false,
   appointmentOptionsLoading: false,
   appointmentSubmitting: false,
+  editingServiceLocationId: "",
+  serviceLocationSaving: false,
   selectedAppointmentId: "",
   selectedAppointmentDetails: null,
   appointmentDetailsLoading: false,
@@ -240,6 +242,14 @@ const programGraphModalSubtitle = document.querySelector("#program-graph-modal-s
 const programGraphModalCanvas = document.querySelector("#program-graph-modal-canvas");
 const clientManagementSummary = document.querySelector("#client-management-summary");
 const clientProfileMessage = document.querySelector("#client-profile-message");
+const serviceLocationList = document.querySelector("#service-location-list");
+const serviceLocationLegacyMessage = document.querySelector("#service-location-legacy-message");
+const serviceLocationEditor = document.querySelector("#service-location-editor");
+const serviceLocationEditorTitle = document.querySelector("#service-location-editor-title");
+const serviceLocationMessage = document.querySelector("#service-location-message");
+const addServiceLocationButton = document.querySelector("#add-service-location");
+const saveServiceLocationButton = document.querySelector("#save-service-location");
+const cancelServiceLocationButton = document.querySelector("#cancel-service-location");
 const authorizationUsage = document.querySelector("#authorization-usage");
 const authorizationUsageNote = document.querySelector("#authorization-usage-note");
 const clientDocumentMessage = document.querySelector("#client-document-message");
@@ -1068,6 +1078,10 @@ function bindEvents() {
   });
   form.addEventListener("submit", handleSubmit);
   clientProfileForm.addEventListener("submit", handleClientProfileSubmit);
+  addServiceLocationButton?.addEventListener("click", () => openServiceLocationEditor());
+  cancelServiceLocationButton?.addEventListener("click", closeServiceLocationEditor);
+  saveServiceLocationButton?.addEventListener("click", handleSaveServiceLocation);
+  serviceLocationList?.addEventListener("click", handleServiceLocationAction);
   deleteClientButton.addEventListener("click", handleDeleteClient);
   clientDocumentForm.addEventListener("submit", handleClientDocumentSubmit);
   clientDocumentList.addEventListener("click", handleClientDocumentClick);
@@ -1499,6 +1513,8 @@ function resetSensitiveState() {
   state.appointmentOptionsLoaded = false;
   state.appointmentOptionsLoading = false;
   state.appointmentSubmitting = false;
+  state.editingServiceLocationId = "";
+  state.serviceLocationSaving = false;
   state.selectedAppointmentId = "";
   state.selectedAppointmentDetails = null;
   state.appointmentDetailsLoading = false;
@@ -2167,6 +2183,183 @@ async function handleClientProfileSubmit(event) {
   }
 }
 
+function storedClientServiceLocations(client = currentClient()) {
+  return Array.isArray(client?.profile?.serviceLocations) ? client.profile.serviceLocations : [];
+}
+
+function replaceClientInState(updated) {
+  const index = state.clients.findIndex((item) => item.id === updated.id);
+  if (index >= 0) state.clients[index] = updated;
+}
+
+function serviceLocationSettingLabel(settingType) {
+  return ({
+    home: "Home",
+    school: "School",
+    clinic: "Clinic",
+    community: "Community",
+    other: "Other"
+  })[settingType] || "Other";
+}
+
+function renderClientServiceLocations() {
+  if (!serviceLocationList) return;
+  const client = currentClient();
+  const locations = storedClientServiceLocations(client);
+  if (serviceLocationLegacyMessage) {
+    serviceLocationLegacyMessage.classList.toggle("hidden", !client || locations.length > 0);
+    serviceLocationLegacyMessage.textContent = client && !locations.length
+      ? `No structured Service Locations are saved. Scheduling will continue using the legacy Default setting (${client.defaultSetting || "not set"}) until locations are added.`
+      : "";
+  }
+  if (!client) {
+    serviceLocationList.innerHTML = '<p class="muted">Select a client to manage Service Locations.</p>';
+    return;
+  }
+  if (!locations.length) {
+    serviceLocationList.innerHTML = '<p class="muted">Add the client\'s first structured service location.</p>';
+    return;
+  }
+  serviceLocationList.innerHTML = locations.map((location) => `
+    <article class="service-location-card${location.isActive === false ? " is-inactive" : ""}">
+      <div class="service-location-card-heading">
+        <div>
+          <h4>${escapeHtml(location.name || "Service location")}</h4>
+          <p>${escapeHtml(serviceLocationSettingLabel(location.settingType))} · ${escapeHtml(location.zone || "Zone not set")}</p>
+        </div>
+        <div class="service-location-badges">
+          ${location.isPrimary ? '<span class="status-badge primary">Primary</span>' : ""}
+          <span class="status-badge ${location.isActive === false ? "inactive" : "active"}">${location.isActive === false ? "Inactive" : "Active"}</span>
+        </div>
+      </div>
+      ${location.operationalNote ? `<p class="service-location-note"><strong>Operational note:</strong> ${escapeHtml(location.operationalNote)}</p>` : ""}
+      <div class="button-row">
+        <button type="button" class="secondary-button" data-service-location-action="edit" data-location-id="${escapeHtml(location.id)}">Edit</button>
+        ${location.isActive !== false && !location.isPrimary ? `<button type="button" class="secondary-button" data-service-location-action="primary" data-location-id="${escapeHtml(location.id)}">Set as Primary</button>` : ""}
+        ${location.isActive !== false ? `<button type="button" class="secondary-button danger-button" data-service-location-action="deactivate" data-location-id="${escapeHtml(location.id)}">Deactivate</button>` : ""}
+      </div>
+    </article>
+  `).join("");
+}
+
+function serviceLocationEditorField(id) {
+  return document.querySelector(`#${id}`);
+}
+
+function openServiceLocationEditor(locationId = "") {
+  const location = storedClientServiceLocations().find((item) => item.id === locationId) || null;
+  state.editingServiceLocationId = location?.id || "";
+  if (serviceLocationEditorTitle) serviceLocationEditorTitle.textContent = location ? "Edit Service Location" : "Add Service Location";
+  const values = {
+    "service-location-name": location?.name || "",
+    "service-location-setting-type": location?.settingType || "home",
+    "service-location-zone": location?.zone || "",
+    "service-location-address-line1": location?.address?.line1 || "",
+    "service-location-address-line2": location?.address?.line2 || "",
+    "service-location-city": location?.address?.city || "",
+    "service-location-state": location?.address?.state || "FL",
+    "service-location-postal-code": location?.address?.postalCode || "",
+    "service-location-operational-note": location?.operationalNote || ""
+  };
+  Object.entries(values).forEach(([id, value]) => {
+    const field = serviceLocationEditorField(id);
+    if (field) field.value = value;
+  });
+  const primary = serviceLocationEditorField("service-location-primary");
+  if (primary) primary.checked = Boolean(location?.isPrimary);
+  serviceLocationEditor?.classList.remove("hidden");
+  serviceLocationEditor?.removeAttribute("disabled");
+  if (serviceLocationMessage) serviceLocationMessage.textContent = "";
+  serviceLocationEditorField("service-location-name")?.focus();
+}
+
+function closeServiceLocationEditor() {
+  state.editingServiceLocationId = "";
+  serviceLocationEditor?.classList.add("hidden");
+  serviceLocationEditor?.setAttribute("disabled", "");
+  if (serviceLocationMessage) serviceLocationMessage.textContent = "";
+}
+
+function readServiceLocationEditor() {
+  return {
+    name: serviceLocationEditorField("service-location-name")?.value || "",
+    settingType: serviceLocationEditorField("service-location-setting-type")?.value || "",
+    zone: serviceLocationEditorField("service-location-zone")?.value || "",
+    address: {
+      line1: serviceLocationEditorField("service-location-address-line1")?.value || "",
+      line2: serviceLocationEditorField("service-location-address-line2")?.value || "",
+      city: serviceLocationEditorField("service-location-city")?.value || "",
+      state: serviceLocationEditorField("service-location-state")?.value || "",
+      postalCode: serviceLocationEditorField("service-location-postal-code")?.value || ""
+    },
+    operationalNote: serviceLocationEditorField("service-location-operational-note")?.value || "",
+    isPrimary: Boolean(serviceLocationEditorField("service-location-primary")?.checked)
+  };
+}
+
+async function handleSaveServiceLocation() {
+  const client = currentClient();
+  if (!client || state.serviceLocationSaving) return;
+  const payload = readServiceLocationEditor();
+  const errors = [];
+  if (!String(payload.name).trim()) errors.push("Location name is required.");
+  if (!String(payload.settingType).trim()) errors.push("Setting type is required.");
+  if (!String(payload.zone).trim()) errors.push("Geographic zone is required.");
+  if (errors.length) {
+    serviceLocationMessage.textContent = errors.join(" ");
+    return;
+  }
+  state.serviceLocationSaving = true;
+  saveServiceLocationButton.disabled = true;
+  serviceLocationMessage.textContent = "Saving Service Location…";
+  try {
+    const updated = state.editingServiceLocationId
+      ? await updateClientServiceLocation(client.id, state.editingServiceLocationId, payload)
+      : await createClientServiceLocation(client.id, payload);
+    replaceClientInState(updated);
+    closeServiceLocationEditor();
+    renderClientServiceLocations();
+    clientProfileMessage.textContent = "Service Location saved.";
+  } catch (error) {
+    serviceLocationMessage.textContent = error.message || "Could not save the Service Location.";
+  } finally {
+    state.serviceLocationSaving = false;
+    saveServiceLocationButton.disabled = false;
+  }
+}
+
+async function handleServiceLocationAction(event) {
+  const button = event.target.closest("[data-service-location-action]");
+  if (!button || state.serviceLocationSaving) return;
+  const locationId = button.dataset.locationId || "";
+  const action = button.dataset.serviceLocationAction;
+  if (action === "edit") {
+    openServiceLocationEditor(locationId);
+    return;
+  }
+  const client = currentClient();
+  if (!client) return;
+  const location = storedClientServiceLocations(client).find((item) => item.id === locationId);
+  if (!location) return;
+  if (action === "deactivate" && !window.confirm(`Deactivate ${location.name}? Existing appointment snapshots will not change.`)) return;
+  state.serviceLocationSaving = true;
+  button.disabled = true;
+  try {
+    const updated = action === "primary"
+      ? await setPrimaryClientServiceLocation(client.id, locationId)
+      : await deactivateClientServiceLocation(client.id, locationId);
+    replaceClientInState(updated);
+    closeServiceLocationEditor();
+    renderClientServiceLocations();
+    clientProfileMessage.textContent = action === "primary" ? "Primary Service Location updated." : "Service Location deactivated.";
+  } catch (error) {
+    clientProfileMessage.textContent = error.message || "Could not update the Service Location.";
+  } finally {
+    state.serviceLocationSaving = false;
+    button.disabled = false;
+  }
+}
+
 async function handleDeleteClient() {
   const client = currentClient();
   if (!client) return;
@@ -2634,7 +2827,11 @@ function syncClientProfileForm() {
     section.classList.toggle("hidden", !canEditAdmin());
   });
   syncAdminAgencyControls();
-  if (!client) return;
+  if (!client) {
+    closeServiceLocationEditor();
+    renderClientServiceLocations();
+    return;
+  }
   managementClientSelect.value = client.id;
   clientProfileForm.elements.status.value = client.status === "archived" ? "archived" : "active";
   clientProfileForm.elements.name.value = client.name || "";
@@ -2668,6 +2865,10 @@ function syncClientProfileForm() {
   clientProfileForm.elements.assessmentConductedBy.value = client.profile?.assessment?.conductedBy || "";
   clientProfileForm.elements.assessmentNotes.value = client.profile?.assessment?.notes || "";
   clientProfileForm.elements.assessmentFile.value = "";
+  if (state.editingServiceLocationId && !storedClientServiceLocations(client).some((item) => item.id === state.editingServiceLocationId)) {
+    closeServiceLocationEditor();
+  }
+  renderClientServiceLocations();
   renderAuthorizationUsage();
 }
 
@@ -3724,6 +3925,10 @@ function normalizeClientServiceLocation(location, index = 0) {
       id: "",
       label,
       settingType: canonicalAppointmentSettingType(label),
+      zone: "",
+      operationalNote: "",
+      isPrimary: false,
+      isActive: true,
       addressLine1: "",
       addressLine2: "",
       city: "",
@@ -3738,6 +3943,10 @@ function normalizeClientServiceLocation(location, index = 0) {
     id: String(location?.id || "").trim(),
     label,
     settingType: canonicalAppointmentSettingType(location?.settingType || location?.type || label),
+    zone: String(location?.zone || "").trim(),
+    operationalNote: String(location?.operationalNote || "").trim(),
+    isPrimary: Boolean(location?.isPrimary),
+    isActive: location?.isActive !== false,
     addressLine1: String(location?.addressLine1 || address.line1 || "").trim(),
     addressLine2: String(location?.addressLine2 || address.line2 || "").trim(),
     city: String(location?.city || address.city || "").trim(),
@@ -3749,13 +3958,14 @@ function normalizeClientServiceLocation(location, index = 0) {
 function clientServiceLocations(clientId) {
   const client = state.clients.find((item) => item.id === clientId);
   if (!client) return [];
-  const savedLocations = Array.isArray(client.serviceLocations)
-    ? client.serviceLocations
-    : Array.isArray(client.profile?.serviceLocations) ? client.profile.serviceLocations : [];
-  const locations = savedLocations
+  const profileLocations = Array.isArray(client.profile?.serviceLocations) ? client.profile.serviceLocations : [];
+  const legacyStructuredLocations = Array.isArray(client.serviceLocations) ? client.serviceLocations : [];
+  const savedLocations = profileLocations.length ? profileLocations : legacyStructuredLocations;
+  if (savedLocations.length) {
+    return savedLocations
     .map(normalizeClientServiceLocation)
-    .filter(Boolean);
-  if (locations.length) return locations;
+    .filter((location) => location && location.isActive !== false);
+  }
   return legacyDefaultSettingLocations(client.defaultSetting);
 }
 
@@ -3808,7 +4018,7 @@ function renderAppointmentServiceLocations() {
   }
   if (!state.appointmentServiceLocations.length) {
     select.innerHTML = '<option value="">No saved service locations</option>';
-    if (appointmentLocationHelp) appointmentLocationHelp.textContent = "Add a default setting to the Client Profile before scheduling.";
+    if (appointmentLocationHelp) appointmentLocationHelp.textContent = "Add or reactivate a structured Service Location in the Client Profile before scheduling.";
     syncAppointmentSettingFromLocation();
     return;
   }
@@ -3819,10 +4029,14 @@ function renderAppointmentServiceLocations() {
       `<option value="${index}">${appointmentLocationIcon(location)} ${escapeHtml(location.label)}</option>`
     ))
   ].join("");
+  const primaryIndex = state.appointmentServiceLocations.findIndex((location) => location.isPrimary);
   if (!multipleLocations) select.value = "0";
+  else if (primaryIndex >= 0) select.value = String(primaryIndex);
   if (appointmentLocationHelp) {
-    appointmentLocationHelp.textContent = multipleLocations
+    appointmentLocationHelp.textContent = multipleLocations && primaryIndex < 0
       ? "Choose one of the saved Client Profile locations."
+      : multipleLocations
+        ? "The Primary Client Profile location was selected automatically."
       : "Automatically selected from the Client Profile.";
   }
   syncAppointmentSettingFromLocation();
@@ -3937,11 +4151,13 @@ function appointmentFormPayload(formData) {
     locationId: String(serviceLocation.id || ""),
     locationSnapshot: {
       label: String(serviceLocation.label || ""),
+      zone: String(serviceLocation.zone || ""),
       addressLine1: String(serviceLocation.addressLine1 || ""),
       addressLine2: String(serviceLocation.addressLine2 || ""),
       city: String(serviceLocation.city || ""),
       state: String(serviceLocation.state || ""),
-      postalCode: String(serviceLocation.postalCode || "")
+      postalCode: String(serviceLocation.postalCode || ""),
+      operationalNote: String(serviceLocation.operationalNote || "")
     },
     notes: String(formData.get("notes") || "").trim()
   };
@@ -4155,7 +4371,8 @@ function appointmentLocationLabel(appointment) {
 function appointmentGeographicZone(appointment) {
   const location = appointment?.locationSnapshot || {};
   return String(
-    location.zoneName
+    location.zone
+    || location.zoneName
     || location.zoneLabel
     || location.geographicZone
     || appointment?.zoneName

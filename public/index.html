@@ -358,6 +358,128 @@
             Client notes
             <textarea name="profileNotes" rows="3" placeholder="General notes for onboarding, strengths, preferences, or clinical context"></textarea>
           </label>
+          <section class="report-form-section service-locations-section" aria-labelledby="service-locations-title">
+            <div class="block-heading">
+              <div>
+                <h3 id="service-locations-title">Service Locations</h3>
+                <p class="muted">Reusable locations for scheduling. Physical addresses are optional.</p>
+              </div>
+              <button type="button" class="secondary-button" id="add-service-location">Add Service Location</button>
+            </div>
+            <p class="service-location-legacy-message hidden" id="service-location-legacy-message"></p>
+            <div class="service-location-list" id="service-location-list"></div>
+            <fieldset class="service-location-editor hidden" id="service-location-editor" disabled>
+              <legend id="service-location-editor-title">Add Service Location</legend>
+              <div class="form-grid">
+                <label>
+                  Location name
+                  <input type="text" id="service-location-name" autocomplete="off">
+                </label>
+                <label>
+                  Setting type
+                  <select id="service-location-setting-type">
+                    <option value="home">Home</option>
+                    <option value="school">School</option>
+                    <option value="clinic">Clinic</option>
+                    <option value="community">Community</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+                <label>
+                  Geographic zone
+                  <select id="service-location-zone">
+                    <option value="">Select a zone</option>
+                    <optgroup label="South">
+                      <option value="Homestead">Homestead</option>
+                      <option value="Florida City">Florida City</option>
+                      <option value="Princeton">Princeton</option>
+                      <option value="Goulds">Goulds</option>
+                      <option value="Cutler Bay">Cutler Bay</option>
+                      <option value="Palmetto Bay">Palmetto Bay</option>
+                    </optgroup>
+                    <optgroup label="West">
+                      <option value="Kendall">Kendall</option>
+                      <option value="West Kendall">West Kendall</option>
+                      <option value="Tamiami">Tamiami</option>
+                      <option value="Fontainebleau">Fontainebleau</option>
+                    </optgroup>
+                    <optgroup label="Central">
+                      <option value="Coral Gables">Coral Gables</option>
+                      <option value="South Miami">South Miami</option>
+                      <option value="Westchester">Westchester</option>
+                      <option value="Flagami">Flagami</option>
+                      <option value="Little Havana">Little Havana</option>
+                    </optgroup>
+                    <optgroup label="Northwest">
+                      <option value="Hialeah">Hialeah</option>
+                      <option value="Hialeah Gardens">Hialeah Gardens</option>
+                      <option value="Miami Lakes">Miami Lakes</option>
+                      <option value="Doral">Doral</option>
+                      <option value="Medley">Medley</option>
+                    </optgroup>
+                    <optgroup label="Northeast">
+                      <option value="North Miami">North Miami</option>
+                      <option value="North Miami Beach">North Miami Beach</option>
+                      <option value="Aventura">Aventura</option>
+                      <option value="Sunny Isles Beach">Sunny Isles Beach</option>
+                      <option value="Bal Harbour">Bal Harbour</option>
+                      <option value="Bay Harbor Islands">Bay Harbor Islands</option>
+                      <option value="Surfside">Surfside</option>
+                    </optgroup>
+                    <optgroup label="East">
+                      <option value="Downtown Miami">Downtown Miami</option>
+                      <option value="Brickell">Brickell</option>
+                      <option value="Edgewater">Edgewater</option>
+                      <option value="Wynwood">Wynwood</option>
+                      <option value="Midtown">Midtown</option>
+                      <option value="Design District">Design District</option>
+                      <option value="Miami Beach">Miami Beach</option>
+                      <option value="Key Biscayne">Key Biscayne</option>
+                    </optgroup>
+                  </select>
+                </label>
+                <label class="service-location-primary-field">
+                  <input type="checkbox" id="service-location-primary">
+                  Make this the Primary location
+                </label>
+              </div>
+              <div class="service-location-address-heading">
+                <h4>Physical address <span>(optional)</span></h4>
+                <p>School locations do not require an address.</p>
+              </div>
+              <div class="form-grid">
+                <label>
+                  Address line 1 (optional)
+                  <input type="text" id="service-location-address-line1" autocomplete="street-address">
+                </label>
+                <label>
+                  Address line 2 (optional)
+                  <input type="text" id="service-location-address-line2" autocomplete="address-line2">
+                </label>
+                <label>
+                  City (optional)
+                  <input type="text" id="service-location-city" autocomplete="address-level2">
+                </label>
+                <label>
+                  State (optional)
+                  <input type="text" id="service-location-state" maxlength="2" autocomplete="address-level1">
+                </label>
+                <label>
+                  Postal code (optional)
+                  <input type="text" id="service-location-postal-code" autocomplete="postal-code">
+                </label>
+              </div>
+              <label>
+                Operational note (optional)
+                <textarea id="service-location-operational-note" rows="2" placeholder="Scheduling logistics only; do not enter clinical narrative."></textarea>
+              </label>
+              <p class="form-message" id="service-location-message" role="status"></p>
+              <div class="button-row">
+                <button type="button" class="secondary-button" id="save-service-location">Save Service Location</button>
+                <button type="button" class="secondary-button" id="cancel-service-location">Cancel</button>
+              </div>
+            </fieldset>
+          </section>
           <section class="report-form-section" aria-labelledby="mastery-criteria-title">
             <div class="block-heading">
               <h3 id="mastery-criteria-title">Mastery criteria</h3>

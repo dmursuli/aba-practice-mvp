@@ -283,6 +283,123 @@ textarea {
   grid-column: 1 / -1;
 }
 
+.service-locations-section {
+  display: grid;
+  gap: 14px;
+}
+
+.service-locations-section .block-heading p,
+.service-location-card p,
+.service-location-address-heading p {
+  margin: 4px 0 0;
+}
+
+.service-location-legacy-message {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid #e4c66b;
+  border-radius: 7px;
+  background: #fff9df;
+  color: #684f00;
+}
+
+.service-location-list {
+  display: grid;
+  gap: 10px;
+}
+
+.service-location-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.service-location-card.is-inactive {
+  background: #f5f6f8;
+  opacity: 0.78;
+}
+
+.service-location-card-heading,
+.service-location-badges {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.service-location-card h4,
+.service-location-address-heading h4 {
+  margin: 0;
+}
+
+.service-location-card-heading p,
+.service-location-note,
+.service-location-address-heading p {
+  color: var(--muted);
+}
+
+.service-location-badges {
+  flex-wrap: wrap;
+  justify-content: end;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.status-badge.primary {
+  background: var(--gold-soft);
+  color: #765300;
+}
+
+.status-badge.active {
+  background: #e8f6ec;
+  color: #28643a;
+}
+
+.status-badge.inactive {
+  background: #e9ebef;
+  color: #555e6c;
+}
+
+.service-location-editor {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.service-location-editor legend {
+  padding: 0 6px;
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.service-location-primary-field {
+  display: flex;
+  align-items: center;
+  align-self: end;
+  min-height: 43px;
+}
+
+.service-location-address-heading h4 span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
 label {
   display: grid;
   gap: 6px;
@@ -2203,6 +2320,15 @@ button:disabled {
 
   .appointment-details-grid {
     grid-template-columns: 1fr;
+  }
+
+  .service-location-card-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .service-location-badges {
+    justify-content: start;
   }
 
   body {
