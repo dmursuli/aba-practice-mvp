@@ -31,15 +31,12 @@ const AGENCIES = ["Triumph ABA", "One Clinical Care"];
 const DEFAULT_AGENCY = AGENCIES[0];
 const APPOINTMENT_SERVICE_CODES = new Set(["97151", "97153", "97155", "97156"]);
 const APPOINTMENT_STATUSES = new Set(["scheduled", "confirmed", "completed", "cancelled", "no_show"]);
-const APPOINTMENT_CANCELLATION_REASONS = new Set([
-  "client_cancelled",
-  "provider_cancelled",
-  "authorization_issue",
-  "illness",
-  "weather",
-  "agency_cancelled",
-  "other"
+const APPOINTMENT_CANCELLATION_REASONS_BY_CATEGORY = new Map([
+  ["client", new Set(["client_cancelled", "illness", "vacation", "family_emergency", "no_show", "other"])],
+  ["provider", new Set(["provider_cancelled", "provider_illness", "provider_pto", "provider_emergency", "other"])],
+  ["agency", new Set(["agency_cancelled", "authorization_issue", "weather", "staffing_issue", "scheduling_error", "other"])]
 ]);
+const SHORT_OPERATIONAL_NOTE_MAX_LENGTH = 360;
 const APPOINTMENT_PROVIDER_ROLES = {
   "97151": new Set(["bcba"]),
   "97153": new Set(["rbt"]),
@@ -1171,7 +1168,10 @@ export function createAppServer() {
         sendJson(res, 403, { errors: ["You cannot access this appointment."] });
         return;
       }
-      sendJson(res, 200, appointment);
+      sendJson(res, 200, {
+        ...appointment,
+        cancellationActor: appointmentCancellationActorSummary(db, appointment)
+      });
       return;
     }
 
@@ -1272,9 +1272,22 @@ export function createAppServer() {
         });
         return;
       }
+      const category = String(payload.category || "").trim();
+      const supportedReasons = APPOINTMENT_CANCELLATION_REASONS_BY_CATEGORY.get(category);
+      if (!supportedReasons) {
+        sendJson(res, 400, { errors: ["Cancellation category must be client, provider, or agency."] });
+        return;
+      }
       const reason = String(payload.reason || "").trim();
-      if (!APPOINTMENT_CANCELLATION_REASONS.has(reason)) {
-        sendJson(res, 400, { errors: ["A supported cancellation reason is required."] });
+      if (!supportedReasons.has(reason)) {
+        sendJson(res, 400, { errors: ["Cancellation reason is not supported for the selected category."] });
+        return;
+      }
+      const note = String(payload.note || "").trim();
+      if (note.length > SHORT_OPERATIONAL_NOTE_MAX_LENGTH) {
+        sendJson(res, 400, {
+          errors: [`Cancellation note must be ${SHORT_OPERATIONAL_NOTE_MAX_LENGTH} characters or fewer.`]
+        });
         return;
       }
       if (!canTransitionAppointmentStatus(appointment.status, "cancelled")) {
@@ -1282,10 +1295,12 @@ export function createAppServer() {
         return;
       }
       const now = new Date().toISOString();
+      // Phase 3C compatibility: client/no_show remains a cancellation until a separate no-show workflow is approved.
       appointment.status = "cancelled";
       appointment.cancellation = {
+        category,
         reason,
-        note: String(payload.note || "").trim(),
+        note,
         cancelledAt: now,
         cancelledBy: actor.id
       };
@@ -1297,7 +1312,10 @@ export function createAppServer() {
         agency: appointment.agency,
         details: {
           ...appointmentAuditDetails(appointment),
-          cancellationReason: reason
+          cancellationCategory: category,
+          cancellationReason: reason,
+          cancellationActorId: actor.id,
+          cancellationTimestamp: now
         }
       });
       await writeDb(db);
@@ -3394,6 +3412,16 @@ function appointmentCalendarSummary(appointment) {
     sessionId: appointment.sessionId || "",
     version: appointment.version
   };
+}
+
+function appointmentCancellationActorSummary(db, appointment) {
+  const cancelledBy = String(appointment?.cancellation?.cancelledBy || "").trim();
+  if (!cancelledBy) return null;
+  const actor = (db.users || []).find((user) => user.id === cancelledBy);
+  if (!actor) return null;
+  if (!isMasterAdmin(actor) && userAgency(actor) !== normalizeAgency(appointment.agency)) return null;
+  const name = String(actor.name || "").trim();
+  return name ? { name } : null;
 }
 
 function appointmentAuditDetails(appointment) {

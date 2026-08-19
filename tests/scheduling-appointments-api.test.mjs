@@ -706,11 +706,136 @@ test("all appointment linkage and history fields remain immutable on update", as
   assert.deepEqual(persisted.sessions, before.sessions);
 });
 
+test("cancellation requires a supported category and a compatible reason", async () => {
+  await resetDb();
+  const cookie = await loginAs();
+  const created = await createAppointment(cookie);
+  assert.equal(created.response.status, 201);
+
+  const invalidPayloads = [
+    { expectedVersion: 1, reason: "client_cancelled" },
+    { expectedVersion: 1, category: "unknown", reason: "other" },
+    { expectedVersion: 1, category: "client", reason: "provider_pto" },
+    { expectedVersion: 1, category: "provider", reason: "authorization_issue" },
+    { expectedVersion: 1, category: "agency", reason: "family_emergency" },
+    { expectedVersion: 1, category: "client", reason: "unsupported_reason" }
+  ];
+  for (const body of invalidPayloads) {
+    const rejected = await request(`/api/appointments/${created.json.id}/cancel`, {
+      method: "POST",
+      cookie,
+      body
+    });
+    assert.equal(rejected.response.status, 400);
+  }
+
+  const persisted = await readDbFile();
+  assert.equal(persisted.appointments[0].status, "scheduled");
+  assert.equal(persisted.appointments[0].version, 1);
+  assert.equal(persisted.appointments[0].cancellation, null);
+});
+
+test("cancellation accepts every approved category reason and keeps no_show as cancelled", async () => {
+  await resetDb();
+  const cookie = await loginAs();
+  const taxonomy = {
+    client: ["client_cancelled", "illness", "vacation", "family_emergency", "no_show", "other"],
+    provider: ["provider_cancelled", "provider_illness", "provider_pto", "provider_emergency", "other"],
+    agency: ["agency_cancelled", "authorization_issue", "weather", "staffing_issue", "scheduling_error", "other"]
+  };
+
+  for (const [category, reasons] of Object.entries(taxonomy)) {
+    for (const reason of reasons) {
+      const created = await createAppointment(cookie);
+      assert.equal(created.response.status, 201);
+      const cancelled = await request(`/api/appointments/${created.json.id}/cancel`, {
+        method: "POST",
+        cookie,
+        body: { expectedVersion: 1, category, reason }
+      });
+      assert.equal(cancelled.response.status, 200, `${category}/${reason}`);
+      assert.equal(cancelled.json.status, "cancelled", `${category}/${reason}`);
+      assert.equal(cancelled.json.version, 2, `${category}/${reason}`);
+      assert.equal(cancelled.json.cancellation.category, category);
+      assert.equal(cancelled.json.cancellation.reason, reason);
+      assert.equal(cancelled.json.cancellation.note, "");
+    }
+  }
+});
+
+test("cancellation note is optional and limited to the existing 360-character short-note convention", async () => {
+  await resetDb();
+  const cookie = await loginAs();
+  const created = await createAppointment(cookie);
+  const tooLong = await request(`/api/appointments/${created.json.id}/cancel`, {
+    method: "POST",
+    cookie,
+    body: { expectedVersion: 1, category: "client", reason: "other", note: "x".repeat(361) }
+  });
+  assert.equal(tooLong.response.status, 400);
+  assert.match(tooLong.json.errors.join(" "), /360 characters or fewer/);
+
+  const accepted = await request(`/api/appointments/${created.json.id}/cancel`, {
+    method: "POST",
+    cookie,
+    body: { expectedVersion: 1, category: "client", reason: "other", note: "x".repeat(360) }
+  });
+  assert.equal(accepted.response.status, 200);
+  assert.equal(accepted.json.cancellation.note.length, 360);
+});
+
+test("legacy cancellation remains unchanged and safely resolves an inactive historical actor", async () => {
+  await resetDb();
+  const cookie = await loginAs();
+  const created = await createAppointment(cookie);
+  const db = await readDbFile();
+  const appointment = db.appointments.find((item) => item.id === created.json.id);
+  appointment.status = "cancelled";
+  appointment.cancellation = {
+    reason: "client_cancelled",
+    note: "Legacy operational note",
+    cancelledAt: "2026-08-04T13:00:00.000Z",
+    cancelledBy: "inactive-historical-bcba"
+  };
+  db.users.push({
+    id: "inactive-historical-bcba",
+    name: "Former BCBA",
+    role: "bcba",
+    agency: "Triumph ABA",
+    active: false,
+    passwordHash: "sensitive-sentinel"
+  });
+  db.users.push({
+    id: "other-agency-historical-bcba",
+    name: "Other Agency BCBA",
+    role: "bcba",
+    agency: "One Clinical Care",
+    active: false
+  });
+  await writeFile(dbPath, `${JSON.stringify(db, null, 2)}\n`, "utf8");
+  const beforeRead = await readDbFile();
+
+  const details = await request(`/api/appointments/${created.json.id}`, { cookie });
+  assert.equal(details.response.status, 200);
+  assert.equal("category" in details.json.cancellation, false);
+  assert.equal(details.json.cancellation.cancelledBy, "inactive-historical-bcba");
+  assert.deepEqual(details.json.cancellationActor, { name: "Former BCBA" });
+  assert.equal(JSON.stringify(details.json.cancellationActor).includes("sensitive-sentinel"), false);
+  assert.deepEqual(await readDbFile(), beforeRead);
+
+  const crossAgencyDb = await readDbFile();
+  crossAgencyDb.appointments[0].cancellation.cancelledBy = "other-agency-historical-bcba";
+  await writeFile(dbPath, `${JSON.stringify(crossAgencyDb, null, 2)}\n`, "utf8");
+  const crossAgencyDetails = await request(`/api/appointments/${created.json.id}`, { cookie });
+  assert.equal(crossAgencyDetails.response.status, 200);
+  assert.equal(crossAgencyDetails.json.cancellationActor, null);
+});
+
 test("cancellation persists history and all appointment mutations are audited without changing clinical records", async () => {
   await resetDb();
   const cookie = await loginAs();
   const initialized = await readDbFile();
-  const clinicalBefore = structuredClone({ clients: initialized.clients, sessions: initialized.sessions });
+  const { appointments: ignoredAppointments, auditLog: ignoredAuditLog, ...protectedBefore } = structuredClone(initialized);
   const created = await createAppointment(cookie);
   const updated = await request(`/api/appointments/${created.json.id}`, {
     method: "PUT",
@@ -721,11 +846,12 @@ test("cancellation persists history and all appointment mutations are audited wi
   const cancelled = await request(`/api/appointments/${created.json.id}/cancel`, {
     method: "POST",
     cookie,
-    body: { expectedVersion: 2, reason: "client_cancelled", note: "Caregiver called" }
+    body: { expectedVersion: 2, category: "client", reason: "client_cancelled", note: "Caregiver called" }
   });
   assert.equal(cancelled.response.status, 200);
   assert.equal(cancelled.json.status, "cancelled");
   assert.equal(cancelled.json.version, 3);
+  assert.equal(cancelled.json.cancellation.category, "client");
   assert.equal(cancelled.json.cancellation.reason, "client_cancelled");
   assert.equal(cancelled.json.cancellation.note, "Caregiver called");
   assert.equal(cancelled.json.cancellation.cancelledBy, "user-admin");
@@ -734,7 +860,7 @@ test("cancellation persists history and all appointment mutations are audited wi
   const staleCancel = await request(`/api/appointments/${created.json.id}/cancel`, {
     method: "POST",
     cookie,
-    body: { expectedVersion: 2, reason: "other" }
+    body: { expectedVersion: 2, category: "client", reason: "other" }
   });
   assert.equal(staleCancel.response.status, 409);
 
@@ -747,8 +873,16 @@ test("cancellation persists history and all appointment mutations are audited wi
   assert.ok(actions.includes("appointment-cancelled"));
   const appointmentAudits = persisted.auditLog.filter((entry) => entry.action.startsWith("appointment-"));
   assert.ok(appointmentAudits.every((entry) => !JSON.stringify(entry.details).includes("Caregiver called")));
-  assert.deepEqual(persisted.clients, clinicalBefore.clients);
-  assert.deepEqual(persisted.sessions, clinicalBefore.sessions);
+  const cancellationAudit = appointmentAudits.find((entry) => entry.action === "appointment-cancelled");
+  assert.equal(cancellationAudit.details.appointmentId, created.json.id);
+  assert.equal(cancellationAudit.details.cancellationCategory, "client");
+  assert.equal(cancellationAudit.details.cancellationReason, "client_cancelled");
+  assert.equal(cancellationAudit.details.cancellationActorId, "user-admin");
+  assert.equal(cancellationAudit.details.cancellationTimestamp, cancelled.json.cancellation.cancelledAt);
+  assert.equal(cancellationAudit.userId, "user-admin");
+  assert.ok(cancellationAudit.timestamp);
+  const { appointments: persistedAppointments, auditLog: persistedAuditLog, ...protectedAfter } = persisted;
+  assert.deepEqual(protectedAfter, protectedBefore);
 });
 
 test("backup and restore preserve appointments and default legacy backups to an empty collection", async () => {
