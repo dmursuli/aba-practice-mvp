@@ -122,6 +122,15 @@ export async function createAppointment(appointment) {
   return parseResponse(response);
 }
 
+export async function updateAppointment(appointmentId, appointment) {
+  const response = await fetch(`/api/appointments/${encodeURIComponent(appointmentId)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(appointment)
+  });
+  return parseResponse(response);
+}
+
 export async function getHistoricalImportBatches({ clientId = "" } = {}) {
   const url = new URL("/api/historical-imports", window.location.origin);
   if (clientId) url.searchParams.set("clientId", clientId);

@@ -284,7 +284,7 @@ test("CPT colors and service-code text follow the scheduling design", () => {
   }
 });
 
-test("selecting an appointment opens a read-only details modal through the read endpoint", () => {
+test("selecting an appointment opens the operational details modal through the read endpoint", () => {
   const opener = functionSource("openAppointmentDetails", { async: true });
   assert.match(apiSource, /function getAppointment\(appointmentId[\s\S]*fetchWithTimeout\(`\/api\/appointments\/\$\{encodeURIComponent\(appointmentId\)\}`/);
   assert.match(opener, /selectedAppointmentDetails = null/);
@@ -294,7 +294,7 @@ test("selecting an appointment opens a read-only details modal through the read 
   assert.match(opener, /appointmentDetailsModal\.classList\.remove\("hidden"\)/);
   assert.match(htmlSource, /id="appointment-details-modal"[^>]*aria-hidden="true"/);
   assert.match(htmlSource, /aria-labelledby="appointment-details-title"/);
-  assert.match(htmlSource, /Read-only operational appointment information/);
+  assert.match(htmlSource, /Operational appointment information only/);
 });
 
 test("details show only operational appointment information in logical groups", () => {
@@ -314,7 +314,7 @@ test("details show only operational appointment information in logical groups", 
   for (const forbidden of ["soap", "behavior", "treatment-plan", "assessment", "signature", "billing", "audit", "createdBy", "updatedBy", "version", "sessionId"]) {
     assert.doesNotMatch(renderer, new RegExp(forbidden, "i"));
   }
-  assert.doesNotMatch(htmlSource.slice(htmlSource.indexOf('id="appointment-details-modal"'), htmlSource.indexOf('id="program-graph-modal"')), /Edit|Cancel|Confirm|Reschedule|Save/);
+  assert.doesNotMatch(htmlSource.slice(htmlSource.indexOf('id="appointment-details-modal"'), htmlSource.indexOf('id="program-graph-modal"')), /Cancel appointment|Confirm appointment|Reschedule appointment|Save Appointment/i);
 });
 
 test("appointment details display the canonical snapshot zone and preserve the legacy fallback", () => {
@@ -377,7 +377,7 @@ test("details close without mutation and Escape is supported", () => {
   assert.match(closer, /selectedAppointmentDetails = null/);
   assert.match(closer, /classList\.add\("hidden"\)/);
   assert.match(keydown, /event\.key === "Escape"/);
-  assert.match(keydown, /closeAppointmentDetails\(\)/);
+  assert.match(keydown, /requestCloseAppointmentDetails\(\)/);
   assert.match(htmlSource, /class="modal-backdrop" data-close-appointment-details/);
   assert.match(appSource, /appointmentDetailsCloseButtons\.forEach[\s\S]*closeAppointmentDetails/);
   for (const source of [closer, keydown, functionSource("openAppointmentDetails", { async: true })]) {
@@ -396,6 +396,160 @@ test("switching selection prevents stale details and unavailable filtered appoin
   assert.match(functionSource("renderSchedule"), /closeUnavailableAppointmentDetails\(appointments\)/);
   assert.match(functionSource("changeScheduleWeek"), /closeAppointmentDetails\(\)/);
   assert.match(functionSource("showCurrentScheduleWeek"), /closeAppointmentDetails\(\)/);
+});
+
+test("Edit Appointment is available only to admin and BCBA", () => {
+  const context = { state: { currentUser: null } };
+  vm.runInNewContext(functionSource("canEditAppointments"), context);
+  for (const role of ["admin", "bcba"]) {
+    context.state.currentUser = { role };
+    assert.equal(context.canEditAppointments(), true);
+  }
+  for (const role of ["rbt", "read-only"]) {
+    context.state.currentUser = { role };
+    assert.equal(context.canEditAppointments(), false);
+  }
+  const renderer = functionSource("renderAppointmentDetails");
+  assert.match(renderer, /canEditAppointments\(\)/);
+  assert.match(renderer, /data-appointment-edit-action="edit">Edit Appointment/);
+  assert.match(functionSource("beginAppointmentEdit", { async: true }), /if \(!canEditAppointments\(\)/);
+});
+
+test("individual edit form exposes only Phase 3B operational fields and keeps client read-only", () => {
+  const renderer = functionSource("renderAppointmentEditForm");
+  for (const field of ["clientId", "serviceCode", "providerUserId", "date", "startTime", "endTime", "locationId", "notes"]) {
+    assert.match(renderer, new RegExp(`name=\\"${field}\\"`));
+  }
+  assert.match(renderer, /Client identity cannot be changed/);
+  assert.match(renderer, /type="text"[^>]*readonly/);
+  assert.match(renderer, /The appointment's existing time zone is preserved/);
+  assert.match(renderer, /name="settingDisplay" readonly/);
+  assert.match(renderer, /name="zoneDisplay" readonly/);
+  assert.match(renderer, /Derived from Service Location/);
+  assert.match(renderer, /Operational scheduling note/);
+  for (const protectedField of [
+    "sessionId", "linkedAt", "linkedBy", "createdAt", "createdBy", "recurrenceSeriesId",
+    "replacesAppointmentId", "replacedByAppointmentId", "cancellation", "authorizationRef", "status"
+  ]) assert.doesNotMatch(renderer, new RegExp(`name=\\"${protectedField}\\"`, "i"));
+});
+
+test("edit provider choices use stable user IDs and re-filter immediately by service code", () => {
+  const renderer = functionSource("renderAppointmentEditProviderOptions");
+  assert.match(renderer, /appointmentProviderRole\(form\.elements\.serviceCode\.value\)/);
+  assert.match(renderer, /state\.appointmentProviders\.filter\(\(provider\) => provider\.role === role\)/);
+  assert.match(renderer, /value="\$\{escapeHtml\(provider\.id\)\}"/);
+  assert.match(functionSource("handleAppointmentEditChange"), /name === "serviceCode"\) renderAppointmentEditProviderOptions\(\)/);
+  const roleContext = {};
+  vm.runInNewContext(functionSource("appointmentProviderRole"), roleContext);
+  assert.equal(roleContext.appointmentProviderRole("97153"), "rbt");
+  for (const code of ["97151", "97155", "97156"]) assert.equal(roleContext.appointmentProviderRole(code), "bcba");
+});
+
+test("edit locations use active structured Client Profile IDs and derive Setting and Zone", () => {
+  const context = {
+    state: {
+      clients: [{
+        id: "client-1",
+        profile: { serviceLocations: [
+          { id: "home-1", name: "Home", settingType: "home", zone: "West Kendall", isActive: true },
+          { id: "old-1", name: "Old", settingType: "clinic", zone: "Doral", isActive: false }
+        ] }
+      }]
+    }
+  };
+  vm.runInNewContext([
+    functionSource("canonicalAppointmentSettingType"),
+    functionSource("normalizeClientServiceLocation"),
+    functionSource("activeStructuredClientServiceLocations")
+  ].join("\n"), context);
+  assert.deepEqual(Array.from(context.activeStructuredClientServiceLocations("client-1"), (location) => location.id), ["home-1"]);
+  assert.match(functionSource("appointmentEditLocationOptions"), /Current legacy location:/);
+  assert.match(functionSource("appointmentEditLocationOptions"), /location\.id/);
+  const sync = functionSource("syncAppointmentEditLocationDetails");
+  assert.match(sync, /location\?\.settingType/);
+  assert.match(sync, /location\?\.zone/);
+  assert.match(functionSource("handleAppointmentEditChange"), /name === "locationId"\) syncAppointmentEditLocationDetails\(\)/);
+});
+
+test("edit payload sends expectedVersion and only editable operational values", () => {
+  const payload = functionSource("appointmentEditPayload");
+  assert.match(payload, /expectedVersion: Number\(appointment\?\.version\)/);
+  assert.match(payload, /clientId: String\(appointment\?\.clientId/);
+  assert.match(payload, /userId: String\(formData\.get\("providerUserId"\)/);
+  assert.match(payload, /assignmentRole: "primary"/);
+  assert.match(payload, /scheduledStartAt: zonedAppointmentTimestamp/);
+  assert.match(payload, /scheduledEndAt: zonedAppointmentTimestamp/);
+  assert.match(payload, /locationId === "__current__" \? \{\} : \{ locationId \}/);
+  for (const forbidden of [
+    "sessionId", "linkedAt", "linkedBy", "createdAt", "createdBy", "recurrenceSeriesId",
+    "replacement", "cancellation", "soap", "planChangeLog", "treatmentPlan", "locationSnapshot", "settingType", "zoneId"
+  ]) assert.doesNotMatch(payload, new RegExp(forbidden, "i"));
+  assert.match(apiSource, /function updateAppointment\(appointmentId, appointment\)[\s\S]*method: "PUT"/);
+});
+
+test("edit validation rejects invalid time, incompatible providers, and inactive locations", () => {
+  const validation = functionSource("validateAppointmentEditForm");
+  assert.match(validation, /End time must be after start time; cross-midnight appointments are not supported/);
+  assert.match(validation, /not valid in the appointment time zone/);
+  assert.match(validation, /eligible for the selected service code/);
+  assert.match(validation, /active structured Service Location/);
+  assert.doesNotMatch(validation, /visible calendar week/);
+});
+
+test("save prevents double-submit, refreshes details and calendar, and reports moves outside the week", () => {
+  const handler = functionSource("handleUpdateAppointment", { async: true });
+  assert.match(handler, /if \(state\.appointmentEditSubmitting/);
+  assert.match(handler, /state\.appointmentEditSubmitting = true/);
+  assert.match(handler, /Saving appointment/);
+  assert.match(handler, /await updateAppointment\(/);
+  assert.match(handler, /state\.selectedAppointmentDetails = appointment/);
+  assert.match(handler, /await ensureScheduleWeekLoaded\(\{ force: true \}\)/);
+  assert.match(handler, /Appointment updated successfully/);
+  assert.match(handler, /outside the visible week/);
+  assert.match(handler, /preserveAppointmentDetailsOnScheduleRefresh = true/);
+  assert.match(functionSource("closeUnavailableAppointmentDetails"), /!state\.preserveAppointmentDetailsOnScheduleRefresh/);
+  assert.match(functionSource("setAppointmentEditBusy"), /submit\.disabled = isBusy \|\| state\.appointmentEditConflict/);
+});
+
+test("HTTP 409 preserves stale edits and requires Reload Latest or Cancel Edit", () => {
+  const handler = functionSource("handleUpdateAppointment", { async: true });
+  assert.match(handler, /error\.status === 409/);
+  assert.match(handler, /appointmentEditConflict = true/);
+  assert.match(handler, /appointment-edit-conflict/);
+  const renderer = functionSource("renderAppointmentEditForm");
+  assert.match(renderer, /This appointment was changed by another user\. Reload the latest version before editing\./);
+  assert.match(renderer, /Reload Latest Appointment/);
+  assert.match(renderer, /Cancel Edit/);
+  assert.match(functionSource("reloadLatestAppointment", { async: true }), /await getAppointment\(appointmentId\)/);
+  assert.match(functionSource("reloadLatestAppointment", { async: true }), /Discard your unsaved changes and reload the latest appointment/);
+  assert.doesNotMatch(handler, /auto.?merge/i);
+});
+
+test("Cancel Edit discards locally without mutation and conflict cancel reloads the latest record", () => {
+  const cancel = functionSource("cancelAppointmentEdit", { async: true });
+  assert.match(cancel, /Discard your unsaved appointment changes/);
+  assert.match(cancel, /state\.appointmentEditConflict/);
+  assert.match(cancel, /reloadLatestAppointment\(\{ confirmDiscard: false \}\)/);
+  assert.match(cancel, /state\.appointmentEditing = false/);
+  assert.doesNotMatch(cancel, /updateAppointment|createAppointment|method:\s*"(?:POST|PUT|PATCH|DELETE)"/);
+  assert.match(functionSource("requestCloseAppointmentDetails"), /appointmentEditHasChanges\(\)/);
+});
+
+test("appointment editing remains separate from completed clinical-session records", () => {
+  const renderer = functionSource("renderSchedule");
+  assert.match(renderer, /<article class="schedule-record">[\s\S]*Completed session/);
+  assert.doesNotMatch(renderer, /<article[^>]*data-schedule-appointment-id/);
+  const editPayload = functionSource("appointmentEditPayload");
+  const saveHandler = functionSource("handleUpdateAppointment", { async: true });
+  for (const forbidden of ["sessionId", "soap", "planChangeLog", "treatmentPlan", "billing", "report"]) {
+    assert.doesNotMatch(editPayload, new RegExp(forbidden, "i"));
+    assert.doesNotMatch(saveHandler, new RegExp(forbidden, "i"));
+  }
+});
+
+test("appointment edit and conflict controls remain responsive", () => {
+  assert.match(cssSource, /\.appointment-edit-conflict\s*\{/);
+  assert.match(cssSource, /@media \(max-width: 780px\)[\s\S]*\.appointment-details-actions,[\s\S]*width:\s*100%/);
 });
 
 test("creation payload and UI do not touch clinical records", () => {

@@ -150,10 +150,11 @@ test("calendar is responsive without a page-level horizontal calendar layout", (
   assert.match(cssSource, /\.schedule-subview\.hidden,\s*\.schedule-empty-state\.hidden\s*\{[^}]*display:\s*none/s);
 });
 
-test("Phase 3A.2 adds read-only details without later scheduling or Zone Management logic", () => {
+test("Phase 3B adds individual editing without later scheduling or Zone Management logic", () => {
   assert.match(appSource, /createAppointment/);
   assert.match(appSource, /getAppointment/);
-  assert.doesNotMatch(appSource, /updateAppointment|deleteAppointment|cancelAppointment|confirmAppointment|rescheduleAppointment/);
+  assert.match(appSource, /updateAppointment/);
+  assert.doesNotMatch(appSource, /\b(?:deleteAppointment|cancelAppointment|confirmAppointment|rescheduleAppointment)\s*\(/);
   assert.doesNotMatch(appSource, /schedulingZones\s*:|zoneZip|zoneAdjacency|createZone|updateZone|deleteZone/);
   assert.match(htmlSource, /Add Appointment/);
   assert.doesNotMatch(htmlSource, /drag-and-drop|draggable|Edit appointment|Cancel appointment|Confirm appointment|Reschedule appointment/);

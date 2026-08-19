@@ -2045,6 +2045,19 @@ button:focus-visible {
   margin-top: 16px;
 }
 
+.appointment-edit-conflict {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #b45309;
+  border-radius: 8px;
+  background: #fef3c7;
+  color: #78350f;
+}
+
+.appointment-edit-conflict .appointment-details-actions {
+  justify-content: flex-start;
+}
+
 .program-graph-modal-panel .chart-panel {
   padding: 0;
 }

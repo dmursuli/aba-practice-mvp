@@ -1,4 +1,4 @@
-import { createAppointment, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { createAppointment, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -27,6 +27,14 @@ const state = {
   appointmentDetailsLoading: false,
   appointmentDetailsError: "",
   appointmentDetailsRequestId: 0,
+  appointmentEditing: false,
+  appointmentEditSubmitting: false,
+  appointmentEditConflict: false,
+  appointmentEditOptionsLoading: false,
+  appointmentEditError: "",
+  appointmentEditInitialValues: "",
+  appointmentDetailsNotice: "",
+  preserveAppointmentDetailsOnScheduleRefresh: false,
   scheduleSuccessMessage: "",
   scheduleWeekStart: "",
   scheduleLoadedStartDate: "",
@@ -1198,7 +1206,10 @@ function bindEvents() {
   appointmentForm?.elements?.serviceLocationIndex?.addEventListener("change", syncAppointmentSettingFromLocation);
   appointmentForm?.addEventListener("submit", handleCreateAppointment);
   appointmentCloseButtons.forEach((button) => button.addEventListener("click", closeAppointmentForm));
-  appointmentDetailsCloseButtons.forEach((button) => button.addEventListener("click", closeAppointmentDetails));
+  appointmentDetailsContent?.addEventListener("click", handleAppointmentDetailsAction);
+  appointmentDetailsContent?.addEventListener("change", handleAppointmentEditChange);
+  appointmentDetailsContent?.addEventListener("submit", handleUpdateAppointment);
+  appointmentDetailsCloseButtons.forEach((button) => button.addEventListener("click", requestCloseAppointmentDetails));
   scheduleSubviewButtons.forEach((button) => {
     button.addEventListener("click", () => {
       void switchScheduleSubview(button.dataset.scheduleSubviewButton);
@@ -1520,6 +1531,14 @@ function resetSensitiveState() {
   state.appointmentDetailsLoading = false;
   state.appointmentDetailsError = "";
   state.appointmentDetailsRequestId += 1;
+  state.appointmentEditing = false;
+  state.appointmentEditSubmitting = false;
+  state.appointmentEditConflict = false;
+  state.appointmentEditOptionsLoading = false;
+  state.appointmentEditError = "";
+  state.appointmentEditInitialValues = "";
+  state.appointmentDetailsNotice = "";
+  state.preserveAppointmentDetailsOnScheduleRefresh = false;
   state.scheduleSuccessMessage = "";
   state.scheduleWeekStart = "";
   state.scheduleLoadedStartDate = "";
@@ -3886,6 +3905,10 @@ function canCreateAppointments() {
   return ["admin", "bcba"].includes(state.currentUser?.role || "");
 }
 
+function canEditAppointments() {
+  return ["admin", "bcba"].includes(state.currentUser?.role || "");
+}
+
 function renderScheduleAccessControls() {
   scheduleAddAppointmentButton?.classList.toggle("hidden", !canCreateAppointments());
 }
@@ -3967,6 +3990,14 @@ function clientServiceLocations(clientId) {
     .filter((location) => location && location.isActive !== false);
   }
   return legacyDefaultSettingLocations(client.defaultSetting);
+}
+
+function activeStructuredClientServiceLocations(clientId) {
+  const client = state.clients.find((item) => item.id === clientId);
+  const locations = Array.isArray(client?.profile?.serviceLocations) ? client.profile.serviceLocations : [];
+  return locations
+    .map(normalizeClientServiceLocation)
+    .filter((location) => location?.id && location.isActive !== false);
 }
 
 function legacyDefaultSettingLocations(defaultSetting) {
@@ -4383,6 +4414,255 @@ function appointmentGeographicZone(appointment) {
   ).trim();
 }
 
+function appointmentEditTimeValue(timestamp, timeZone) {
+  if (!timestamp || !timeZone) return "";
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      hour: "2-digit",
+      minute: "2-digit"
+    }).formatToParts(new Date(timestamp)).map((part) => [part.type, part.value]));
+    return `${parts.hour}:${parts.minute}`;
+  } catch {
+    return "";
+  }
+}
+
+function appointmentEditFormValues() {
+  const form = appointmentDetailsContent?.querySelector("#appointment-edit-form");
+  return form ? JSON.stringify([...new FormData(form).entries()]) : "";
+}
+
+function appointmentEditHasChanges() {
+  return Boolean(state.appointmentEditInitialValues
+    && appointmentEditFormValues() !== state.appointmentEditInitialValues);
+}
+
+function appointmentEditLocations(appointment = state.selectedAppointmentDetails) {
+  return activeStructuredClientServiceLocations(appointment?.clientId || "");
+}
+
+function appointmentEditSelectedLocation(form = appointmentDetailsContent?.querySelector("#appointment-edit-form")) {
+  const locationId = String(form?.elements?.locationId?.value || "");
+  return appointmentEditLocations().find((location) => location.id === locationId) || null;
+}
+
+function syncAppointmentEditLocationDetails() {
+  const form = appointmentDetailsContent?.querySelector("#appointment-edit-form");
+  if (!form) return;
+  const location = appointmentEditSelectedLocation(form);
+  const keepingCurrent = form.elements.locationId?.value === "__current__";
+  const appointment = state.selectedAppointmentDetails;
+  const settingType = location?.settingType || (keepingCurrent ? appointment?.settingType : "");
+  const zone = location?.zone || (keepingCurrent ? appointmentGeographicZone(appointment) : "");
+  if (form.elements.settingDisplay) {
+    form.elements.settingDisplay.value = settingType ? scheduleSettingLabel(settingType) : "";
+  }
+  if (form.elements.zoneDisplay) form.elements.zoneDisplay.value = zone || "";
+}
+
+function renderAppointmentEditProviderOptions() {
+  const form = appointmentDetailsContent?.querySelector("#appointment-edit-form");
+  const select = form?.elements?.providerUserId;
+  if (!select) return;
+  const role = appointmentProviderRole(form.elements.serviceCode.value);
+  const selectedId = select.value;
+  const providers = state.appointmentProviders.filter((provider) => provider.role === role);
+  select.innerHTML = [
+    `<option value="">${role ? "Select an active provider" : "Select a service code first"}</option>`,
+    ...providers.map((provider) => (
+      `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)} (${escapeHtml(provider.role.toUpperCase())})</option>`
+    ))
+  ].join("");
+  if (providers.some((provider) => provider.id === selectedId)) select.value = selectedId;
+}
+
+function appointmentEditLocationOptions(appointment) {
+  const locations = appointmentEditLocations(appointment);
+  const currentLocationId = String(appointment?.locationId || "");
+  const currentLocation = locations.find((location) => location.id === currentLocationId);
+  const legacyLabel = appointmentLocationLabel(appointment);
+  return {
+    locations,
+    selectedValue: currentLocation ? currentLocation.id : "__current__",
+    html: [
+      ...(!currentLocation ? [
+        `<option value="__current__">Current legacy location: ${escapeHtml(legacyLabel)} (not selectable for new edits)</option>`
+      ] : []),
+      ...locations.map((location) => (
+        `<option value="${escapeHtml(location.id)}">${appointmentLocationIcon(location)} ${escapeHtml(location.label)}</option>`
+      ))
+    ].join("")
+  };
+}
+
+function renderAppointmentEditForm(appointment) {
+  const locationOptions = appointmentEditLocationOptions(appointment);
+  const providerId = appointmentPrimaryProviderId(appointment);
+  const date = scheduleAppointmentDate(appointment);
+  const startTime = appointmentEditTimeValue(appointment.scheduledStartAt, appointment.timeZone);
+  const endTime = appointmentEditTimeValue(appointment.scheduledEndAt, appointment.timeZone);
+  appointmentDetailsContent.innerHTML = `
+    <form id="appointment-edit-form">
+      <fieldset id="appointment-edit-fields">
+        <div class="form-grid appointment-form-grid">
+          <label>
+            Client
+            <input type="text" value="${escapeHtml(scheduleClientName(appointment.clientId))}" readonly>
+            <input type="hidden" name="clientId" value="${escapeHtml(appointment.clientId)}">
+            <span class="field-help">Client identity cannot be changed.</span>
+          </label>
+          <label>
+            Service code
+            <select name="serviceCode" required>
+              ${["97151", "97153", "97155", "97156"].map((code) => (
+                `<option value="${code}"${appointment.serviceCode === code ? " selected" : ""}>${code}</option>`
+              )).join("")}
+            </select>
+          </label>
+          <label>
+            Primary provider
+            <select name="providerUserId" required data-current-provider-id="${escapeHtml(providerId)}"></select>
+          </label>
+          <label>
+            Date
+            <input type="date" name="date" value="${escapeHtml(date)}" required>
+          </label>
+          <label>
+            Start time
+            <input type="time" name="startTime" value="${escapeHtml(startTime)}" required>
+          </label>
+          <label>
+            End time
+            <input type="time" name="endTime" value="${escapeHtml(endTime)}" required>
+          </label>
+          <label>
+            Time zone
+            <input type="text" value="${escapeHtml(appointment.timeZone || "")}" readonly>
+            <span class="field-help">The appointment's existing time zone is preserved.</span>
+          </label>
+          <label>
+            Service Location
+            <select name="locationId" required>${locationOptions.html}</select>
+            <span class="field-help">${locationOptions.selectedValue === "__current__"
+              ? "The current legacy location is preserved unless you choose an active structured Service Location."
+              : "Only active structured Client Profile locations are available."}</span>
+          </label>
+          <label>
+            Setting
+            <input type="text" name="settingDisplay" readonly>
+            <span class="field-help">Derived from Service Location.</span>
+          </label>
+          <label>
+            Geographic zone
+            <input type="text" name="zoneDisplay" readonly>
+            <span class="field-help">Derived from Service Location.</span>
+          </label>
+          <label class="appointment-note-field">
+            Operational scheduling note
+            <textarea name="notes" rows="3" placeholder="Scheduling logistics only; do not enter clinical narrative.">${escapeHtml(appointment.notes || "")}</textarea>
+          </label>
+        </div>
+      </fieldset>
+      <p id="appointment-edit-message" class="form-message" role="status" aria-live="polite">${escapeHtml(state.appointmentEditError)}</p>
+      <section id="appointment-edit-conflict" class="appointment-edit-conflict${state.appointmentEditConflict ? "" : " hidden"}" role="alert">
+        <strong>This appointment was changed by another user. Reload the latest version before editing.</strong>
+        <div class="form-actions appointment-details-actions">
+          <button type="button" class="secondary-button" data-appointment-edit-action="reload">Reload Latest Appointment</button>
+          <button type="button" class="secondary-button" data-appointment-edit-action="cancel">Cancel Edit</button>
+        </div>
+      </section>
+      <div class="form-actions appointment-details-actions${state.appointmentEditConflict ? " hidden" : ""}" id="appointment-edit-actions">
+        <button type="button" class="secondary-button" data-appointment-edit-action="cancel">Cancel Edit</button>
+        <button type="submit" class="primary-button" id="appointment-edit-submit">Save Appointment</button>
+      </div>
+    </form>
+  `;
+  const form = appointmentDetailsContent.querySelector("#appointment-edit-form");
+  form.elements.locationId.value = locationOptions.selectedValue;
+  form.elements.providerUserId.value = providerId;
+  renderAppointmentEditProviderOptions();
+  form.elements.providerUserId.value = state.appointmentProviders.some((provider) => (
+    provider.id === providerId && provider.role === appointmentProviderRole(appointment.serviceCode)
+  )) ? providerId : "";
+  syncAppointmentEditLocationDetails();
+  state.appointmentEditInitialValues = appointmentEditFormValues();
+  setAppointmentEditBusy(state.appointmentEditSubmitting);
+}
+
+function validateAppointmentEditForm(formData) {
+  const errors = [];
+  for (const [name, label] of [
+    ["serviceCode", "Service code"], ["providerUserId", "Primary provider"], ["date", "Date"],
+    ["startTime", "Start time"], ["endTime", "End time"], ["locationId", "Service Location"]
+  ]) {
+    if (!String(formData.get(name) || "").trim()) errors.push(`${label} is required.`);
+  }
+  const serviceCode = String(formData.get("serviceCode") || "");
+  if (!appointmentProviderRole(serviceCode)) errors.push("Choose a supported service code.");
+  const provider = state.appointmentProviders.find((item) => item.id === String(formData.get("providerUserId") || ""));
+  if (provider && provider.role !== appointmentProviderRole(serviceCode)) {
+    errors.push("Choose a provider who is eligible for the selected service code.");
+  }
+  const locationId = String(formData.get("locationId") || "");
+  if (locationId !== "__current__" && !appointmentEditLocations().some((location) => location.id === locationId)) {
+    errors.push("Choose an active structured Service Location from the Client Profile.");
+  }
+  const date = String(formData.get("date") || "");
+  const startTime = String(formData.get("startTime") || "");
+  const endTime = String(formData.get("endTime") || "");
+  const timeZone = String(state.selectedAppointmentDetails?.timeZone || "");
+  if (startTime && endTime && endTime <= startTime) {
+    errors.push("End time must be after start time; cross-midnight appointments are not supported.");
+  }
+  if (date && startTime && !zonedAppointmentTimestamp(date, startTime, timeZone)) {
+    errors.push("Start time is not valid in the appointment time zone.");
+  }
+  if (date && endTime && !zonedAppointmentTimestamp(date, endTime, timeZone)) {
+    errors.push("End time is not valid in the appointment time zone.");
+  }
+  return [...new Set(errors)];
+}
+
+function appointmentEditPayload(formData) {
+  const appointment = state.selectedAppointmentDetails;
+  const date = String(formData.get("date") || "");
+  const timeZone = String(appointment?.timeZone || "");
+  const locationId = String(formData.get("locationId") || "");
+  return {
+    expectedVersion: Number(appointment?.version),
+    clientId: String(appointment?.clientId || ""),
+    serviceCode: String(formData.get("serviceCode") || ""),
+    providerAssignments: [{
+      userId: String(formData.get("providerUserId") || ""),
+      assignmentRole: "primary"
+    }],
+    scheduledStartAt: zonedAppointmentTimestamp(date, String(formData.get("startTime") || ""), timeZone),
+    scheduledEndAt: zonedAppointmentTimestamp(date, String(formData.get("endTime") || ""), timeZone),
+    timeZone,
+    ...(locationId === "__current__" ? {} : { locationId }),
+    notes: String(formData.get("notes") || "").trim()
+  };
+}
+
+function setAppointmentEditBusy(isBusy) {
+  const form = appointmentDetailsContent?.querySelector("#appointment-edit-form");
+  const fieldset = form?.querySelector("#appointment-edit-fields");
+  const submit = form?.querySelector("#appointment-edit-submit");
+  if (fieldset) fieldset.disabled = isBusy;
+  if (submit) {
+    submit.disabled = isBusy || state.appointmentEditConflict;
+    submit.textContent = isBusy ? "Saving…" : "Save Appointment";
+  }
+}
+
+function appointmentDateIsInVisibleWeek(appointment) {
+  const date = scheduleAppointmentDate(appointment);
+  const { startDate, endDate } = scheduleWeekRangeValues();
+  return Boolean(date && date >= startDate && date <= endDate);
+}
+
 function renderAppointmentDetails() {
   if (!appointmentDetailsContent) return;
   if (state.appointmentDetailsLoading) {
@@ -4403,6 +4683,14 @@ function renderAppointmentDetails() {
     appointmentDetailsContent.innerHTML = '<div class="schedule-state">Appointment details are unavailable.</div>';
     return;
   }
+  if (state.appointmentEditing) {
+    if (state.appointmentEditOptionsLoading) {
+      appointmentDetailsContent.innerHTML = '<div class="schedule-state">Loading appointment edit options…</div>';
+      return;
+    }
+    renderAppointmentEditForm(appointment);
+    return;
+  }
   const timeZone = String(appointment.timeZone || "");
   const date = appointmentDetailDateTime(appointment.scheduledStartAt, timeZone, {
     weekday: "long", year: "numeric", month: "long", day: "numeric"
@@ -4421,6 +4709,7 @@ function renderAppointmentDetails() {
   const zone = appointmentGeographicZone(appointment) || "Not assigned";
   const note = String(appointment.notes || "").trim();
   appointmentDetailsContent.innerHTML = `
+    ${state.appointmentDetailsNotice ? `<p class="form-message appointment-details-notice" role="status">${escapeHtml(state.appointmentDetailsNotice)}</p>` : ""}
     <div class="appointment-details-summary ${escapeHtml(scheduleAppointmentColorClass(appointment.serviceCode))}">
       <span class="schedule-record-label">Scheduled appointment</span>
       <strong class="appointment-summary-title">${escapeHtml(appointment.serviceCode || "Unavailable")} <span aria-hidden="true">•</span> ${escapeHtml(status)}</strong>
@@ -4471,7 +4760,146 @@ function renderAppointmentDetails() {
         <p>${escapeHtml(note)}</p>
       </section>
     ` : ""}
+    ${canEditAppointments() ? `
+      <div class="form-actions appointment-details-actions">
+        <button type="button" class="primary-button" data-appointment-edit-action="edit">Edit Appointment</button>
+      </div>
+    ` : ""}
   `;
+}
+
+async function beginAppointmentEdit() {
+  if (!canEditAppointments() || !state.selectedAppointmentDetails || state.appointmentEditSubmitting) return;
+  state.appointmentEditing = true;
+  state.appointmentEditConflict = false;
+  state.appointmentEditError = "";
+  state.appointmentDetailsNotice = "";
+  state.appointmentEditOptionsLoading = true;
+  renderAppointmentDetails();
+  try {
+    await ensureAppointmentOptions({ force: true });
+  } catch (error) {
+    state.appointmentEditError = error.message || "Unable to load appointment edit options.";
+  } finally {
+    state.appointmentEditOptionsLoading = false;
+    renderAppointmentDetails();
+  }
+}
+
+async function reloadLatestAppointment({ confirmDiscard = true } = {}) {
+  if (!state.selectedAppointmentId) return;
+  if (confirmDiscard && appointmentEditHasChanges()
+    && !window.confirm("Discard your unsaved changes and reload the latest appointment?")) return;
+  const appointmentId = state.selectedAppointmentId;
+  const requestId = state.appointmentDetailsRequestId + 1;
+  state.appointmentDetailsRequestId = requestId;
+  state.appointmentEditing = false;
+  state.appointmentEditConflict = false;
+  state.appointmentEditError = "";
+  state.appointmentEditInitialValues = "";
+  state.appointmentDetailsNotice = "";
+  state.appointmentDetailsLoading = true;
+  state.appointmentDetailsError = "";
+  renderAppointmentDetails();
+  try {
+    const appointment = await getAppointment(appointmentId);
+    if (requestId !== state.appointmentDetailsRequestId || state.selectedAppointmentId !== appointmentId) return;
+    state.selectedAppointmentDetails = appointment;
+  } catch (error) {
+    if (requestId !== state.appointmentDetailsRequestId || state.selectedAppointmentId !== appointmentId) return;
+    state.selectedAppointmentDetails = null;
+    state.appointmentDetailsError = error.message || "Unable to reload this appointment.";
+  } finally {
+    if (requestId !== state.appointmentDetailsRequestId || state.selectedAppointmentId !== appointmentId) return;
+    state.appointmentDetailsLoading = false;
+    renderAppointmentDetails();
+  }
+}
+
+async function cancelAppointmentEdit() {
+  if (!state.appointmentEditing || state.appointmentEditSubmitting) return;
+  if (appointmentEditHasChanges() && !window.confirm("Discard your unsaved appointment changes?")) return;
+  if (state.appointmentEditConflict) {
+    await reloadLatestAppointment({ confirmDiscard: false });
+    return;
+  }
+  state.appointmentEditing = false;
+  state.appointmentEditConflict = false;
+  state.appointmentEditError = "";
+  state.appointmentEditInitialValues = "";
+  renderAppointmentDetails();
+}
+
+async function handleUpdateAppointment(event) {
+  if (event.target?.id !== "appointment-edit-form") return;
+  event.preventDefault();
+  if (state.appointmentEditSubmitting || state.appointmentEditConflict || !state.selectedAppointmentDetails) return;
+  const formData = new FormData(event.target);
+  const errors = validateAppointmentEditForm(formData);
+  const message = appointmentDetailsContent.querySelector("#appointment-edit-message");
+  if (errors.length) {
+    if (message) message.textContent = errors.join(" ");
+    return;
+  }
+  state.appointmentEditSubmitting = true;
+  if (message) message.textContent = "Saving appointment…";
+  setAppointmentEditBusy(true);
+  try {
+    const appointment = await updateAppointment(
+      state.selectedAppointmentDetails.id,
+      appointmentEditPayload(formData)
+    );
+    const movedOutsideWeek = !appointmentDateIsInVisibleWeek(appointment);
+    state.selectedAppointmentDetails = appointment;
+    state.appointmentEditing = false;
+    state.appointmentEditConflict = false;
+    state.appointmentEditError = "";
+    state.appointmentEditInitialValues = "";
+    const successMessage = movedOutsideWeek
+      ? `Appointment updated successfully and moved to ${formatDate(scheduleAppointmentDate(appointment))}, outside the visible week.`
+      : "Appointment updated successfully.";
+    state.scheduleSuccessMessage = successMessage;
+    state.appointmentDetailsNotice = successMessage;
+    state.preserveAppointmentDetailsOnScheduleRefresh = true;
+    await ensureScheduleWeekLoaded({ force: true });
+    renderAppointmentDetails();
+  } catch (error) {
+    if (error.status === 409) {
+      state.appointmentEditConflict = true;
+      const conflict = appointmentDetailsContent.querySelector("#appointment-edit-conflict");
+      conflict?.classList.remove("hidden");
+      const actions = appointmentDetailsContent.querySelector("#appointment-edit-actions");
+      actions?.classList.add("hidden");
+      if (message) message.textContent = "";
+    } else if (message) {
+      message.textContent = error.message || "Unable to update the appointment.";
+    }
+  } finally {
+    state.appointmentEditSubmitting = false;
+    state.preserveAppointmentDetailsOnScheduleRefresh = false;
+    setAppointmentEditBusy(false);
+  }
+}
+
+function handleAppointmentDetailsAction(event) {
+  const button = event.target.closest("[data-appointment-edit-action]");
+  if (!button) return;
+  const action = button.dataset.appointmentEditAction;
+  if (action === "edit") void beginAppointmentEdit();
+  if (action === "cancel") void cancelAppointmentEdit();
+  if (action === "reload") void reloadLatestAppointment();
+}
+
+function handleAppointmentEditChange(event) {
+  if (event.target?.name === "serviceCode") renderAppointmentEditProviderOptions();
+  if (event.target?.name === "locationId") syncAppointmentEditLocationDetails();
+}
+
+function requestCloseAppointmentDetails() {
+  if (state.appointmentEditSubmitting) return;
+  if (state.appointmentEditing && appointmentEditHasChanges()
+    && !window.confirm("Discard your unsaved appointment changes and close?")) return;
+  closeAppointmentDetails();
 }
 
 async function openAppointmentDetails(appointmentId) {
@@ -4482,6 +4910,13 @@ async function openAppointmentDetails(appointmentId) {
   state.selectedAppointmentDetails = null;
   state.appointmentDetailsLoading = true;
   state.appointmentDetailsError = "";
+  state.appointmentDetailsNotice = "";
+  state.appointmentEditing = false;
+  state.appointmentEditSubmitting = false;
+  state.appointmentEditConflict = false;
+  state.appointmentEditOptionsLoading = false;
+  state.appointmentEditError = "";
+  state.appointmentEditInitialValues = "";
   appointmentDetailsModal.classList.remove("hidden");
   appointmentDetailsModal.setAttribute("aria-hidden", "false");
   renderAppointmentDetails();
@@ -4506,6 +4941,13 @@ function closeAppointmentDetails() {
   state.selectedAppointmentDetails = null;
   state.appointmentDetailsLoading = false;
   state.appointmentDetailsError = "";
+  state.appointmentEditing = false;
+  state.appointmentEditSubmitting = false;
+  state.appointmentEditConflict = false;
+  state.appointmentEditOptionsLoading = false;
+  state.appointmentEditError = "";
+  state.appointmentEditInitialValues = "";
+  state.appointmentDetailsNotice = "";
   appointmentDetailsModal?.classList.add("hidden");
   appointmentDetailsModal?.setAttribute("aria-hidden", "true");
   if (appointmentDetailsContent) appointmentDetailsContent.innerHTML = "";
@@ -4518,7 +4960,7 @@ function handleScheduleAppointmentSelection(event) {
 }
 
 function handleAppointmentDetailsKeydown(event) {
-  if (event.key === "Escape" && !appointmentDetailsModal?.classList.contains("hidden")) closeAppointmentDetails();
+  if (event.key === "Escape" && !appointmentDetailsModal?.classList.contains("hidden")) requestCloseAppointmentDetails();
 }
 
 function handleScheduleFilterChange() {
@@ -4526,7 +4968,8 @@ function handleScheduleFilterChange() {
 }
 
 function closeUnavailableAppointmentDetails(visibleAppointments) {
-  if (state.selectedAppointmentId
+  if (!state.preserveAppointmentDetailsOnScheduleRefresh
+    && state.selectedAppointmentId
     && !visibleAppointments.some((appointment) => appointment.id === state.selectedAppointmentId)) {
     closeAppointmentDetails();
   }
