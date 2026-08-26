@@ -965,6 +965,31 @@ button:focus-visible {
   color: #78350f;
 }
 
+.schedule-appointment-cancelled {
+  border-style: dashed;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 255, 255, 0.58) 0,
+    rgba(255, 255, 255, 0.58) 8px,
+    rgba(100, 116, 139, 0.12) 8px,
+    rgba(100, 116, 139, 0.12) 16px
+  );
+  color: #475569;
+}
+
+.schedule-cancelled-label {
+  justify-self: start;
+  padding: 2px 7px;
+  border: 1px solid #94a3b8;
+  border-radius: 999px;
+  color: #334155 !important;
+  background: rgba(255, 255, 255, 0.82);
+  font-size: 0.72rem !important;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
 .schedule-day-empty {
   color: var(--muted);
   font-size: 0.86rem;
@@ -2056,6 +2081,70 @@ button:focus-visible {
 
 .appointment-edit-conflict .appointment-details-actions {
   justify-content: flex-start;
+}
+
+.appointment-details-cancelled {
+  border-style: dashed;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 255, 255, 0.72) 0,
+    rgba(255, 255, 255, 0.72) 9px,
+    rgba(100, 116, 139, 0.1) 9px,
+    rgba(100, 116, 139, 0.1) 18px
+  );
+  color: #475569;
+}
+
+.appointment-cancel-heading,
+.appointment-cancel-summary {
+  margin-bottom: 16px;
+}
+
+.appointment-cancel-heading {
+  padding: 12px;
+  border: 1px solid #f2b8c0;
+  border-radius: 8px;
+  background: #fff7f8;
+}
+
+.appointment-cancel-heading h4,
+.appointment-cancel-heading p,
+.appointment-cancel-summary h4 {
+  margin: 0;
+}
+
+.appointment-cancel-heading p {
+  margin-top: 6px;
+}
+
+.appointment-cancel-summary h4 {
+  margin-bottom: 7px;
+  color: var(--navy);
+}
+
+.appointment-cancel-grid {
+  align-items: start;
+}
+
+.appointment-cancel-confirmation {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid #f2b8c0;
+  border-radius: 8px;
+  background: #fff7f8;
+}
+
+.appointment-cancel-confirmation input {
+  width: auto;
+  margin-top: 3px;
+}
+
+.appointment-cancellation-note {
+  grid-column: 1 / -1;
 }
 
 .program-graph-modal-panel .chart-panel {

@@ -381,7 +381,7 @@ test("details close without mutation and Escape is supported", () => {
   assert.match(htmlSource, /class="modal-backdrop" data-close-appointment-details/);
   assert.match(appSource, /appointmentDetailsCloseButtons\.forEach[\s\S]*closeAppointmentDetails/);
   for (const source of [closer, keydown, functionSource("openAppointmentDetails", { async: true })]) {
-    assert.doesNotMatch(source, /createAppointment|fetch\([^)]*,\s*\{|method:\s*"(?:POST|PUT|PATCH|DELETE)"|cancel|confirm|reschedule/i);
+    assert.doesNotMatch(source, /createAppointment|updateAppointment|cancelAppointment\(|fetch\([^)]*,\s*\{|method:\s*"(?:POST|PUT|PATCH|DELETE)"|reschedule/i);
   }
 });
 
@@ -550,6 +550,153 @@ test("appointment editing remains separate from completed clinical-session recor
 test("appointment edit and conflict controls remain responsive", () => {
   assert.match(cssSource, /\.appointment-edit-conflict\s*\{/);
   assert.match(cssSource, /@media \(max-width: 780px\)[\s\S]*\.appointment-details-actions,[\s\S]*width:\s*100%/);
+});
+
+test("Cancel Appointment is available only to admin and BCBA and never repeats after cancellation", () => {
+  const context = { state: { currentUser: null } };
+  vm.runInNewContext(functionSource("canCancelAppointments"), context);
+  for (const role of ["admin", "bcba"]) {
+    context.state.currentUser = { role };
+    assert.equal(context.canCancelAppointments(), true);
+  }
+  for (const role of ["rbt", "read-only"]) {
+    context.state.currentUser = { role };
+    assert.equal(context.canCancelAppointments(), false);
+  }
+  const renderer = functionSource("renderAppointmentDetails");
+  assert.match(renderer, /canCancelAppointment\(appointment\)/);
+  assert.match(renderer, /data-appointment-edit-action="cancel-appointment">Cancel Appointment/);
+  assert.match(renderer, /!isCancelled/);
+  assert.match(renderer, /appointment\.status === "cancelled"/);
+  const beginEdit = functionSource("beginAppointmentEdit", { async: true });
+  assert.match(beginEdit, /selectedAppointmentDetails\.status === "cancelled"/);
+  const beginCancel = functionSource("beginAppointmentCancellation");
+  assert.match(beginCancel, /!canCancelAppointment\(appointment\)/);
+  const lifecycleContext = { state: { currentUser: { role: "admin" }, selectedAppointmentDetails: null } };
+  vm.runInNewContext([
+    functionSource("canCancelAppointments"),
+    functionSource("canCancelAppointment")
+  ].join("\n"), lifecycleContext);
+  for (const status of ["scheduled", "confirmed"]) {
+    assert.equal(lifecycleContext.canCancelAppointment({ status }), true);
+  }
+  for (const status of ["completed", "no_show", "cancelled"]) {
+    assert.equal(lifecycleContext.canCancelAppointment({ status }), false);
+  }
+});
+
+test("cancellation state shows the required appointment summary and explicit confirmation", () => {
+  const renderer = functionSource("renderAppointmentCancellationForm");
+  for (const label of [
+    "Client", "Provider", "Service code", "Date", "Start time", "End time", "Service location", "Current status"
+  ]) assert.match(renderer, new RegExp(label));
+  assert.match(renderer, /name="category" required/);
+  assert.match(renderer, /value="client">Client/);
+  assert.match(renderer, /value="provider">Provider/);
+  assert.match(renderer, /value="agency">Agency/);
+  assert.match(renderer, /name="reason" required disabled/);
+  assert.match(renderer, /name="note"[^>]*maxlength="360"/);
+  assert.match(renderer, /Short operational note only; do not enter clinical narrative/);
+  assert.match(renderer, /name="confirmed" value="yes" required/);
+  assert.match(renderer, /The appointment will remain in scheduling history and will not be deleted/);
+  assert.doesNotMatch(renderer, /soap|treatment plan|planChangeLog|billing|sessionId/i);
+});
+
+test("cancellation reasons are structured and filtered by category", () => {
+  for (const [category, reasons] of Object.entries({
+    client: ["client_cancelled", "illness", "vacation", "family_emergency", "no_show", "other"],
+    provider: ["provider_cancelled", "provider_illness", "provider_pto", "provider_emergency", "other"],
+    agency: ["agency_cancelled", "authorization_issue", "weather", "staffing_issue", "scheduling_error", "other"]
+  })) {
+    assert.match(appSource, new RegExp(`${category}:[\\s\\S]*${reasons.join("[\\s\\S]*")}`));
+  }
+  const options = functionSource("renderAppointmentCancellationReasonOptions");
+  assert.match(options, /appointmentCancellationReasons\[category\] \|\| \[\]/);
+  assert.match(options, /select\.disabled = !category/);
+  assert.match(functionSource("handleAppointmentEditChange"), /name === "category"\) renderAppointmentCancellationReasonOptions\(\)/);
+  const validation = functionSource("validateAppointmentCancellationForm");
+  assert.match(validation, /Cancellation category is required/);
+  assert.match(validation, /Cancellation reason is required/);
+  assert.match(validation, /reason for the selected category/);
+  assert.match(validation, /Confirm that this appointment should be cancelled/);
+});
+
+test("cancellation submits only the current version and structured operational cancellation values", () => {
+  const payload = functionSource("appointmentCancellationPayload");
+  assert.match(payload, /expectedVersion: Number\(state\.selectedAppointmentDetails\?\.version\)/);
+  for (const field of ["category", "reason", "note"]) assert.match(payload, new RegExp(`${field}:`));
+  for (const forbidden of ["sessionId", "soap", "planChangeLog", "treatmentPlan", "billing", "locationSnapshot", "providerAssignments"]) {
+    assert.doesNotMatch(payload, new RegExp(forbidden, "i"));
+  }
+  assert.match(apiSource, /function cancelAppointment\(appointmentId, cancellation\)[\s\S]*\/cancel`[\s\S]*method: "POST"/);
+});
+
+test("cancellation prevents duplicate submission and refreshes details and the weekly calendar", () => {
+  const handler = functionSource("handleCancelAppointment", { async: true });
+  assert.match(handler, /if \(state\.appointmentCancelSubmitting/);
+  assert.match(handler, /state\.appointmentCancelSubmitting = true/);
+  assert.match(handler, /Cancelling appointment/);
+  assert.match(handler, /await cancelAppointment\(appointmentId, appointmentCancellationPayload\(formData\)\)/);
+  assert.match(handler, /await ensureScheduleWeekLoaded\(\{ force: true \}\)/);
+  assert.match(handler, /await getAppointment\(appointmentId\)/);
+  assert.match(handler, /Appointment cancelled successfully\. It remains in scheduling history\./);
+  assert.match(handler, /preserveAppointmentDetailsOnScheduleRefresh = true/);
+  const busy = functionSource("setAppointmentCancelBusy");
+  assert.match(busy, /submit\.disabled = isBusy \|\| state\.appointmentCancelConflict/);
+  assert.match(busy, /Cancelling…/);
+});
+
+test("HTTP 409 blocks stale cancellation and requires reload or close without auto-merge", () => {
+  const handler = functionSource("handleCancelAppointment", { async: true });
+  assert.match(handler, /error\.status === 409/);
+  assert.match(handler, /appointmentCancelConflict = true/);
+  assert.match(handler, /appointment-cancel-conflict/);
+  assert.doesNotMatch(handler, /auto.?merge/i);
+  const renderer = functionSource("renderAppointmentCancellationForm");
+  assert.match(renderer, /This appointment was changed by another user\. Reload the latest version before cancelling\./);
+  assert.match(renderer, /Reload Latest Appointment/);
+  assert.match(renderer, /Close Cancellation/);
+  assert.match(functionSource("closeAppointmentCancellation", { async: true }), /reloadLatestAppointment\(\{ confirmDiscard: false \}\)/);
+});
+
+test("cancelled appointments remain visible with CPT identity and explicit subdued status styling", () => {
+  const renderer = functionSource("renderSchedule");
+  assert.match(renderer, /scheduleAppointmentColorClass\(appointment\.serviceCode\)/);
+  assert.match(renderer, /schedule-appointment-cancelled/);
+  assert.match(renderer, /Cancelled appointment/);
+  assert.match(renderer, /schedule-cancelled-label/);
+  assert.match(renderer, /appointment\.status === "cancelled"/);
+  assert.match(cssSource, /\.schedule-appointment-cancelled\s*\{[^}]*border-style:\s*dashed[^}]*repeating-linear-gradient/s);
+  assert.match(cssSource, /\.schedule-cancelled-label\s*\{/);
+});
+
+test("cancelled appointment details show operational history with a readable actor and legacy category fallback", () => {
+  const renderer = functionSource("renderAppointmentDetails");
+  for (const label of [
+    "Cancellation category", "Cancellation reason", "Cancellation note", "Cancelled date/time", "Cancelled by"
+  ]) assert.match(renderer, new RegExp(label));
+  assert.match(renderer, /appointment\.cancellationActor\?\.name/);
+  assert.doesNotMatch(renderer, /cancellation\.cancelledBy/);
+  assert.match(renderer, /appointment-details-cancelled/);
+  const category = functionSource("appointmentCancellationCategory");
+  assert.match(category, /cancellation\?\.category/);
+  assert.match(category, /client_cancelled/);
+  assert.match(category, /provider_cancelled/);
+  assert.match(category, /agency_cancelled/);
+  assert.match(category, /return ""/);
+});
+
+test("cancellation UI remains isolated from clinical records", () => {
+  const sources = [
+    functionSource("appointmentCancellationPayload"),
+    functionSource("handleCancelAppointment", { async: true }),
+    functionSource("beginAppointmentCancellation")
+  ];
+  for (const source of sources) {
+    for (const forbidden of ["sessionId", "soap", "planChangeLog", "treatmentPlan", "graph", "funder", "billing", "noteHistory"]) {
+      assert.doesNotMatch(source, new RegExp(forbidden, "i"));
+    }
+  }
 });
 
 test("creation payload and UI do not touch clinical records", () => {

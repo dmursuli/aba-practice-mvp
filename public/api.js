@@ -131,6 +131,15 @@ export async function updateAppointment(appointmentId, appointment) {
   return parseResponse(response);
 }
 
+export async function cancelAppointment(appointmentId, cancellation) {
+  const response = await fetch(`/api/appointments/${encodeURIComponent(appointmentId)}/cancel`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(cancellation)
+  });
+  return parseResponse(response);
+}
+
 export async function getHistoricalImportBatches({ clientId = "" } = {}) {
   const url = new URL("/api/historical-imports", window.location.origin);
   if (clientId) url.searchParams.set("clientId", clientId);

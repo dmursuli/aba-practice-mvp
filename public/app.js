@@ -1,4 +1,4 @@
-import { createAppointment, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { cancelAppointment, createAppointment, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -33,6 +33,11 @@ const state = {
   appointmentEditOptionsLoading: false,
   appointmentEditError: "",
   appointmentEditInitialValues: "",
+  appointmentCancelling: false,
+  appointmentCancelSubmitting: false,
+  appointmentCancelConflict: false,
+  appointmentCancelError: "",
+  appointmentCancelInitialValues: "",
   appointmentDetailsNotice: "",
   preserveAppointmentDetailsOnScheduleRefresh: false,
   scheduleSuccessMessage: "",
@@ -118,6 +123,32 @@ const roleViews = {
   bcba: ["clients", "session", "schedule", "intake", "workflow", "plan", "parent", "graphs", "import", "report", "soap", "billing", "health", "audit"],
   rbt: ["session", "graphs", "soap"],
   "read-only": ["graphs", "report", "soap"]
+};
+
+const appointmentCancellationReasons = {
+  client: [
+    ["client_cancelled", "Client cancelled"],
+    ["illness", "Illness"],
+    ["vacation", "Vacation"],
+    ["family_emergency", "Family emergency"],
+    ["no_show", "No-show"],
+    ["other", "Other"]
+  ],
+  provider: [
+    ["provider_cancelled", "Provider cancelled"],
+    ["provider_illness", "Provider illness"],
+    ["provider_pto", "Provider PTO"],
+    ["provider_emergency", "Provider emergency"],
+    ["other", "Other"]
+  ],
+  agency: [
+    ["agency_cancelled", "Agency cancelled"],
+    ["authorization_issue", "Authorization issue"],
+    ["weather", "Weather"],
+    ["staffing_issue", "Staffing issue"],
+    ["scheduling_error", "Scheduling error"],
+    ["other", "Other"]
+  ]
 };
 
 const domainOptions = [
@@ -1209,6 +1240,7 @@ function bindEvents() {
   appointmentDetailsContent?.addEventListener("click", handleAppointmentDetailsAction);
   appointmentDetailsContent?.addEventListener("change", handleAppointmentEditChange);
   appointmentDetailsContent?.addEventListener("submit", handleUpdateAppointment);
+  appointmentDetailsContent?.addEventListener("submit", handleCancelAppointment);
   appointmentDetailsCloseButtons.forEach((button) => button.addEventListener("click", requestCloseAppointmentDetails));
   scheduleSubviewButtons.forEach((button) => {
     button.addEventListener("click", () => {
@@ -1537,6 +1569,7 @@ function resetSensitiveState() {
   state.appointmentEditOptionsLoading = false;
   state.appointmentEditError = "";
   state.appointmentEditInitialValues = "";
+  resetAppointmentCancellationState();
   state.appointmentDetailsNotice = "";
   state.preserveAppointmentDetailsOnScheduleRefresh = false;
   state.scheduleSuccessMessage = "";
@@ -3909,6 +3942,14 @@ function canEditAppointments() {
   return ["admin", "bcba"].includes(state.currentUser?.role || "");
 }
 
+function canCancelAppointments() {
+  return ["admin", "bcba"].includes(state.currentUser?.role || "");
+}
+
+function canCancelAppointment(appointment = state.selectedAppointmentDetails) {
+  return canCancelAppointments() && ["scheduled", "confirmed"].includes(appointment?.status || "");
+}
+
 function renderScheduleAccessControls() {
   scheduleAddAppointmentButton?.classList.toggle("hidden", !canCreateAppointments());
 }
@@ -4361,6 +4402,24 @@ function scheduleStatusLabel(status) {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : "Scheduled";
 }
 
+function appointmentCancellationCategory(appointment) {
+  const storedCategory = String(appointment?.cancellation?.category || "").trim();
+  if (appointmentCancellationReasons[storedCategory]) return storedCategory;
+  const reason = String(appointment?.cancellation?.reason || "").trim();
+  if (["client_cancelled", "illness", "vacation", "family_emergency", "no_show"].includes(reason)) return "client";
+  if (["provider_cancelled", "provider_illness", "provider_pto", "provider_emergency"].includes(reason)) return "provider";
+  if (["agency_cancelled", "authorization_issue", "weather", "staffing_issue", "scheduling_error"].includes(reason)) return "agency";
+  return "";
+}
+
+function appointmentCancellationReasonLabel(appointment) {
+  const reason = String(appointment?.cancellation?.reason || "").trim();
+  const category = appointmentCancellationCategory(appointment);
+  const option = appointmentCancellationReasons[category]?.find(([value]) => value === reason)
+    || Object.values(appointmentCancellationReasons).flat().find(([value]) => value === reason);
+  return option?.[1] || (reason ? scheduleStatusLabel(reason) : "Unavailable");
+}
+
 function scheduleAppointmentColorClass(serviceCode) {
   return ["97151", "97153", "97155", "97156"].includes(serviceCode) ? `schedule-cpt-${serviceCode}` : "";
 }
@@ -4663,6 +4722,217 @@ function appointmentDateIsInVisibleWeek(appointment) {
   return Boolean(date && date >= startDate && date <= endDate);
 }
 
+function appointmentCancellationFormValues() {
+  const form = appointmentDetailsContent?.querySelector("#appointment-cancel-form");
+  return form ? JSON.stringify([...new FormData(form).entries()]) : "";
+}
+
+function appointmentCancellationHasChanges() {
+  return Boolean(state.appointmentCancelInitialValues
+    && appointmentCancellationFormValues() !== state.appointmentCancelInitialValues);
+}
+
+function renderAppointmentCancellationReasonOptions() {
+  const form = appointmentDetailsContent?.querySelector("#appointment-cancel-form");
+  const category = String(form?.elements?.category?.value || "");
+  const select = form?.elements?.reason;
+  if (!select) return;
+  const selectedReason = select.value;
+  const reasons = appointmentCancellationReasons[category] || [];
+  select.innerHTML = [
+    `<option value="">${category ? "Select a cancellation reason" : "Select a category first"}</option>`,
+    ...reasons.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`)
+  ].join("");
+  select.disabled = !category || state.appointmentCancelSubmitting || state.appointmentCancelConflict;
+  if (reasons.some(([value]) => value === selectedReason)) select.value = selectedReason;
+}
+
+function renderAppointmentCancellationForm(appointment) {
+  const timeZone = String(appointment.timeZone || "");
+  const date = appointmentDetailDateTime(appointment.scheduledStartAt, timeZone, {
+    weekday: "long", year: "numeric", month: "long", day: "numeric"
+  });
+  const startTime = appointmentDetailDateTime(appointment.scheduledStartAt, timeZone, { hour: "numeric", minute: "2-digit" });
+  const endTime = appointmentDetailDateTime(appointment.scheduledEndAt, timeZone, { hour: "numeric", minute: "2-digit" });
+  appointmentDetailsContent.innerHTML = `
+    <form id="appointment-cancel-form">
+      <div class="appointment-cancel-heading">
+        <h4>Cancel appointment</h4>
+        <p>This is an operational cancellation. It will not delete the appointment or create or change a clinical record.</p>
+      </div>
+      <section class="appointment-cancel-summary" aria-labelledby="appointment-cancel-summary-title">
+        <h4 id="appointment-cancel-summary-title">Appointment being cancelled</h4>
+        <dl class="appointment-details-grid">
+          <div><dt>Client</dt><dd>${escapeHtml(scheduleClientName(appointment.clientId))}</dd></div>
+          <div><dt>Provider</dt><dd>${escapeHtml(scheduleProviderName(appointmentPrimaryProviderId(appointment)))}</dd></div>
+          <div><dt>Service code</dt><dd>${escapeHtml(appointment.serviceCode || "Unavailable")}</dd></div>
+          <div><dt>Current status</dt><dd>${escapeHtml(scheduleStatusLabel(appointment.status))}</dd></div>
+          <div><dt>Date</dt><dd>${escapeHtml(date)}</dd></div>
+          <div><dt>Start time</dt><dd>${escapeHtml(startTime)}</dd></div>
+          <div><dt>End time</dt><dd>${escapeHtml(endTime)}</dd></div>
+          <div><dt>Service location</dt><dd>${escapeHtml(appointmentLocationLabel(appointment))}</dd></div>
+        </dl>
+      </section>
+      <fieldset id="appointment-cancel-fields">
+        <div class="form-grid appointment-cancel-grid">
+          <label>
+            Cancellation category
+            <select name="category" required>
+              <option value="">Select a category</option>
+              <option value="client">Client</option>
+              <option value="provider">Provider</option>
+              <option value="agency">Agency</option>
+            </select>
+          </label>
+          <label>
+            Cancellation reason
+            <select name="reason" required disabled>
+              <option value="">Select a category first</option>
+            </select>
+          </label>
+          <label class="appointment-note-field">
+            Cancellation note <span class="muted">(optional)</span>
+            <textarea name="note" rows="3" maxlength="360" placeholder="Short operational note only; do not enter clinical narrative."></textarea>
+          </label>
+          <label class="appointment-cancel-confirmation">
+            <input type="checkbox" name="confirmed" value="yes" required>
+            <span>Cancel this appointment? The appointment will remain in scheduling history and will not be deleted.</span>
+          </label>
+        </div>
+      </fieldset>
+      <p id="appointment-cancel-message" class="form-message" role="status" aria-live="polite">${escapeHtml(state.appointmentCancelError)}</p>
+      <section id="appointment-cancel-conflict" class="appointment-edit-conflict${state.appointmentCancelConflict ? "" : " hidden"}" role="alert">
+        <strong>This appointment was changed by another user. Reload the latest version before cancelling.</strong>
+        <div class="form-actions appointment-details-actions">
+          <button type="button" class="secondary-button" data-appointment-edit-action="reload-cancellation">Reload Latest Appointment</button>
+          <button type="button" class="secondary-button" data-appointment-edit-action="close-cancellation">Close Cancellation</button>
+        </div>
+      </section>
+      <div class="form-actions appointment-details-actions${state.appointmentCancelConflict ? " hidden" : ""}" id="appointment-cancel-actions">
+        <button type="button" class="secondary-button" data-appointment-edit-action="close-cancellation">Keep Appointment</button>
+        <button type="submit" class="danger-button" id="appointment-cancel-submit">Cancel Appointment</button>
+      </div>
+    </form>
+  `;
+  renderAppointmentCancellationReasonOptions();
+  state.appointmentCancelInitialValues = appointmentCancellationFormValues();
+  setAppointmentCancelBusy(state.appointmentCancelSubmitting);
+  appointmentDetailsContent.querySelector("#appointment-cancel-form [name=category]")?.focus();
+}
+
+function validateAppointmentCancellationForm(formData) {
+  const errors = [];
+  const category = String(formData.get("category") || "");
+  const reason = String(formData.get("reason") || "");
+  const note = String(formData.get("note") || "").trim();
+  if (!appointmentCancellationReasons[category]) errors.push("Cancellation category is required.");
+  if (!reason) errors.push("Cancellation reason is required.");
+  else if (!appointmentCancellationReasons[category]?.some(([value]) => value === reason)) {
+    errors.push("Choose a cancellation reason for the selected category.");
+  }
+  if (note.length > 360) errors.push("Cancellation note must be 360 characters or fewer.");
+  if (formData.get("confirmed") !== "yes") errors.push("Confirm that this appointment should be cancelled.");
+  return [...new Set(errors)];
+}
+
+function appointmentCancellationPayload(formData) {
+  return {
+    expectedVersion: Number(state.selectedAppointmentDetails?.version),
+    category: String(formData.get("category") || ""),
+    reason: String(formData.get("reason") || ""),
+    note: String(formData.get("note") || "").trim()
+  };
+}
+
+function setAppointmentCancelBusy(isBusy) {
+  const form = appointmentDetailsContent?.querySelector("#appointment-cancel-form");
+  const fieldset = form?.querySelector("#appointment-cancel-fields");
+  const submit = form?.querySelector("#appointment-cancel-submit");
+  if (fieldset) fieldset.disabled = isBusy || state.appointmentCancelConflict;
+  if (submit) {
+    submit.disabled = isBusy || state.appointmentCancelConflict;
+    submit.textContent = isBusy ? "Cancelling…" : "Cancel Appointment";
+  }
+}
+
+function resetAppointmentCancellationState() {
+  state.appointmentCancelling = false;
+  state.appointmentCancelSubmitting = false;
+  state.appointmentCancelConflict = false;
+  state.appointmentCancelError = "";
+  state.appointmentCancelInitialValues = "";
+}
+
+function beginAppointmentCancellation() {
+  const appointment = state.selectedAppointmentDetails;
+  if (!canCancelAppointment(appointment) || !appointment
+    || state.appointmentEditing || state.appointmentCancelSubmitting) return;
+  state.appointmentCancelling = true;
+  state.appointmentCancelConflict = false;
+  state.appointmentCancelError = "";
+  state.appointmentCancelInitialValues = "";
+  state.appointmentDetailsNotice = "";
+  renderAppointmentDetails();
+}
+
+async function closeAppointmentCancellation() {
+  if (!state.appointmentCancelling || state.appointmentCancelSubmitting) return;
+  if (state.appointmentCancelConflict) {
+    await reloadLatestAppointment({ confirmDiscard: false });
+    return;
+  }
+  if (appointmentCancellationHasChanges()
+    && !window.confirm("Discard this cancellation without cancelling the appointment?")) return;
+  resetAppointmentCancellationState();
+  renderAppointmentDetails();
+}
+
+async function handleCancelAppointment(event) {
+  if (event.target?.id !== "appointment-cancel-form") return;
+  event.preventDefault();
+  if (state.appointmentCancelSubmitting || state.appointmentCancelConflict || !state.selectedAppointmentDetails) return;
+  const formData = new FormData(event.target);
+  const errors = validateAppointmentCancellationForm(formData);
+  const message = appointmentDetailsContent.querySelector("#appointment-cancel-message");
+  if (errors.length) {
+    if (message) message.textContent = errors.join(" ");
+    return;
+  }
+  state.appointmentCancelSubmitting = true;
+  if (message) message.textContent = "Cancelling appointment…";
+  setAppointmentCancelBusy(true);
+  try {
+    const appointmentId = state.selectedAppointmentDetails.id;
+    const cancelled = await cancelAppointment(appointmentId, appointmentCancellationPayload(formData));
+    resetAppointmentCancellationState();
+    state.selectedAppointmentDetails = cancelled;
+    const successMessage = "Appointment cancelled successfully. It remains in scheduling history.";
+    state.scheduleSuccessMessage = successMessage;
+    state.appointmentDetailsNotice = successMessage;
+    state.preserveAppointmentDetailsOnScheduleRefresh = true;
+    await ensureScheduleWeekLoaded({ force: true });
+    try {
+      state.selectedAppointmentDetails = await getAppointment(appointmentId);
+    } catch {
+      state.selectedAppointmentDetails = cancelled;
+    }
+    renderAppointmentDetails();
+  } catch (error) {
+    if (error.status === 409) {
+      state.appointmentCancelConflict = true;
+      appointmentDetailsContent.querySelector("#appointment-cancel-conflict")?.classList.remove("hidden");
+      appointmentDetailsContent.querySelector("#appointment-cancel-actions")?.classList.add("hidden");
+      if (message) message.textContent = "";
+    } else if (message) {
+      message.textContent = error.message || "Unable to cancel the appointment.";
+    }
+  } finally {
+    state.appointmentCancelSubmitting = false;
+    state.preserveAppointmentDetailsOnScheduleRefresh = false;
+    setAppointmentCancelBusy(false);
+  }
+}
+
 function renderAppointmentDetails() {
   if (!appointmentDetailsContent) return;
   if (state.appointmentDetailsLoading) {
@@ -4691,6 +4961,10 @@ function renderAppointmentDetails() {
     renderAppointmentEditForm(appointment);
     return;
   }
+  if (state.appointmentCancelling) {
+    renderAppointmentCancellationForm(appointment);
+    return;
+  }
   const timeZone = String(appointment.timeZone || "");
   const date = appointmentDetailDateTime(appointment.scheduledStartAt, timeZone, {
     weekday: "long", year: "numeric", month: "long", day: "numeric"
@@ -4708,10 +4982,15 @@ function renderAppointmentDetails() {
   const status = scheduleStatusLabel(appointment.status);
   const zone = appointmentGeographicZone(appointment) || "Not assigned";
   const note = String(appointment.notes || "").trim();
+  const isCancelled = appointment.status === "cancelled";
+  const cancellation = appointment.cancellation || {};
+  const cancellationCategory = appointmentCancellationCategory(appointment);
+  const cancelledAt = appointmentDetailDateTime(cancellation.cancelledAt, undefined, { dateStyle: "medium", timeStyle: "short" });
+  const cancelledByName = String(appointment.cancellationActor?.name || "").trim() || "Unavailable";
   appointmentDetailsContent.innerHTML = `
     ${state.appointmentDetailsNotice ? `<p class="form-message appointment-details-notice" role="status">${escapeHtml(state.appointmentDetailsNotice)}</p>` : ""}
-    <div class="appointment-details-summary ${escapeHtml(scheduleAppointmentColorClass(appointment.serviceCode))}">
-      <span class="schedule-record-label">Scheduled appointment</span>
+    <div class="appointment-details-summary ${escapeHtml(scheduleAppointmentColorClass(appointment.serviceCode))}${isCancelled ? " appointment-details-cancelled" : ""}">
+      <span class="schedule-record-label">${isCancelled ? "Cancelled appointment" : "Scheduled appointment"}</span>
       <strong class="appointment-summary-title">${escapeHtml(appointment.serviceCode || "Unavailable")} <span aria-hidden="true">•</span> ${escapeHtml(status)}</strong>
       <span class="appointment-summary-client">${escapeHtml(clientName)}</span>
       <span>${escapeHtml(summaryDate)}</span>
@@ -4746,6 +5025,18 @@ function renderAppointmentDetails() {
           <div><dt>Geographic zone</dt><dd>${escapeHtml(zone)}</dd></div>
         </dl>
       </section>
+      ${isCancelled ? `
+        <section class="appointment-detail-group appointment-cancellation-history" aria-labelledby="appointment-detail-cancellation-title">
+          <h4 id="appointment-detail-cancellation-title">Cancellation</h4>
+          <dl class="appointment-details-grid">
+            <div><dt>Cancellation category</dt><dd>${escapeHtml(cancellationCategory ? scheduleStatusLabel(cancellationCategory) : "Unavailable")}</dd></div>
+            <div><dt>Cancellation reason</dt><dd>${escapeHtml(appointmentCancellationReasonLabel(appointment))}</dd></div>
+            <div><dt>Cancelled date/time</dt><dd>${escapeHtml(cancelledAt)}</dd></div>
+            <div><dt>Cancelled by</dt><dd>${escapeHtml(cancelledByName)}</dd></div>
+            ${String(cancellation.note || "").trim() ? `<div class="appointment-cancellation-note"><dt>Cancellation note</dt><dd>${escapeHtml(String(cancellation.note).trim())}</dd></div>` : ""}
+          </dl>
+        </section>
+      ` : ""}
       <section class="appointment-detail-group" aria-labelledby="appointment-detail-administrative-title">
         <h4 id="appointment-detail-administrative-title">Administrative</h4>
         <dl class="appointment-details-grid">
@@ -4760,16 +5051,19 @@ function renderAppointmentDetails() {
         <p>${escapeHtml(note)}</p>
       </section>
     ` : ""}
-    ${canEditAppointments() ? `
+    ${!isCancelled && (canEditAppointments() || canCancelAppointment(appointment)) ? `
       <div class="form-actions appointment-details-actions">
-        <button type="button" class="primary-button" data-appointment-edit-action="edit">Edit Appointment</button>
+        ${canEditAppointments() ? '<button type="button" class="primary-button" data-appointment-edit-action="edit">Edit Appointment</button>' : ""}
+        ${canCancelAppointment(appointment) ? '<button type="button" class="secondary-button danger-button" data-appointment-edit-action="cancel-appointment">Cancel Appointment</button>' : ""}
       </div>
     ` : ""}
   `;
 }
 
 async function beginAppointmentEdit() {
-  if (!canEditAppointments() || !state.selectedAppointmentDetails || state.appointmentEditSubmitting) return;
+  if (!canEditAppointments() || !state.selectedAppointmentDetails
+    || state.selectedAppointmentDetails.status === "cancelled" || state.appointmentCancelling
+    || state.appointmentEditSubmitting) return;
   state.appointmentEditing = true;
   state.appointmentEditConflict = false;
   state.appointmentEditError = "";
@@ -4788,7 +5082,9 @@ async function beginAppointmentEdit() {
 
 async function reloadLatestAppointment({ confirmDiscard = true } = {}) {
   if (!state.selectedAppointmentId) return;
-  if (confirmDiscard && appointmentEditHasChanges()
+  const hasUnsavedChanges = (state.appointmentEditing && appointmentEditHasChanges())
+    || (state.appointmentCancelling && appointmentCancellationHasChanges());
+  if (confirmDiscard && hasUnsavedChanges
     && !window.confirm("Discard your unsaved changes and reload the latest appointment?")) return;
   const appointmentId = state.selectedAppointmentId;
   const requestId = state.appointmentDetailsRequestId + 1;
@@ -4797,6 +5093,7 @@ async function reloadLatestAppointment({ confirmDiscard = true } = {}) {
   state.appointmentEditConflict = false;
   state.appointmentEditError = "";
   state.appointmentEditInitialValues = "";
+  resetAppointmentCancellationState();
   state.appointmentDetailsNotice = "";
   state.appointmentDetailsLoading = true;
   state.appointmentDetailsError = "";
@@ -4888,17 +5185,23 @@ function handleAppointmentDetailsAction(event) {
   if (action === "edit") void beginAppointmentEdit();
   if (action === "cancel") void cancelAppointmentEdit();
   if (action === "reload") void reloadLatestAppointment();
+  if (action === "cancel-appointment") beginAppointmentCancellation();
+  if (action === "close-cancellation") void closeAppointmentCancellation();
+  if (action === "reload-cancellation") void reloadLatestAppointment({ confirmDiscard: false });
 }
 
 function handleAppointmentEditChange(event) {
   if (event.target?.name === "serviceCode") renderAppointmentEditProviderOptions();
   if (event.target?.name === "locationId") syncAppointmentEditLocationDetails();
+  if (event.target?.name === "category") renderAppointmentCancellationReasonOptions();
 }
 
 function requestCloseAppointmentDetails() {
-  if (state.appointmentEditSubmitting) return;
+  if (state.appointmentEditSubmitting || state.appointmentCancelSubmitting) return;
   if (state.appointmentEditing && appointmentEditHasChanges()
     && !window.confirm("Discard your unsaved appointment changes and close?")) return;
+  if (state.appointmentCancelling && appointmentCancellationHasChanges()
+    && !window.confirm("Discard this cancellation and close?")) return;
   closeAppointmentDetails();
 }
 
@@ -4917,6 +5220,7 @@ async function openAppointmentDetails(appointmentId) {
   state.appointmentEditOptionsLoading = false;
   state.appointmentEditError = "";
   state.appointmentEditInitialValues = "";
+  resetAppointmentCancellationState();
   appointmentDetailsModal.classList.remove("hidden");
   appointmentDetailsModal.setAttribute("aria-hidden", "false");
   renderAppointmentDetails();
@@ -4947,6 +5251,7 @@ function closeAppointmentDetails() {
   state.appointmentEditOptionsLoading = false;
   state.appointmentEditError = "";
   state.appointmentEditInitialValues = "";
+  resetAppointmentCancellationState();
   state.appointmentDetailsNotice = "";
   appointmentDetailsModal?.classList.add("hidden");
   appointmentDetailsModal?.setAttribute("aria-hidden", "true");
@@ -5013,12 +5318,13 @@ function renderSchedule() {
         </div>
         <div class="schedule-day-records">
           ${dayAppointments.map((appointment) => `
-            <button type="button" class="schedule-record schedule-appointment-record ${escapeHtml(scheduleAppointmentColorClass(appointment.serviceCode))}" data-schedule-appointment-id="${escapeHtml(appointment.id)}" aria-label="Open scheduled appointment details for ${escapeHtml(scheduleClientName(appointment.clientId))}, service ${escapeHtml(appointment.serviceCode)}">
-              <span class="schedule-record-label">Scheduled appointment</span>
+            <button type="button" class="schedule-record schedule-appointment-record ${escapeHtml(scheduleAppointmentColorClass(appointment.serviceCode))}${appointment.status === "cancelled" ? " schedule-appointment-cancelled" : ""}" data-schedule-appointment-id="${escapeHtml(appointment.id)}" aria-label="Open ${appointment.status === "cancelled" ? "cancelled" : "scheduled"} appointment details for ${escapeHtml(scheduleClientName(appointment.clientId))}, service ${escapeHtml(appointment.serviceCode)}">
+              <span class="schedule-record-label">${appointment.status === "cancelled" ? "Cancelled appointment" : "Scheduled appointment"}</span>
               <strong>${escapeHtml(scheduleClientName(appointment.clientId))}</strong>
               <span>${escapeHtml(appointment.serviceCode)} · ${escapeHtml(scheduleAppointmentTimeLabel(appointment))}</span>
               <span>${escapeHtml(scheduleProviderName(appointment.providerUserId))}</span>
               <span>${escapeHtml(scheduleSettingLabel(appointment.settingType))} · ${escapeHtml(scheduleStatusLabel(appointment.status))}</span>
+              ${appointment.status === "cancelled" ? '<span class="schedule-cancelled-label">Cancelled</span>' : ""}
             </button>
           `).join("")}
           ${daySessions.map((session) => `
