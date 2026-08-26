@@ -489,6 +489,81 @@ test("updates increment versions and reject stale or immutable linkage writes", 
   assert.match(cancelledThroughUpdate.json.errors.join(" "), /cancellation endpoint/);
 });
 
+test("confirmation is role checked, version checked, audited, and changes only operational status", async () => {
+  await resetDb();
+  const adminCookie = await loginAs();
+  const locationResult = await createServiceLocation(adminCookie);
+  assert.equal(locationResult.response.status, 201);
+  const location = locationResult.json.profile.serviceLocations[0];
+  const created = await createAppointment(adminCookie, {
+    locationId: location.id,
+    settingType: "clinic",
+    locationSnapshot: { label: "Spoofed location", zone: "Spoofed zone" }
+  });
+  assert.equal(created.response.status, 201);
+  const before = await readDbFile();
+  const beforeAppointment = structuredClone(before.appointments[0]);
+
+  const rbtCookie = await loginAs("rbt", "rbt123");
+  const rbtAttempt = await request(`/api/appointments/${created.json.id}`, {
+    method: "PUT",
+    cookie: rbtCookie,
+    body: { expectedVersion: 1, status: "confirmed" }
+  });
+  assert.equal(rbtAttempt.response.status, 403);
+
+  const readOnlyCookie = await loginAs("readonly", "readonly123");
+  const readOnlyAttempt = await request(`/api/appointments/${created.json.id}`, {
+    method: "PUT",
+    cookie: readOnlyCookie,
+    body: { expectedVersion: 1, status: "confirmed" }
+  });
+  assert.equal(readOnlyAttempt.response.status, 403);
+
+  const bcbaCookie = await loginAs("bcba", "bcba123");
+  const beforeConfirmation = await readDbFile();
+  const { appointments: ignoredAppointments, auditLog: ignoredAuditLog, ...protectedBefore } = structuredClone(beforeConfirmation);
+  const confirmed = await request(`/api/appointments/${created.json.id}`, {
+    method: "PUT",
+    cookie: bcbaCookie,
+    body: { expectedVersion: 1, status: "confirmed" }
+  });
+  assert.equal(confirmed.response.status, 200);
+  assert.equal(confirmed.json.id, beforeAppointment.id);
+  assert.equal(confirmed.json.status, "confirmed");
+  assert.equal(confirmed.json.version, 2);
+  for (const field of [
+    "clientId", "providerAssignments", "serviceCode", "scheduledStartAt", "scheduledEndAt",
+    "timeZone", "locationId", "locationSnapshot", "settingType", "zoneId", "sessionId"
+  ]) assert.deepEqual(confirmed.json[field], beforeAppointment[field], field);
+
+  const persisted = await readDbFile();
+  const confirmationAudits = persisted.auditLog.filter((entry) => (
+    entry.action === "appointment-updated"
+    && entry.details?.appointmentId === created.json.id
+    && entry.details?.status === "confirmed"
+  ));
+  assert.equal(confirmationAudits.length, 1);
+  assert.equal(confirmationAudits[0].userId, "user-bcba");
+  assert.ok(confirmationAudits[0].timestamp);
+  assert.equal(confirmationAudits[0].details.version, 2);
+  const { appointments: persistedAppointments, auditLog: persistedAuditLog, ...protectedAfter } = persisted;
+  assert.deepEqual(protectedAfter, protectedBefore);
+
+  const stale = await request(`/api/appointments/${created.json.id}`, {
+    method: "PUT",
+    cookie: adminCookie,
+    body: { expectedVersion: 1, status: "confirmed" }
+  });
+  assert.equal(stale.response.status, 409);
+  assert.equal(stale.json.currentVersion, 2);
+  const afterStale = await readDbFile();
+  assert.equal(afterStale.appointments[0].version, 2);
+  assert.equal(afterStale.auditLog.filter((entry) => (
+    entry.action === "appointment-updated" && entry.details?.appointmentId === created.json.id
+  )).length, 1);
+});
+
 test("updates keep client identity immutable and preserve it when omitted", async () => {
   await resetDb({
     ...baseDb,

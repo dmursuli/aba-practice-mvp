@@ -977,6 +977,12 @@ button:focus-visible {
   color: #475569;
 }
 
+.schedule-appointment-confirmed {
+  outline: 2px solid rgba(15, 118, 110, 0.38);
+  outline-offset: -4px;
+}
+
+.schedule-confirmed-label,
 .schedule-cancelled-label {
   justify-self: start;
   padding: 2px 7px;
@@ -988,6 +994,11 @@ button:focus-visible {
   font-weight: 800;
   letter-spacing: 0.02em;
   text-transform: uppercase;
+}
+
+.schedule-confirmed-label {
+  border-color: #0f766e;
+  color: #115e59 !important;
 }
 
 .schedule-day-empty {
@@ -2096,7 +2107,9 @@ button:focus-visible {
 }
 
 .appointment-cancel-heading,
-.appointment-cancel-summary {
+.appointment-cancel-summary,
+.appointment-confirm-heading,
+.appointment-confirm-summary {
   margin-bottom: 16px;
 }
 
@@ -2111,6 +2124,34 @@ button:focus-visible {
 .appointment-cancel-heading p,
 .appointment-cancel-summary h4 {
   margin: 0;
+}
+
+.appointment-confirm-heading {
+  padding: 12px;
+  border: 1px solid #99d5cb;
+  border-radius: 8px;
+  background: #f0fdfa;
+}
+
+.appointment-confirm-heading h4,
+.appointment-confirm-heading p,
+.appointment-confirm-summary h4 {
+  margin: 0;
+}
+
+.appointment-confirm-heading p {
+  margin-top: 6px;
+}
+
+.appointment-confirm-summary h4 {
+  margin-bottom: 7px;
+  color: var(--navy);
+}
+
+.appointment-confirm-question {
+  margin: 16px 0 0;
+  font-weight: 800;
+  color: var(--navy);
 }
 
 .appointment-cancel-heading p {

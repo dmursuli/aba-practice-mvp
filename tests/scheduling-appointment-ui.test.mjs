@@ -552,6 +552,95 @@ test("appointment edit and conflict controls remain responsive", () => {
   assert.match(cssSource, /@media \(max-width: 780px\)[\s\S]*\.appointment-details-actions,[\s\S]*width:\s*100%/);
 });
 
+test("Confirm Appointment is limited to Admin and BCBA and only scheduled appointments are eligible", () => {
+  const context = { state: { currentUser: null, selectedAppointmentDetails: null } };
+  vm.runInNewContext([
+    functionSource("canConfirmAppointments"),
+    functionSource("canConfirmAppointment")
+  ].join("\n"), context);
+  for (const role of ["admin", "bcba"]) {
+    context.state.currentUser = { role };
+    assert.equal(context.canConfirmAppointments(), true);
+    assert.equal(context.canConfirmAppointment({ status: "scheduled" }), true);
+  }
+  for (const role of ["rbt", "read-only"]) {
+    context.state.currentUser = { role };
+    assert.equal(context.canConfirmAppointments(), false);
+    assert.equal(context.canConfirmAppointment({ status: "scheduled" }), false);
+  }
+  context.state.currentUser = { role: "admin" };
+  for (const status of ["confirmed", "cancelled", "completed", "no_show"]) {
+    assert.equal(context.canConfirmAppointment({ status }), false);
+  }
+  const renderer = functionSource("renderAppointmentDetails");
+  assert.match(renderer, /canConfirmAppointment\(appointment\)/);
+  assert.match(renderer, /data-appointment-edit-action="confirm-appointment">Confirm Appointment/);
+});
+
+test("confirmation state displays the required immutable summary and explicit action", () => {
+  const renderer = functionSource("renderAppointmentConfirmationForm");
+  for (const label of [
+    "Client", "Provider", "Service code", "Date", "Start time", "End time", "Service location", "Current status"
+  ]) assert.match(renderer, new RegExp(label));
+  assert.match(renderer, /Confirm this appointment as scheduled\?/);
+  assert.match(renderer, /id="appointment-confirm-submit">Confirm Appointment/);
+  assert.match(renderer, /operational review only/);
+  assert.doesNotMatch(renderer, /name="(?:note|reason)"/i);
+});
+
+test("confirmation sends only confirmed status and the current expectedVersion", () => {
+  const payload = functionSource("appointmentConfirmationPayload");
+  assert.match(payload, /expectedVersion: Number\(state\.selectedAppointmentDetails\?\.version\)/);
+  assert.match(payload, /status: "confirmed"/);
+  for (const forbidden of [
+    "clientId", "providerAssignments", "serviceCode", "scheduledStartAt", "scheduledEndAt",
+    "locationSnapshot", "settingType", "zoneId", "sessionId", "soap", "planChangeLog"
+  ]) assert.doesNotMatch(payload, new RegExp(forbidden, "i"));
+});
+
+test("confirmation prevents duplicate submission and refreshes details and calendar", () => {
+  const handler = functionSource("handleConfirmAppointment", { async: true });
+  assert.match(handler, /if \(state\.appointmentConfirmSubmitting/);
+  assert.match(handler, /state\.appointmentConfirmSubmitting = true/);
+  assert.match(handler, /Confirming appointment/);
+  assert.match(handler, /await updateAppointment\(appointmentId, appointmentConfirmationPayload\(\)\)/);
+  assert.match(handler, /await ensureScheduleWeekLoaded\(\{ force: true \}\)/);
+  assert.match(handler, /await getAppointment\(appointmentId\)/);
+  assert.match(handler, /Appointment confirmed successfully\./);
+  const busy = functionSource("setAppointmentConfirmBusy");
+  assert.match(busy, /submit\.disabled = isBusy \|\| state\.appointmentConfirmConflict/);
+  assert.match(busy, /Confirming…/);
+});
+
+test("HTTP 409 confirmation state requires explicit reload or close without retry", () => {
+  const handler = functionSource("handleConfirmAppointment", { async: true });
+  assert.match(handler, /error\.status === 409/);
+  assert.match(handler, /appointmentConfirmConflict = true/);
+  assert.doesNotMatch(handler, /retry|auto.?merge/i);
+  const renderer = functionSource("renderAppointmentConfirmationForm");
+  assert.match(renderer, /This appointment was changed by another user\. Reload the latest version before confirming\./);
+  assert.match(renderer, /Reload Latest Appointment/);
+  assert.match(renderer, /Close Confirmation/);
+  assert.match(functionSource("handleAppointmentDetailsAction"), /reload-confirmation[\s\S]*reloadLatestAppointment\(\{ confirmDiscard: false \}\)/);
+});
+
+test("confirmed appointments remain editable, cancellable, and visually distinct from completed sessions", () => {
+  assert.doesNotMatch(functionSource("appointmentEditPayload"), /status:/);
+  const cancelContext = { state: { currentUser: { role: "admin" }, selectedAppointmentDetails: null } };
+  vm.runInNewContext([
+    functionSource("canCancelAppointments"),
+    functionSource("canCancelAppointment")
+  ].join("\n"), cancelContext);
+  assert.equal(cancelContext.canCancelAppointment({ status: "confirmed" }), true);
+  const schedule = functionSource("renderSchedule");
+  assert.match(schedule, /schedule-appointment-confirmed/);
+  assert.match(schedule, /Confirmed appointment/);
+  assert.match(schedule, /schedule-confirmed-label">Confirmed/);
+  assert.match(schedule, /<article class="schedule-record">[\s\S]*Completed session/);
+  assert.match(cssSource, /\.schedule-appointment-confirmed\s*\{/);
+  assert.match(cssSource, /\.schedule-confirmed-label\s*\{/);
+});
+
 test("Cancel Appointment is available only to admin and BCBA and never repeats after cancellation", () => {
   const context = { state: { currentUser: null } };
   vm.runInNewContext(functionSource("canCancelAppointments"), context);

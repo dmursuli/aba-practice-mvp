@@ -38,6 +38,10 @@ const state = {
   appointmentCancelConflict: false,
   appointmentCancelError: "",
   appointmentCancelInitialValues: "",
+  appointmentConfirming: false,
+  appointmentConfirmSubmitting: false,
+  appointmentConfirmConflict: false,
+  appointmentConfirmError: "",
   appointmentDetailsNotice: "",
   preserveAppointmentDetailsOnScheduleRefresh: false,
   scheduleSuccessMessage: "",
@@ -1241,6 +1245,7 @@ function bindEvents() {
   appointmentDetailsContent?.addEventListener("change", handleAppointmentEditChange);
   appointmentDetailsContent?.addEventListener("submit", handleUpdateAppointment);
   appointmentDetailsContent?.addEventListener("submit", handleCancelAppointment);
+  appointmentDetailsContent?.addEventListener("submit", handleConfirmAppointment);
   appointmentDetailsCloseButtons.forEach((button) => button.addEventListener("click", requestCloseAppointmentDetails));
   scheduleSubviewButtons.forEach((button) => {
     button.addEventListener("click", () => {
@@ -1570,6 +1575,7 @@ function resetSensitiveState() {
   state.appointmentEditError = "";
   state.appointmentEditInitialValues = "";
   resetAppointmentCancellationState();
+  resetAppointmentConfirmationState();
   state.appointmentDetailsNotice = "";
   state.preserveAppointmentDetailsOnScheduleRefresh = false;
   state.scheduleSuccessMessage = "";
@@ -3946,6 +3952,14 @@ function canCancelAppointments() {
   return ["admin", "bcba"].includes(state.currentUser?.role || "");
 }
 
+function canConfirmAppointments() {
+  return ["admin", "bcba"].includes(state.currentUser?.role || "");
+}
+
+function canConfirmAppointment(appointment = state.selectedAppointmentDetails) {
+  return canConfirmAppointments() && appointment?.status === "scheduled";
+}
+
 function canCancelAppointment(appointment = state.selectedAppointmentDetails) {
   return canCancelAppointments() && ["scheduled", "confirmed"].includes(appointment?.status || "");
 }
@@ -4863,10 +4877,135 @@ function resetAppointmentCancellationState() {
   state.appointmentCancelInitialValues = "";
 }
 
+function resetAppointmentConfirmationState() {
+  state.appointmentConfirming = false;
+  state.appointmentConfirmSubmitting = false;
+  state.appointmentConfirmConflict = false;
+  state.appointmentConfirmError = "";
+}
+
+function renderAppointmentConfirmationForm(appointment) {
+  const timeZone = String(appointment.timeZone || "");
+  const date = appointmentDetailDateTime(appointment.scheduledStartAt, timeZone, {
+    weekday: "long", year: "numeric", month: "long", day: "numeric"
+  });
+  const startTime = appointmentDetailDateTime(appointment.scheduledStartAt, timeZone, { hour: "numeric", minute: "2-digit" });
+  const endTime = appointmentDetailDateTime(appointment.scheduledEndAt, timeZone, { hour: "numeric", minute: "2-digit" });
+  appointmentDetailsContent.innerHTML = `
+    <form id="appointment-confirm-form">
+      <div class="appointment-confirm-heading">
+        <h4>Confirm appointment</h4>
+        <p>Confirmation records operational review only. It does not mean service was rendered or create a clinical record.</p>
+      </div>
+      <section class="appointment-confirm-summary" aria-labelledby="appointment-confirm-summary-title">
+        <h4 id="appointment-confirm-summary-title">Appointment being confirmed</h4>
+        <dl class="appointment-details-grid">
+          <div><dt>Client</dt><dd>${escapeHtml(scheduleClientName(appointment.clientId))}</dd></div>
+          <div><dt>Provider</dt><dd>${escapeHtml(scheduleProviderName(appointmentPrimaryProviderId(appointment)))}</dd></div>
+          <div><dt>Service code</dt><dd>${escapeHtml(appointment.serviceCode || "Unavailable")}</dd></div>
+          <div><dt>Current status</dt><dd>${escapeHtml(scheduleStatusLabel(appointment.status))}</dd></div>
+          <div><dt>Date</dt><dd>${escapeHtml(date)}</dd></div>
+          <div><dt>Start time</dt><dd>${escapeHtml(startTime)}</dd></div>
+          <div><dt>End time</dt><dd>${escapeHtml(endTime)}</dd></div>
+          <div><dt>Service location</dt><dd>${escapeHtml(appointmentLocationLabel(appointment))}</dd></div>
+        </dl>
+      </section>
+      <p class="appointment-confirm-question">Confirm this appointment as scheduled?</p>
+      <p id="appointment-confirm-message" class="form-message" role="status" aria-live="polite">${escapeHtml(state.appointmentConfirmError)}</p>
+      <section id="appointment-confirm-conflict" class="appointment-edit-conflict${state.appointmentConfirmConflict ? "" : " hidden"}" role="alert">
+        <strong>This appointment was changed by another user. Reload the latest version before confirming.</strong>
+        <div class="form-actions appointment-details-actions">
+          <button type="button" class="secondary-button" data-appointment-edit-action="reload-confirmation">Reload Latest Appointment</button>
+          <button type="button" class="secondary-button" data-appointment-edit-action="close-confirmation">Close Confirmation</button>
+        </div>
+      </section>
+      <div class="form-actions appointment-details-actions${state.appointmentConfirmConflict ? " hidden" : ""}" id="appointment-confirm-actions">
+        <button type="button" class="secondary-button" data-appointment-edit-action="close-confirmation">Close Confirmation</button>
+        <button type="submit" class="primary-button" id="appointment-confirm-submit">Confirm Appointment</button>
+      </div>
+    </form>
+  `;
+  setAppointmentConfirmBusy(state.appointmentConfirmSubmitting);
+  appointmentDetailsContent.querySelector("#appointment-confirm-submit")?.focus();
+}
+
+function appointmentConfirmationPayload() {
+  return {
+    expectedVersion: Number(state.selectedAppointmentDetails?.version),
+    status: "confirmed"
+  };
+}
+
+function setAppointmentConfirmBusy(isBusy) {
+  const submit = appointmentDetailsContent?.querySelector("#appointment-confirm-submit");
+  if (submit) {
+    submit.disabled = isBusy || state.appointmentConfirmConflict;
+    submit.textContent = isBusy ? "Confirming…" : "Confirm Appointment";
+  }
+}
+
+function beginAppointmentConfirmation() {
+  const appointment = state.selectedAppointmentDetails;
+  if (!appointment || !canConfirmAppointment(appointment) || state.appointmentEditing
+    || state.appointmentCancelling || state.appointmentConfirmSubmitting) return;
+  state.appointmentConfirming = true;
+  state.appointmentConfirmConflict = false;
+  state.appointmentConfirmError = "";
+  state.appointmentDetailsNotice = "";
+  renderAppointmentDetails();
+}
+
+function closeAppointmentConfirmation() {
+  if (!state.appointmentConfirming || state.appointmentConfirmSubmitting) return;
+  resetAppointmentConfirmationState();
+  renderAppointmentDetails();
+}
+
+async function handleConfirmAppointment(event) {
+  if (event.target?.id !== "appointment-confirm-form") return;
+  event.preventDefault();
+  if (state.appointmentConfirmSubmitting || state.appointmentConfirmConflict
+    || !canConfirmAppointment(state.selectedAppointmentDetails)) return;
+  state.appointmentConfirmSubmitting = true;
+  const message = appointmentDetailsContent.querySelector("#appointment-confirm-message");
+  if (message) message.textContent = "Confirming appointment…";
+  setAppointmentConfirmBusy(true);
+  try {
+    const appointmentId = state.selectedAppointmentDetails.id;
+    const confirmed = await updateAppointment(appointmentId, appointmentConfirmationPayload());
+    resetAppointmentConfirmationState();
+    state.selectedAppointmentDetails = confirmed;
+    const successMessage = "Appointment confirmed successfully.";
+    state.scheduleSuccessMessage = successMessage;
+    state.appointmentDetailsNotice = successMessage;
+    state.preserveAppointmentDetailsOnScheduleRefresh = true;
+    await ensureScheduleWeekLoaded({ force: true });
+    try {
+      state.selectedAppointmentDetails = await getAppointment(appointmentId);
+    } catch {
+      state.selectedAppointmentDetails = confirmed;
+    }
+    renderAppointmentDetails();
+  } catch (error) {
+    if (error.status === 409) {
+      state.appointmentConfirmConflict = true;
+      appointmentDetailsContent.querySelector("#appointment-confirm-conflict")?.classList.remove("hidden");
+      appointmentDetailsContent.querySelector("#appointment-confirm-actions")?.classList.add("hidden");
+      if (message) message.textContent = "";
+    } else if (message) {
+      message.textContent = error.message || "Unable to confirm the appointment.";
+    }
+  } finally {
+    state.appointmentConfirmSubmitting = false;
+    state.preserveAppointmentDetailsOnScheduleRefresh = false;
+    setAppointmentConfirmBusy(false);
+  }
+}
+
 function beginAppointmentCancellation() {
   const appointment = state.selectedAppointmentDetails;
   if (!canCancelAppointment(appointment) || !appointment
-    || state.appointmentEditing || state.appointmentCancelSubmitting) return;
+    || state.appointmentEditing || state.appointmentConfirming || state.appointmentCancelSubmitting) return;
   state.appointmentCancelling = true;
   state.appointmentCancelConflict = false;
   state.appointmentCancelError = "";
@@ -4965,6 +5104,10 @@ function renderAppointmentDetails() {
     renderAppointmentCancellationForm(appointment);
     return;
   }
+  if (state.appointmentConfirming) {
+    renderAppointmentConfirmationForm(appointment);
+    return;
+  }
   const timeZone = String(appointment.timeZone || "");
   const date = appointmentDetailDateTime(appointment.scheduledStartAt, timeZone, {
     weekday: "long", year: "numeric", month: "long", day: "numeric"
@@ -4983,6 +5126,7 @@ function renderAppointmentDetails() {
   const zone = appointmentGeographicZone(appointment) || "Not assigned";
   const note = String(appointment.notes || "").trim();
   const isCancelled = appointment.status === "cancelled";
+  const isConfirmed = appointment.status === "confirmed";
   const cancellation = appointment.cancellation || {};
   const cancellationCategory = appointmentCancellationCategory(appointment);
   const cancelledAt = appointmentDetailDateTime(cancellation.cancelledAt, undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -4990,7 +5134,7 @@ function renderAppointmentDetails() {
   appointmentDetailsContent.innerHTML = `
     ${state.appointmentDetailsNotice ? `<p class="form-message appointment-details-notice" role="status">${escapeHtml(state.appointmentDetailsNotice)}</p>` : ""}
     <div class="appointment-details-summary ${escapeHtml(scheduleAppointmentColorClass(appointment.serviceCode))}${isCancelled ? " appointment-details-cancelled" : ""}">
-      <span class="schedule-record-label">${isCancelled ? "Cancelled appointment" : "Scheduled appointment"}</span>
+      <span class="schedule-record-label">${isCancelled ? "Cancelled appointment" : isConfirmed ? "Confirmed appointment" : "Scheduled appointment"}</span>
       <strong class="appointment-summary-title">${escapeHtml(appointment.serviceCode || "Unavailable")} <span aria-hidden="true">•</span> ${escapeHtml(status)}</strong>
       <span class="appointment-summary-client">${escapeHtml(clientName)}</span>
       <span>${escapeHtml(summaryDate)}</span>
@@ -5051,8 +5195,9 @@ function renderAppointmentDetails() {
         <p>${escapeHtml(note)}</p>
       </section>
     ` : ""}
-    ${!isCancelled && (canEditAppointments() || canCancelAppointment(appointment)) ? `
+    ${!isCancelled && (canConfirmAppointment(appointment) || canEditAppointments() || canCancelAppointment(appointment)) ? `
       <div class="form-actions appointment-details-actions">
+        ${canConfirmAppointment(appointment) ? '<button type="button" class="primary-button" data-appointment-edit-action="confirm-appointment">Confirm Appointment</button>' : ""}
         ${canEditAppointments() ? '<button type="button" class="primary-button" data-appointment-edit-action="edit">Edit Appointment</button>' : ""}
         ${canCancelAppointment(appointment) ? '<button type="button" class="secondary-button danger-button" data-appointment-edit-action="cancel-appointment">Cancel Appointment</button>' : ""}
       </div>
@@ -5062,7 +5207,7 @@ function renderAppointmentDetails() {
 
 async function beginAppointmentEdit() {
   if (!canEditAppointments() || !state.selectedAppointmentDetails
-    || state.selectedAppointmentDetails.status === "cancelled" || state.appointmentCancelling
+    || state.selectedAppointmentDetails.status === "cancelled" || state.appointmentCancelling || state.appointmentConfirming
     || state.appointmentEditSubmitting) return;
   state.appointmentEditing = true;
   state.appointmentEditConflict = false;
@@ -5094,6 +5239,7 @@ async function reloadLatestAppointment({ confirmDiscard = true } = {}) {
   state.appointmentEditError = "";
   state.appointmentEditInitialValues = "";
   resetAppointmentCancellationState();
+  resetAppointmentConfirmationState();
   state.appointmentDetailsNotice = "";
   state.appointmentDetailsLoading = true;
   state.appointmentDetailsError = "";
@@ -5188,6 +5334,9 @@ function handleAppointmentDetailsAction(event) {
   if (action === "cancel-appointment") beginAppointmentCancellation();
   if (action === "close-cancellation") void closeAppointmentCancellation();
   if (action === "reload-cancellation") void reloadLatestAppointment({ confirmDiscard: false });
+  if (action === "confirm-appointment") beginAppointmentConfirmation();
+  if (action === "close-confirmation") closeAppointmentConfirmation();
+  if (action === "reload-confirmation") void reloadLatestAppointment({ confirmDiscard: false });
 }
 
 function handleAppointmentEditChange(event) {
@@ -5197,7 +5346,7 @@ function handleAppointmentEditChange(event) {
 }
 
 function requestCloseAppointmentDetails() {
-  if (state.appointmentEditSubmitting || state.appointmentCancelSubmitting) return;
+  if (state.appointmentEditSubmitting || state.appointmentCancelSubmitting || state.appointmentConfirmSubmitting) return;
   if (state.appointmentEditing && appointmentEditHasChanges()
     && !window.confirm("Discard your unsaved appointment changes and close?")) return;
   if (state.appointmentCancelling && appointmentCancellationHasChanges()
@@ -5221,6 +5370,7 @@ async function openAppointmentDetails(appointmentId) {
   state.appointmentEditError = "";
   state.appointmentEditInitialValues = "";
   resetAppointmentCancellationState();
+  resetAppointmentConfirmationState();
   appointmentDetailsModal.classList.remove("hidden");
   appointmentDetailsModal.setAttribute("aria-hidden", "false");
   renderAppointmentDetails();
@@ -5252,6 +5402,7 @@ function closeAppointmentDetails() {
   state.appointmentEditError = "";
   state.appointmentEditInitialValues = "";
   resetAppointmentCancellationState();
+  resetAppointmentConfirmationState();
   state.appointmentDetailsNotice = "";
   appointmentDetailsModal?.classList.add("hidden");
   appointmentDetailsModal?.setAttribute("aria-hidden", "true");
@@ -5318,13 +5469,14 @@ function renderSchedule() {
         </div>
         <div class="schedule-day-records">
           ${dayAppointments.map((appointment) => `
-            <button type="button" class="schedule-record schedule-appointment-record ${escapeHtml(scheduleAppointmentColorClass(appointment.serviceCode))}${appointment.status === "cancelled" ? " schedule-appointment-cancelled" : ""}" data-schedule-appointment-id="${escapeHtml(appointment.id)}" aria-label="Open ${appointment.status === "cancelled" ? "cancelled" : "scheduled"} appointment details for ${escapeHtml(scheduleClientName(appointment.clientId))}, service ${escapeHtml(appointment.serviceCode)}">
-              <span class="schedule-record-label">${appointment.status === "cancelled" ? "Cancelled appointment" : "Scheduled appointment"}</span>
+            <button type="button" class="schedule-record schedule-appointment-record ${escapeHtml(scheduleAppointmentColorClass(appointment.serviceCode))}${appointment.status === "cancelled" ? " schedule-appointment-cancelled" : appointment.status === "confirmed" ? " schedule-appointment-confirmed" : ""}" data-schedule-appointment-id="${escapeHtml(appointment.id)}" aria-label="Open ${escapeHtml(scheduleStatusLabel(appointment.status).toLowerCase())} appointment details for ${escapeHtml(scheduleClientName(appointment.clientId))}, service ${escapeHtml(appointment.serviceCode)}">
+              <span class="schedule-record-label">${appointment.status === "cancelled" ? "Cancelled appointment" : appointment.status === "confirmed" ? "Confirmed appointment" : "Scheduled appointment"}</span>
               <strong>${escapeHtml(scheduleClientName(appointment.clientId))}</strong>
               <span>${escapeHtml(appointment.serviceCode)} · ${escapeHtml(scheduleAppointmentTimeLabel(appointment))}</span>
               <span>${escapeHtml(scheduleProviderName(appointment.providerUserId))}</span>
               <span>${escapeHtml(scheduleSettingLabel(appointment.settingType))} · ${escapeHtml(scheduleStatusLabel(appointment.status))}</span>
               ${appointment.status === "cancelled" ? '<span class="schedule-cancelled-label">Cancelled</span>' : ""}
+              ${appointment.status === "confirmed" ? '<span class="schedule-confirmed-label">Confirmed</span>' : ""}
             </button>
           `).join("")}
           ${daySessions.map((session) => `
