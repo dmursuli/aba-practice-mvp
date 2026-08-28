@@ -54,15 +54,19 @@ test("PostgreSQL transaction state mutator locks and commits one state write", a
   assert.equal(fake.released, true);
 });
 
-test("PostgreSQL transaction state mutator rolls back without writing on error", async () => {
-  const fake = fakePostgres({ clients: [], recurringAppointmentSeries: [] });
+test("PostgreSQL transaction state mutator rolls back a complete recurring-series operation on error", async () => {
+  const initial = { clients: [], recurringAppointmentSeries: [], appointments: [], auditLog: [] };
+  const fake = fakePostgres(initial);
   await assert.rejects(
     mutateDbInPostgres(fake.config, (state) => {
       state.recurringAppointmentSeries.push({ id: "must-not-commit" });
+      state.appointments.push({ id: "occurrence-must-not-commit" });
+      state.auditLog.push({ id: "audit-must-not-commit" });
       throw new Error("mutation failed");
     }),
     /mutation failed/
   );
+  assert.deepEqual(fake.state, initial);
   assert.equal(fake.queries.filter((sql) => sql.includes("insert into app_state")).length, 0);
   assert.ok(fake.queries.includes("rollback"));
   assert.equal(fake.queries.includes("commit"), false);
@@ -96,16 +100,20 @@ test("local JSON transaction mutator commits atomically and preserves serialized
   assert.deepEqual(persisted.values, ["first", "second"]);
 });
 
-test("local JSON transaction mutator leaves the prior state intact on error", async () => {
+test("local JSON transaction mutator leaves no partial recurring-series operation on error", async () => {
   const directory = await mkdtemp(join(tmpdir(), "aba-json-rollback-"));
   const path = join(directory, "db.json");
-  await writeJsonStateAtomically(path, { stable: true });
+  const initial = { stable: true, recurringAppointmentSeries: [], appointments: [], auditLog: [] };
+  await writeJsonStateAtomically(path, initial);
   await assert.rejects(
     mutateJsonStateAtomically(path, (state) => {
       state.stable = false;
+      state.recurringAppointmentSeries.push({ id: "must-not-commit" });
+      state.appointments.push({ id: "occurrence-must-not-commit" });
+      state.auditLog.push({ id: "audit-must-not-commit" });
       throw new Error("stop");
     }),
     /stop/
   );
-  assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { stable: true });
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")), initial);
 });

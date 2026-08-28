@@ -4,7 +4,12 @@ import { readFileSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
-import { writeJsonStateAtomically } from "./lib/json-state-store.mjs";
+import { mutateJsonStateAtomically, writeJsonStateAtomically } from "./lib/json-state-store.mjs";
+import {
+  expandBoundedRecurrence,
+  sanitizeRecurrenceAppointmentIdentity,
+  sanitizeRecurringSeriesRecord
+} from "./lib/scheduling-recurrence.mjs";
 import {
   duplicateBehaviorIds,
   duplicateTargetIdsFromPrograms,
@@ -38,6 +43,7 @@ const APPOINTMENT_CANCELLATION_REASONS_BY_CATEGORY = new Map([
   ["agency", new Set(["agency_cancelled", "authorization_issue", "weather", "staffing_issue", "scheduling_error", "other"])]
 ]);
 const SHORT_OPERATIONAL_NOTE_MAX_LENGTH = 360;
+const RECURRING_SERIES_MAX_APPOINTMENT_IDS_IN_AUDIT = 50;
 const APPOINTMENT_PROVIDER_ROLES = {
   "97151": new Set(["bcba"]),
   "97153": new Set(["rbt"]),
@@ -130,6 +136,14 @@ async function writeDb(db) {
     return;
   }
   await writeJsonStateAtomically(dbPath, db);
+}
+
+async function mutateSchedulingDb(mutator) {
+  if (dataStore === "postgres") {
+    const [{ Pool }, store] = await Promise.all([import("pg"), import("./lib/postgres-store.mjs")]);
+    return store.mutateDbInPostgres(postgresConfig(Pool), mutator);
+  }
+  return mutateJsonStateAtomically(dbPath, mutator);
 }
 
 function decodeEnvMultiline(value) {
@@ -1114,6 +1128,50 @@ export function createAppServer() {
       await writeDb(db);
       const includeSessions = ["1", "true", "visible"].includes(String(url.searchParams.get("includeSessions") || "").toLowerCase());
       sendJson(res, 200, includeSessions ? redactDb(db, user) : bootstrapDb(db, user));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/recurring-series") {
+      const authDb = await readSchedulingDb();
+      if (!requireRole(req, res, authDb, ["admin", "bcba"])) return;
+      const payload = await readBody(req);
+      const headerRequestId = String(req.headers["idempotency-key"] || "").trim();
+      let result;
+      try {
+        await mutateSchedulingDb((db) => {
+          ensureSchedulingState(db);
+          db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
+          const state = sessionStatus(req, db);
+          if (state.status !== "ok") {
+            throw new RecurringSeriesRequestError(401, ["Authentication is required."]);
+          }
+          if (!["admin", "bcba"].includes(state.user.role)) {
+            throw new RecurringSeriesRequestError(403, ["Your role cannot perform this action."]);
+          }
+          const operation = createRecurringSeriesOperation(payload, db, state.user, {
+            requestId: headerRequestId || payload.requestId
+          });
+          if (operation.errors.length) throw new RecurringSeriesRequestError(400, operation.errors);
+          result = operation.response;
+          if (operation.replayed) return db;
+
+          db.recurringAppointmentSeries.unshift(operation.series);
+          db.appointments.unshift(...operation.appointments);
+          logAudit(db, req, state.user, "recurring-series-created", {
+            clientId: operation.series.clientId,
+            agency: operation.series.agency,
+            details: operation.auditDetails
+          });
+          return db;
+        });
+      } catch (error) {
+        if (error instanceof RecurringSeriesRequestError) {
+          sendJson(res, error.status, { errors: error.errors });
+          return;
+        }
+        throw error;
+      }
+      sendJson(res, result.replayed ? 200 : 201, result);
       return;
     }
 
@@ -2999,6 +3057,336 @@ function visibleSessions(db, user) {
 
 function visibleAppointments(db, user) {
   return (db.appointments || []).filter((appointment) => canAccessAgency(user, appointment.agency));
+}
+
+class RecurringSeriesRequestError extends Error {
+  constructor(status, errors) {
+    super(errors[0] || "Recurring series request failed.");
+    this.status = status;
+    this.errors = errors;
+  }
+}
+
+function recurringSeriesRequestFields(payload = {}) {
+  const providerUserId = String(payload.providerUserId ?? payload.providerId ?? "").trim();
+  const serviceLocationId = String(payload.serviceLocationId ?? payload.locationId ?? "").trim();
+  const rows = payload.recurrenceRows ?? payload.rows;
+  return {
+    clientId: String(payload.clientId || "").trim(),
+    serviceCode: String(payload.serviceCode || "").trim(),
+    providerUserId,
+    serviceLocationId,
+    timeZone: String(payload.timeZone || "").trim(),
+    startDate: String(payload.startDate || "").trim(),
+    endDate: String(payload.endDate || "").trim(),
+    rows: Array.isArray(rows) ? rows.map((row) => ({
+      weekday: Number(row?.weekday),
+      startLocalTime: String(row?.startLocalTime || "").trim(),
+      endLocalTime: String(row?.endLocalTime || "").trim()
+    })) : rows,
+    operationalNote: String(payload.operationalNote || "").trim()
+  };
+}
+
+function recurringSeriesRequestFingerprint(fields) {
+  return crypto.createHash("sha256")
+    .update(JSON.stringify(fields))
+    .digest("hex");
+}
+
+function lastDateInTwelveMonthSeries(startDate) {
+  if (!isValidDateOnly(startDate)) return "";
+  const [year, month, day] = startDate.split("-").map(Number);
+  const anniversary = new Date(Date.UTC(year + 1, month - 1, day));
+  anniversary.setUTCDate(anniversary.getUTCDate() - 1);
+  return anniversary.toISOString().slice(0, 10);
+}
+
+function authoritativeAuthorizationRef(client) {
+  const authorization = client?.profile?.authorization || {};
+  return sanitizeAppointmentAuthorizationRef({
+    number: authorization.number,
+    startDate: authorization.startDate,
+    endDate: authorization.endDate
+  });
+}
+
+function recurringSeriesResponse(db, series, appointments, { replayed = false } = {}) {
+  const revision = series.revisions[0];
+  const template = revision.template;
+  const client = (db.clients || []).find((item) => item.id === series.clientId);
+  const providerId = template.providerAssignments[0]?.userId || "";
+  const provider = (db.users || []).find((item) => item.id === providerId);
+  const location = clientServiceLocationRecords(client).find((item) => item.id === template.locationId);
+  return {
+    id: series.id,
+    version: series.version,
+    client: { id: client?.id || "", name: client?.name || "" },
+    provider: { id: provider?.id || "", name: provider?.name || "", role: provider?.role || "" },
+    serviceCode: template.serviceCode,
+    serviceLocation: {
+      id: location?.id || template.locationId,
+      name: location?.name || template.locationSnapshot.label,
+      settingType: location?.settingType || "",
+      zone: location?.zone || template.locationSnapshot.zone
+    },
+    timeZone: series.timeZone,
+    startDate: series.startDate,
+    endDate: series.endDate,
+    recurrenceRows: template.rows,
+    appointmentCount: appointments.length,
+    appointmentIds: appointments.map((appointment) => appointment.id),
+    collisionWarnings: series.creationCollisionWarnings || [],
+    createdAt: series.createdAt,
+    replayed
+  };
+}
+
+function recurringSeriesCollisionWarnings(appointments, existingAppointments) {
+  const warnings = [];
+  for (const appointment of appointments) {
+    const providerIds = new Set((appointment.providerAssignments || []).map((item) => item.userId));
+    for (const existing of existingAppointments || []) {
+      if (["cancelled", "no_show"].includes(existing.status)) continue;
+      if (Date.parse(existing.scheduledStartAt) >= Date.parse(appointment.scheduledEndAt)
+        || Date.parse(existing.scheduledEndAt) <= Date.parse(appointment.scheduledStartAt)) continue;
+      const existingProviderIds = (existing.providerAssignments || []).map((item) => item.userId);
+      if (existingProviderIds.some((id) => providerIds.has(id))) {
+        warnings.push({
+          type: "provider_overlap",
+          occurrenceId: appointment.recurrenceOccurrenceId,
+          occurrenceLocalDate: appointment.originalOccurrenceLocalDate,
+          existingAppointmentId: existing.id
+        });
+      }
+      if (existing.clientId === appointment.clientId) {
+        warnings.push({
+          type: "client_overlap",
+          occurrenceId: appointment.recurrenceOccurrenceId,
+          occurrenceLocalDate: appointment.originalOccurrenceLocalDate,
+          existingAppointmentId: existing.id
+        });
+      }
+    }
+  }
+  return warnings;
+}
+
+function createRecurringSeriesOperation(payload, db, actor, { requestId } = {}) {
+  const errors = [];
+  const fields = recurringSeriesRequestFields(payload);
+  const normalizedRequestId = String(requestId || "").trim();
+  const bodyRequestId = String(payload?.requestId || "").trim();
+  const headerRequestId = normalizedRequestId !== bodyRequestId ? normalizedRequestId : "";
+  if (bodyRequestId && headerRequestId && bodyRequestId !== headerRequestId) {
+    errors.push("requestId must match the Idempotency-Key header when both are provided.");
+  }
+  if (!normalizedRequestId) errors.push("requestId or an Idempotency-Key header is required.");
+  if (normalizedRequestId && (normalizedRequestId.length < 8 || normalizedRequestId.length > 128)) {
+    errors.push("requestId must be between 8 and 128 characters.");
+  }
+  if (errors.length) return { errors: [...new Set(errors)] };
+
+  const fingerprint = recurringSeriesRequestFingerprint(fields);
+  const existingSeries = (db.recurringAppointmentSeries || []).find((series) => (
+    series.creationRequestId === normalizedRequestId
+    && series.createdBy === actor.id
+    && normalizeAgency(series.agency) === userAgency(actor)
+  ));
+  if (existingSeries) {
+    if (existingSeries.creationRequestFingerprint !== fingerprint) {
+      errors.push("This requestId was already used for a different recurring series request.");
+      return { errors };
+    }
+    const existingAppointments = (db.appointments || []).filter((appointment) => (
+      appointment.recurrenceSeriesId === existingSeries.id
+    ));
+    return {
+      errors: [],
+      replayed: true,
+      response: recurringSeriesResponse(db, existingSeries, existingAppointments, { replayed: true })
+    };
+  }
+
+  const client = (db.clients || []).find((item) => item.id === fields.clientId);
+  if (!client) errors.push("An existing client is required.");
+  else {
+    if (client.status === "archived") errors.push("Client must be active.");
+    if (normalizeAgency(client.agency) !== userAgency(actor)) errors.push("Client must belong to your agency.");
+  }
+  if (!APPOINTMENT_SERVICE_CODES.has(fields.serviceCode)) {
+    errors.push("Service code must be one of 97151, 97153, 97155, or 97156.");
+  }
+  const provider = (db.users || []).find((item) => item.id === fields.providerUserId);
+  if (!provider) errors.push("An existing provider user is required.");
+  else {
+    if (provider.active === false) errors.push("Provider must be active.");
+    if (userAgency(provider) !== userAgency(actor)) errors.push("Provider must belong to your agency.");
+    const permittedRoles = APPOINTMENT_PROVIDER_ROLES[fields.serviceCode];
+    if (permittedRoles && !permittedRoles.has(provider.role)) {
+      errors.push(`Provider role is not permitted for service ${fields.serviceCode}.`);
+    }
+  }
+  const serviceLocation = clientServiceLocationRecords(client).find((item) => item.id === fields.serviceLocationId);
+  if (!fields.serviceLocationId || !serviceLocation || serviceLocation.isActive === false) {
+    errors.push("Choose an active service location saved in the Client Profile.");
+  }
+  errors.push(...validateAppointmentDateRange(fields.startDate, fields.endDate));
+  const maximumEndDate = lastDateInTwelveMonthSeries(fields.startDate);
+  if (maximumEndDate && isValidDateOnly(fields.endDate) && fields.endDate > maximumEndDate) {
+    errors.push(`Recurring series may cover at most 12 months (through ${maximumEndDate}).`);
+  }
+  if (!isValidIanaTimeZone(fields.timeZone)) errors.push("A valid IANA timezone is required.");
+  if (fields.operationalNote.length > SHORT_OPERATIONAL_NOTE_MAX_LENGTH) {
+    errors.push(`operationalNote must be ${SHORT_OPERATIONAL_NOTE_MAX_LENGTH} characters or fewer.`);
+  }
+
+  const now = new Date().toISOString();
+  const seriesId = crypto.randomUUID();
+  const revisionId = crypto.randomUUID();
+  const operationId = crypto.randomUUID();
+  const inputRows = Array.isArray(fields.rows) ? fields.rows : [];
+  const rows = inputRows.map((row) => ({ ...row, rowId: crypto.randomUUID() }));
+  const candidate = {
+    id: seriesId,
+    agency: userAgency(actor),
+    clientId: fields.clientId,
+    startDate: fields.startDate,
+    endDate: fields.endDate,
+    timeZone: fields.timeZone,
+    status: "active",
+    revisions: [{
+      id: revisionId,
+      effectiveStartDate: fields.startDate,
+      effectiveEndDate: fields.endDate,
+      template: {
+        serviceCode: fields.serviceCode,
+        providerAssignments: [{ userId: fields.providerUserId, assignmentRole: "primary" }],
+        locationId: fields.serviceLocationId,
+        locationSnapshot: {},
+        rows,
+        authorizationRef: authoritativeAuthorizationRef(client),
+        operationalNote: fields.operationalNote
+      },
+      createdAt: now,
+      createdBy: actor.id
+    }],
+    createdAt: now,
+    createdBy: actor.id,
+    updatedAt: now,
+    updatedBy: actor.id,
+    version: 1
+  };
+  const sanitized = sanitizeRecurringSeriesRecord(candidate, {
+    clients: db.clients || [], users: db.users || [], validateReferences: true, requireActiveReferences: true
+  });
+  errors.push(...sanitized.errors);
+  if (errors.length) return { errors: [...new Set(errors)] };
+
+  const expansion = expandBoundedRecurrence({
+    seriesId,
+    revisionId,
+    startDate: fields.startDate,
+    endDate: fields.endDate,
+    timeZone: fields.timeZone,
+    rows: sanitized.series.revisions[0].template.rows
+  });
+  errors.push(...expansion.errors);
+  if (!expansion.occurrences.length && !expansion.errors.length) {
+    errors.push("The recurrence rows do not produce any appointments in the selected date range.");
+  }
+  const existingOccurrenceIds = new Set((db.appointments || []).map((item) => (
+    String(item.recurrenceOccurrenceId || item.originalSlotIdentity || "").trim()
+  )).filter(Boolean));
+  if (expansion.occurrences.some((occurrence) => existingOccurrenceIds.has(occurrence.originalSlotIdentity))) {
+    errors.push("A generated occurrence duplicates an existing original-slot identity.");
+  }
+  if (errors.length) return { errors: [...new Set(errors)] };
+
+  const template = sanitized.series.revisions[0].template;
+  const appointments = expansion.occurrences.map((occurrence) => {
+    const recurrenceIdentity = sanitizeRecurrenceAppointmentIdentity({
+      ...occurrence,
+      recurrenceOccurrenceId: occurrence.originalSlotIdentity,
+      generationKind: "generated",
+      recurrenceException: null,
+      lastSeriesOperationId: operationId
+    });
+    if (recurrenceIdentity.errors.length) errors.push(...recurrenceIdentity.errors);
+    const appointment = {
+      id: crypto.randomUUID(),
+      agency: sanitized.series.agency,
+      clientId: sanitized.series.clientId,
+      serviceCode: template.serviceCode,
+      providerAssignments: template.providerAssignments,
+      scheduledStartAt: occurrence.scheduledStartAt,
+      scheduledEndAt: occurrence.scheduledEndAt,
+      timeZone: sanitized.series.timeZone,
+      status: "scheduled",
+      settingType: String(serviceLocation.settingType || "").trim().toLowerCase(),
+      locationId: template.locationId,
+      locationSnapshot: template.locationSnapshot,
+      authorizationRef: template.authorizationRef,
+      notes: template.operationalNote,
+      ...recurrenceIdentity.identity,
+      sessionId: "",
+      linkedAt: "",
+      linkedBy: "",
+      cancellation: null,
+      replacesAppointmentId: "",
+      replacedByAppointmentId: "",
+      createdAt: now,
+      createdBy: actor.id,
+      updatedAt: now,
+      updatedBy: actor.id,
+      version: 1
+    };
+    errors.push(...validateAppointmentRecord(appointment, db, actor));
+    return appointment;
+  });
+  if (new Set(appointments.map((item) => item.recurrenceOccurrenceId)).size !== appointments.length) {
+    errors.push("Generated occurrences must have unique original-slot identities.");
+  }
+  if (errors.length) return { errors: [...new Set(errors)] };
+
+  const collisionWarnings = recurringSeriesCollisionWarnings(appointments, db.appointments || []);
+  const series = {
+    ...sanitized.series,
+    creationRequestId: normalizedRequestId,
+    creationRequestFingerprint: fingerprint,
+    creationOperationId: operationId,
+    creationCollisionWarnings: collisionWarnings
+  };
+  const appointmentIds = appointments.map((appointment) => appointment.id);
+  const auditAppointmentIds = appointmentIds.slice(0, RECURRING_SERIES_MAX_APPOINTMENT_IDS_IN_AUDIT);
+  return {
+    errors: [],
+    replayed: false,
+    series,
+    appointments,
+    auditDetails: {
+      operationId,
+      seriesId,
+      revisionId,
+      clientId: series.clientId,
+      serviceCode: template.serviceCode,
+      providerUserId: fields.providerUserId,
+      serviceLocationId: fields.serviceLocationId,
+      startDate: series.startDate,
+      endDate: series.endDate,
+      recurrenceRows: template.rows.map((row) => ({
+        rowId: row.rowId,
+        weekday: row.weekday,
+        startLocalTime: row.startLocalTime,
+        endLocalTime: row.endLocalTime
+      })),
+      appointmentCount: appointments.length,
+      appointmentIds: auditAppointmentIds,
+      omittedAppointmentIdCount: appointmentIds.length - auditAppointmentIds.length,
+      version: series.version
+    },
+    response: recurringSeriesResponse(db, series, appointments)
+  };
 }
 
 function validateAppointmentDateRange(startDate, endDate) {
