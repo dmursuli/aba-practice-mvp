@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import { writeJsonStateAtomically } from "./lib/json-state-store.mjs";
 import {
   duplicateBehaviorIds,
   duplicateTargetIdsFromPrograms,
@@ -118,7 +119,7 @@ async function readDbWithUsers() {
 
 async function readSchedulingDb() {
   const db = await readDb();
-  if (ensureAppointmentsState(db)) await writeDb(db);
+  if (ensureSchedulingState(db)) await writeDb(db);
   return db;
 }
 
@@ -128,8 +129,7 @@ async function writeDb(db) {
     await store.writeDbToPostgres(postgresConfig(Pool), db);
     return;
   }
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(dbPath, `${JSON.stringify(db, null, 2)}\n`, "utf8");
+  await writeJsonStateAtomically(dbPath, db);
 }
 
 function decodeEnvMultiline(value) {
@@ -671,7 +671,7 @@ function ensureAgencyScoping(db) {
   db.users = Array.isArray(db.users) ? db.users : [];
   db.clients = Array.isArray(db.clients) ? db.clients : [];
   db.sessions = Array.isArray(db.sessions) ? db.sessions : [];
-  if (ensureAppointmentsState(db)) changed = true;
+  if (ensureSchedulingState(db)) changed = true;
   db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
   if (!Array.isArray(db.historicalImportBatches)) {
     db.historicalImportBatches = [];
@@ -752,6 +752,15 @@ function ensureAppointmentsState(db) {
       changed = true;
     }
   });
+  return changed;
+}
+
+function ensureSchedulingState(db) {
+  let changed = ensureAppointmentsState(db);
+  if (!Array.isArray(db.recurringAppointmentSeries)) {
+    db.recurringAppointmentSeries = [];
+    changed = true;
+  }
   return changed;
 }
 
@@ -3263,7 +3272,17 @@ function createAppointmentRecord(payload, db, actor) {
   if (payload.sessionId || payload.linkedAt || payload.linkedBy) {
     errors.push("Clinical linkage is not available in this phase.");
   }
-  if (payload.recurrenceSeriesId || payload.originalOccurrenceStartAt) {
+  if (
+    payload.recurrenceSeriesId
+    || payload.recurrenceRevisionId
+    || payload.recurrenceRowId
+    || payload.recurrenceOccurrenceId
+    || payload.originalOccurrenceLocalDate
+    || payload.originalOccurrenceStartAt
+    || payload.generationKind
+    || payload.recurrenceException
+    || payload.lastSeriesOperationId
+  ) {
     errors.push("Recurring appointments are not available in this phase.");
   }
   if (payload.replacesAppointmentId || payload.replacedByAppointmentId) {
@@ -3283,7 +3302,14 @@ function createAppointmentRecord(payload, db, actor) {
     ...appointmentCoreFromPayload(payload),
     status: "scheduled",
     recurrenceSeriesId: "",
+    recurrenceRevisionId: "",
+    recurrenceRowId: "",
+    recurrenceOccurrenceId: "",
+    originalOccurrenceLocalDate: "",
     originalOccurrenceStartAt: "",
+    generationKind: "",
+    recurrenceException: null,
+    lastSeriesOperationId: "",
     sessionId: "",
     linkedAt: "",
     linkedBy: "",
@@ -3316,10 +3342,18 @@ function updateAppointmentRecord(current, payload, db, actor) {
       errors.push(`${field} is immutable outside the explicit linkage workflow.`);
     }
   }
-  for (const field of ["recurrenceSeriesId", "originalOccurrenceStartAt", "replacesAppointmentId", "replacedByAppointmentId"]) {
+  for (const field of [
+    "recurrenceSeriesId", "recurrenceRevisionId", "recurrenceRowId", "recurrenceOccurrenceId",
+    "originalOccurrenceLocalDate", "originalOccurrenceStartAt", "generationKind", "lastSeriesOperationId",
+    "replacesAppointmentId", "replacedByAppointmentId"
+  ]) {
     if (payload[field] !== undefined && String(payload[field] || "") !== String(current[field] || "")) {
       errors.push(`${field} is not editable in this phase.`);
     }
+  }
+  if (payload.recurrenceException !== undefined
+    && JSON.stringify(payload.recurrenceException) !== JSON.stringify(current.recurrenceException ?? null)) {
+    errors.push("recurrenceException is not editable in this phase.");
   }
   if (payload.cancellation !== undefined && JSON.stringify(payload.cancellation) !== JSON.stringify(current.cancellation)) {
     errors.push("Use the cancellation endpoint to change cancellation data.");
@@ -3349,7 +3383,14 @@ function updateAppointmentRecord(current, payload, db, actor) {
     linkedBy: current.linkedBy || "",
     cancellation: current.cancellation || null,
     recurrenceSeriesId: current.recurrenceSeriesId || "",
+    recurrenceRevisionId: current.recurrenceRevisionId || "",
+    recurrenceRowId: current.recurrenceRowId || "",
+    recurrenceOccurrenceId: current.recurrenceOccurrenceId || "",
+    originalOccurrenceLocalDate: current.originalOccurrenceLocalDate || "",
     originalOccurrenceStartAt: current.originalOccurrenceStartAt || "",
+    generationKind: current.generationKind || "",
+    recurrenceException: current.recurrenceException ?? null,
+    lastSeriesOperationId: current.lastSeriesOperationId || "",
     replacesAppointmentId: current.replacesAppointmentId || "",
     replacedByAppointmentId: current.replacedByAppointmentId || "",
     createdAt: current.createdAt,
@@ -3408,7 +3449,14 @@ function appointmentCalendarSummary(appointment) {
     locationSnapshot: appointment.locationSnapshot || sanitizeAppointmentLocationSnapshot(),
     authorizationRef: appointment.authorizationRef || sanitizeAppointmentAuthorizationRef(),
     recurrenceSeriesId: appointment.recurrenceSeriesId || "",
+    recurrenceRevisionId: appointment.recurrenceRevisionId || "",
+    recurrenceRowId: appointment.recurrenceRowId || "",
+    recurrenceOccurrenceId: appointment.recurrenceOccurrenceId || "",
+    originalOccurrenceLocalDate: appointment.originalOccurrenceLocalDate || "",
     originalOccurrenceStartAt: appointment.originalOccurrenceStartAt || "",
+    generationKind: appointment.generationKind || "",
+    recurrenceException: appointment.recurrenceException ?? null,
+    lastSeriesOperationId: appointment.lastSeriesOperationId || "",
     sessionId: appointment.sessionId || "",
     version: appointment.version
   };
@@ -3553,7 +3601,7 @@ function publicUser(user) {
 }
 
 function redactDb(db, user) {
-  const { users, auditLog, appointments, ...publicDb } = db;
+  const { users, auditLog, appointments, recurringAppointmentSeries, ...publicDb } = db;
   return {
     ...publicDb,
     clients: visibleClients(db, user),
@@ -3563,7 +3611,7 @@ function redactDb(db, user) {
 }
 
 function bootstrapDb(db, user) {
-  const { users, auditLog, sessions, appointments, ...publicDb } = db;
+  const { users, auditLog, sessions, appointments, recurringAppointmentSeries, ...publicDb } = db;
   return {
     ...publicDb,
     clients: visibleClients(db, user),
@@ -3584,6 +3632,7 @@ function practiceBackupPayload(db) {
       clients: db.clients || [],
       sessions: db.sessions || [],
       appointments: db.appointments || [],
+      recurringAppointmentSeries: db.recurringAppointmentSeries || [],
       historicalImportBatches: db.historicalImportBatches || [],
       auditLog: db.auditLog || [],
       users: (db.users || []).map(publicUser)
@@ -3595,7 +3644,7 @@ function restorePracticeBackup(currentDb, backup) {
   if (!backup || backup.app !== "ABA Practice MVP" || !backup.data) {
     throw new Error("That file is not a valid ABA Practice MVP backup.");
   }
-  const { clients, sessions, appointments, historicalImportBatches, auditLog } = backup.data;
+  const { clients, sessions, appointments, recurringAppointmentSeries, historicalImportBatches, auditLog } = backup.data;
   if (!Array.isArray(clients) || !Array.isArray(sessions)) {
     throw new Error("Backup must include clients and sessions.");
   }
@@ -3604,6 +3653,7 @@ function restorePracticeBackup(currentDb, backup) {
     clients,
     sessions,
     appointments: Array.isArray(appointments) ? appointments : [],
+    recurringAppointmentSeries: Array.isArray(recurringAppointmentSeries) ? recurringAppointmentSeries : [],
     historicalImportBatches: Array.isArray(historicalImportBatches) ? historicalImportBatches : [],
     auditLog: Array.isArray(auditLog) ? auditLog : [],
     users: currentDb.users || []

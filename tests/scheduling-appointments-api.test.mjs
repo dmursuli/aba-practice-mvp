@@ -174,7 +174,7 @@ async function createServiceLocation(cookie, clientId = "client-1", overrides = 
   });
 }
 
-test("legacy state initializes appointments without a migration", async () => {
+test("legacy state initializes appointments and recurring series without a migration", async () => {
   await resetDb();
   const cookie = await loginAs();
   const result = await request("/api/appointments?startDate=2026-08-01&endDate=2026-08-31", { cookie });
@@ -182,6 +182,33 @@ test("legacy state initializes appointments without a migration", async () => {
   assert.deepEqual(result.json.appointments, []);
   const persisted = await readDbFile();
   assert.deepEqual(persisted.appointments, []);
+  assert.deepEqual(persisted.recurringAppointmentSeries, []);
+});
+
+test("legacy recurrence placeholders load without requiring new occurrence identity fields", async () => {
+  await resetDb();
+  const cookie = await loginAs();
+  const created = await createAppointment(cookie);
+  assert.equal(created.response.status, 201);
+  const legacyDb = await readDbFile();
+  const legacyAppointment = legacyDb.appointments[0];
+  for (const field of [
+    "recurrenceRevisionId", "recurrenceRowId", "recurrenceOccurrenceId",
+    "originalOccurrenceLocalDate", "generationKind", "recurrenceException", "lastSeriesOperationId"
+  ]) delete legacyAppointment[field];
+  legacyAppointment.recurrenceSeriesId = "legacy-series";
+  legacyAppointment.originalOccurrenceStartAt = legacyAppointment.scheduledStartAt;
+  await writeFile(dbPath, `${JSON.stringify(legacyDb, null, 2)}\n`, "utf8");
+
+  const range = await request("/api/appointments?startDate=2026-08-01&endDate=2026-08-31", { cookie });
+  assert.equal(range.response.status, 200);
+  assert.equal(range.json.appointments[0].recurrenceSeriesId, "legacy-series");
+  assert.equal(range.json.appointments[0].originalOccurrenceStartAt, legacyAppointment.scheduledStartAt);
+  assert.equal(range.json.appointments[0].recurrenceRevisionId, "");
+  assert.equal(range.json.appointments[0].recurrenceException, null);
+  const persisted = await readDbFile();
+  assert.equal("recurrenceRevisionId" in persisted.appointments[0], false);
+  assert.equal("recurrenceException" in persisted.appointments[0], false);
 });
 
 test("appointment endpoints require authentication and Scheduling roles", async () => {
@@ -272,14 +299,21 @@ test("create validates canonical service codes, providers, timestamps, timezone,
     "clientId",
     "createdAt",
     "createdBy",
+    "generationKind",
     "id",
+    "lastSeriesOperationId",
     "linkedAt",
     "linkedBy",
     "locationId",
     "locationSnapshot",
     "notes",
+    "originalOccurrenceLocalDate",
     "originalOccurrenceStartAt",
     "providerAssignments",
+    "recurrenceException",
+    "recurrenceOccurrenceId",
+    "recurrenceRevisionId",
+    "recurrenceRowId",
     "recurrenceSeriesId",
     "replacedByAppointmentId",
     "replacesAppointmentId",
@@ -761,7 +795,14 @@ test("all appointment linkage and history fields remain immutable on update", as
       linkedAt: "2026-08-19T12:00:00Z",
       linkedBy: "user-admin",
       recurrenceSeriesId: "series-1",
+      recurrenceRevisionId: "revision-1",
+      recurrenceRowId: "tuesday",
+      recurrenceOccurrenceId: "occurrence-1",
+      originalOccurrenceLocalDate: "2026-08-03",
       originalOccurrenceStartAt: "2026-08-03T09:00:00-04:00",
+      generationKind: "generated",
+      recurrenceException: { type: "modified" },
+      lastSeriesOperationId: "operation-1",
       replacesAppointmentId: "old-appointment",
       replacedByAppointmentId: "new-appointment",
       cancellation: { reason: "other" },
@@ -773,7 +814,9 @@ test("all appointment linkage and history fields remain immutable on update", as
   const errors = rejected.json.errors.join(" ");
   for (const field of [
     "Appointment ID", "agency", "sessionId", "linkedAt", "linkedBy", "recurrenceSeriesId",
-    "originalOccurrenceStartAt", "replacesAppointmentId", "replacedByAppointmentId", "cancellation", "createdAt", "createdBy"
+    "recurrenceRevisionId", "recurrenceRowId", "recurrenceOccurrenceId", "originalOccurrenceLocalDate",
+    "originalOccurrenceStartAt", "generationKind", "recurrenceException", "lastSeriesOperationId",
+    "replacesAppointmentId", "replacedByAppointmentId", "cancellation", "createdAt", "createdBy"
   ]) assert.match(errors, new RegExp(field, "i"));
   const persisted = await readDbFile();
   assert.deepEqual(persisted.appointments, before.appointments);
@@ -960,8 +1003,9 @@ test("cancellation persists history and all appointment mutations are audited wi
   assert.deepEqual(protectedAfter, protectedBefore);
 });
 
-test("backup and restore preserve appointments and default legacy backups to an empty collection", async () => {
-  await resetDb();
+test("backup and restore preserve scheduling collections and default legacy backups safely", async () => {
+  const series = { id: "series-1", agency: "Triumph ABA", clientId: "client-1", version: 1 };
+  await resetDb({ ...baseDb, recurringAppointmentSeries: [series] });
   const cookie = await loginAs();
   const created = await createAppointment(cookie);
   assert.equal(created.response.status, 201);
@@ -970,6 +1014,7 @@ test("backup and restore preserve appointments and default legacy backups to an 
   assert.equal(backup.response.status, 200);
   assert.equal(backup.json.data.appointments.length, 1);
   assert.equal(backup.json.data.appointments[0].id, created.json.id);
+  assert.deepEqual(backup.json.data.recurringAppointmentSeries, [series]);
 
   const restore = await request("/api/backup/restore", {
     method: "POST",
@@ -979,9 +1024,23 @@ test("backup and restore preserve appointments and default legacy backups to an 
   assert.equal(restore.response.status, 200);
   let persisted = await readDbFile();
   assert.equal(persisted.appointments.length, 1);
+  assert.deepEqual(persisted.recurringAppointmentSeries, [series]);
+
+  const legacySeriesBackup = structuredClone(backup.json);
+  delete legacySeriesBackup.data.recurringAppointmentSeries;
+  const legacySeriesRestore = await request("/api/backup/restore", {
+    method: "POST",
+    cookie,
+    body: legacySeriesBackup
+  });
+  assert.equal(legacySeriesRestore.response.status, 200);
+  persisted = await readDbFile();
+  assert.equal(persisted.appointments.length, 1);
+  assert.deepEqual(persisted.recurringAppointmentSeries, []);
 
   const legacyBackup = structuredClone(backup.json);
   delete legacyBackup.data.appointments;
+  delete legacyBackup.data.recurringAppointmentSeries;
   const legacyRestore = await request("/api/backup/restore", {
     method: "POST",
     cookie,
@@ -990,6 +1049,7 @@ test("backup and restore preserve appointments and default legacy backups to an 
   assert.equal(legacyRestore.response.status, 200);
   persisted = await readDbFile();
   assert.deepEqual(persisted.appointments, []);
+  assert.deepEqual(persisted.recurringAppointmentSeries, []);
   assert.deepEqual(persisted.clients, backup.json.data.clients);
   assert.deepEqual(persisted.sessions, backup.json.data.sessions);
 });
