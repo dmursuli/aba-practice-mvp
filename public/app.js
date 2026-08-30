@@ -4821,6 +4821,9 @@ function renderAppointmentEditForm(appointment) {
   const endTime = appointmentEditTimeValue(appointment.scheduledEndAt, appointment.timeZone);
   appointmentDetailsContent.innerHTML = `
     <form id="appointment-edit-form">
+      ${appointment.recurrence?.isRecurring ? `
+        <p class="appointment-recurrence-scope-message" role="note">This change applies only to this appointment.</p>
+      ` : ""}
       <fieldset id="appointment-edit-fields">
         <div class="form-grid appointment-form-grid">
           <label>
@@ -4947,7 +4950,12 @@ function appointmentEditPayload(formData) {
   const timeZone = String(appointment?.timeZone || "");
   const locationId = String(formData.get("locationId") || "");
   return {
-    expectedVersion: Number(appointment?.version),
+    ...(appointment?.recurrence?.isRecurring
+      ? {
+        expectedAppointmentVersion: Number(appointment?.version),
+        expectedSeriesVersion: Number(appointment?.recurrence?.seriesVersion)
+      }
+      : { expectedVersion: Number(appointment?.version) }),
     clientId: String(appointment?.clientId || ""),
     serviceCode: String(formData.get("serviceCode") || ""),
     providerAssignments: [{

@@ -664,6 +664,20 @@ test("edit payload sends expectedVersion and only editable operational values", 
   assert.match(apiSource, /function updateAppointment\(appointmentId, appointment\)[\s\S]*method: "PUT"/);
 });
 
+test("recurring edit makes this-appointment-only scope explicit and sends both current versions", () => {
+  const renderer = functionSource("renderAppointmentEditForm");
+  assert.match(renderer, /appointment\.recurrence\?\.isRecurring/);
+  assert.match(renderer, /This change applies only to this appointment\./);
+  assert.doesNotMatch(renderer, /This and future|Entire series|Edit Series/);
+  const payload = functionSource("appointmentEditPayload");
+  assert.match(payload, /appointment\?\.recurrence\?\.isRecurring/);
+  assert.match(payload, /expectedAppointmentVersion: Number\(appointment\?\.version\)/);
+  assert.match(payload, /expectedSeriesVersion: Number\(appointment\?\.recurrence\?\.seriesVersion\)/);
+  assert.match(payload, /: \{ expectedVersion: Number\(appointment\?\.version\) \}/);
+  assert.doesNotMatch(payload, /recurrenceSeriesId|recurrenceRevisionId|recurrenceRowId|recurrenceOccurrenceId/);
+  assert.match(cssSource, /\.appointment-recurrence-scope-message\s*\{/);
+});
+
 test("edit validation rejects invalid time, incompatible providers, and inactive locations", () => {
   const validation = functionSource("validateAppointmentEditForm");
   assert.match(validation, /End time must be after start time; cross-midnight appointments are not supported/);
@@ -698,6 +712,7 @@ test("HTTP 409 preserves stale edits and requires Reload Latest or Cancel Edit",
   assert.match(renderer, /Reload Latest Appointment/);
   assert.match(renderer, /Cancel Edit/);
   assert.match(functionSource("reloadLatestAppointment", { async: true }), /await getAppointment\(appointmentId\)/);
+  assert.match(functionSource("reloadLatestAppointment", { async: true }), /state\.selectedAppointmentDetails = appointment/);
   assert.match(functionSource("reloadLatestAppointment", { async: true }), /Discard your unsaved changes and reload the latest appointment/);
   assert.doesNotMatch(handler, /auto.?merge/i);
 });

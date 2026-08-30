@@ -1235,10 +1235,7 @@ export function createAppServer() {
         sendJson(res, 403, { errors: ["You cannot access this appointment."] });
         return;
       }
-      sendJson(res, 200, {
-        ...appointment,
-        cancellationActor: appointmentCancellationActorSummary(db, appointment)
-      });
+      sendJson(res, 200, appointmentDetailsResponse(db, appointment));
       return;
     }
 
@@ -1267,47 +1264,124 @@ export function createAppServer() {
     }
 
     if (req.method === "PUT" && appointmentMatch) {
-      await withAppointmentMutationLock(async () => {
-      const db = await readSchedulingDb();
-      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
-      const actor = currentUser(req, db);
+      const authDb = await readSchedulingDb();
+      if (!requireRole(req, res, authDb, ["admin", "bcba"])) return;
       const payload = await readBody(req);
-      const appointment = (db.appointments || []).find((item) => item.id === appointmentMatch[1]);
-      if (!appointment) {
-        sendJson(res, 404, { errors: ["Appointment not found."] });
-        return;
-      }
-      if (!canAccessAgency(actor, appointment.agency)) {
-        sendJson(res, 403, { errors: ["You cannot update this appointment."] });
-        return;
-      }
-      const expectedVersion = appointmentExpectedVersion(payload);
-      if (!expectedVersion) {
-        sendJson(res, 400, { errors: ["expectedVersion is required and must be a positive integer."] });
-        return;
-      }
-      if (expectedVersion !== appointment.version) {
-        sendJson(res, 409, {
-          errors: ["Appointment has changed. Reload it and try again."],
-          currentVersion: appointment.version
+      let result;
+      try {
+        await mutateSchedulingDb((db) => {
+          ensureSchedulingState(db);
+          db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
+          const state = sessionStatus(req, db);
+          if (state.status !== "ok") {
+            throw new AppointmentMutationRequestError(401, ["Authentication is required."]);
+          }
+          if (!["admin", "bcba"].includes(state.user.role)) {
+            throw new AppointmentMutationRequestError(403, ["Your role cannot perform this action."]);
+          }
+          const actor = state.user;
+          const appointment = (db.appointments || []).find((item) => item.id === appointmentMatch[1]);
+          if (!appointment) {
+            throw new AppointmentMutationRequestError(404, ["Appointment not found."]);
+          }
+          if (!canAccessAgency(actor, appointment.agency)) {
+            throw new AppointmentMutationRequestError(403, ["You cannot update this appointment."]);
+          }
+
+          const recurringEdit = isRecurringOccurrence(appointment) && hasAppointmentSchedulingEditFields(payload);
+          const expectedVersion = recurringEdit
+            ? appointmentExpectedAppointmentVersion(payload)
+            : appointmentExpectedVersion(payload);
+          const expectedVersionField = recurringEdit ? "expectedAppointmentVersion" : "expectedVersion";
+          if (!expectedVersion) {
+            throw new AppointmentMutationRequestError(400, [
+              `${expectedVersionField} is required and must be a positive integer.`
+            ]);
+          }
+          if (expectedVersion !== appointment.version) {
+            throw new AppointmentMutationRequestError(409, [
+              "Appointment has changed. Reload it and try again."
+            ], { currentVersion: appointment.version });
+          }
+
+          let series = null;
+          if (recurringEdit) {
+            const expectedSeriesVersion = appointmentExpectedSeriesVersion(payload);
+            if (!expectedSeriesVersion) {
+              throw new AppointmentMutationRequestError(400, [
+                "expectedSeriesVersion is required and must be a positive integer."
+              ]);
+            }
+            series = (db.recurringAppointmentSeries || []).find((item) => (
+              item.id === appointment.recurrenceSeriesId
+              && normalizeAgency(item.agency) === normalizeAgency(appointment.agency)
+            ));
+            if (!series) {
+              throw new AppointmentMutationRequestError(409, [
+                "The recurring series changed or is unavailable. Reload the appointment and try again."
+              ]);
+            }
+            if (expectedSeriesVersion !== series.version) {
+              throw new AppointmentMutationRequestError(409, [
+                "The recurring series has changed. Reload the appointment and try again."
+              ], { currentVersion: appointment.version });
+            }
+          }
+
+          const { appointment: updatedAppointment, errors } = updateAppointmentRecord(appointment, payload, db, actor);
+          if (errors.length) throw new AppointmentMutationRequestError(400, errors);
+          const materiallyChanged = recurringEdit
+            && appointmentSchedulingMateriallyChanged(appointment, updatedAppointment);
+          let operationId = "";
+          if (materiallyChanged) {
+            const now = updatedAppointment.updatedAt;
+            operationId = crypto.randomUUID();
+            updatedAppointment.recurrenceException = {
+              type: recurringOccurrenceExceptionType(updatedAppointment),
+              baseRevisionId: appointment.recurrenceRevisionId,
+              operationId,
+              createdAt: now,
+              createdBy: actor.id
+            };
+            series.updatedAt = now;
+            series.updatedBy = actor.id;
+            series.version += 1;
+          }
+
+          Object.assign(appointment, updatedAppointment);
+          logAudit(db, req, actor, "appointment-updated", {
+            clientId: appointment.clientId,
+            agency: appointment.agency,
+            details: appointmentAuditDetails(appointment, {
+              recurrenceScope: materiallyChanged ? "this_appointment_only" : "",
+              seriesVersion: materiallyChanged ? series.version : undefined
+            })
+          });
+          if (materiallyChanged) {
+            logAudit(db, req, actor, "recurring-series-occurrence-updated", {
+              clientId: appointment.clientId,
+              agency: appointment.agency,
+              details: {
+                seriesId: series.id,
+                appointmentId: appointment.id,
+                scope: "this_appointment_only",
+                exceptionType: appointment.recurrenceException.type,
+                operationId,
+                version: series.version
+              }
+            });
+          }
+          result = appointmentDetailsResponse(db, appointment);
+          return db;
         });
-        return;
+      } catch (error) {
+        if (error instanceof AppointmentMutationRequestError) {
+          sendJson(res, error.status, { errors: error.errors, ...error.extra });
+          return;
+        }
+        throw error;
       }
-      const { appointment: updatedAppointment, errors } = updateAppointmentRecord(appointment, payload, db, actor);
-      if (errors.length) {
-        sendJson(res, 400, { errors });
-        return;
-      }
-      Object.assign(appointment, updatedAppointment);
-      logAudit(db, req, actor, "appointment-updated", {
-        clientId: appointment.clientId,
-        agency: appointment.agency,
-        details: appointmentAuditDetails(appointment)
-      });
-      await writeDb(db);
-      sendJson(res, 200, appointment);
-      return;
-      });
+      sendJson(res, 200, result);
       return;
     }
 
@@ -3067,6 +3141,15 @@ class RecurringSeriesRequestError extends Error {
   }
 }
 
+class AppointmentMutationRequestError extends Error {
+  constructor(status, errors, extra = {}) {
+    super(errors[0] || "Appointment mutation failed.");
+    this.status = status;
+    this.errors = errors;
+    this.extra = extra;
+  }
+}
+
 function recurringSeriesRequestFields(payload = {}) {
   const providerUserId = String(payload.providerUserId ?? payload.providerId ?? "").trim();
   const serviceLocationId = String(payload.serviceLocationId ?? payload.locationId ?? "").trim();
@@ -3739,9 +3822,8 @@ function updateAppointmentRecord(current, payload, db, actor) {
       errors.push(`${field} is not editable in this phase.`);
     }
   }
-  if (payload.recurrenceException !== undefined
-    && JSON.stringify(payload.recurrenceException) !== JSON.stringify(current.recurrenceException ?? null)) {
-    errors.push("recurrenceException is not editable in this phase.");
+  if (payload.recurrenceException !== undefined) {
+    errors.push("recurrenceException is server-managed and cannot be submitted by the client.");
   }
   if (payload.cancellation !== undefined && JSON.stringify(payload.cancellation) !== JSON.stringify(current.cancellation)) {
     errors.push("Use the cancellation endpoint to change cancellation data.");
@@ -3815,6 +3897,49 @@ function appointmentExpectedVersion(payload) {
   return Number.isInteger(version) && version > 0 ? version : 0;
 }
 
+function appointmentExpectedAppointmentVersion(payload) {
+  const version = Number(payload?.expectedAppointmentVersion);
+  return Number.isInteger(version) && version > 0 ? version : 0;
+}
+
+function appointmentExpectedSeriesVersion(payload) {
+  const version = Number(payload?.expectedSeriesVersion);
+  return Number.isInteger(version) && version > 0 ? version : 0;
+}
+
+function isRecurringOccurrence(appointment) {
+  return Boolean(String(appointment?.recurrenceSeriesId || "").trim());
+}
+
+function hasAppointmentSchedulingEditFields(payload = {}) {
+  return [
+    "serviceCode", "providerAssignments", "scheduledStartAt", "scheduledEndAt",
+    "timeZone", "locationId", "notes"
+  ].some((field) => Object.prototype.hasOwnProperty.call(payload, field));
+}
+
+function appointmentSchedulingMateriallyChanged(current, updated) {
+  const comparable = (appointment) => ({
+    serviceCode: appointment.serviceCode,
+    providerAssignments: appointment.providerAssignments || [],
+    scheduledStartAt: appointment.scheduledStartAt,
+    scheduledEndAt: appointment.scheduledEndAt,
+    timeZone: appointment.timeZone,
+    settingType: appointment.settingType,
+    locationId: appointment.locationId || "",
+    locationSnapshot: appointment.locationSnapshot || sanitizeAppointmentLocationSnapshot(),
+    notes: appointment.notes || ""
+  });
+  return JSON.stringify(comparable(current)) !== JSON.stringify(comparable(updated));
+}
+
+function recurringOccurrenceExceptionType(appointment) {
+  return appointmentLocalDate(appointment.scheduledStartAt, appointment.timeZone)
+    !== String(appointment.originalOccurrenceLocalDate || "")
+    ? "moved"
+    : "modified";
+}
+
 async function withAppointmentMutationLock(operation) {
   const run = appointmentMutationQueue.then(operation, operation);
   appointmentMutationQueue = run.catch(() => {});
@@ -3860,8 +3985,44 @@ function appointmentCancellationActorSummary(db, appointment) {
   return name ? { name } : null;
 }
 
-function appointmentAuditDetails(appointment) {
+function appointmentRecurrenceSummary(db, appointment) {
+  const isRecurring = isRecurringOccurrence(appointment);
+  if (!isRecurring) return { isRecurring: false, isException: false, exceptionType: "" };
+  const series = (db.recurringAppointmentSeries || []).find((item) => (
+    item.id === appointment.recurrenceSeriesId
+    && normalizeAgency(item.agency) === normalizeAgency(appointment.agency)
+  ));
+  const exceptionType = String(appointment.recurrenceException?.type || "").trim();
   return {
+    isRecurring: true,
+    seriesVersion: Number.isInteger(series?.version) ? series.version : null,
+    isException: Boolean(exceptionType),
+    exceptionType
+  };
+}
+
+function appointmentDetailsResponse(db, appointment) {
+  const {
+    recurrenceSeriesId: ignoredSeriesId,
+    recurrenceRevisionId: ignoredRevisionId,
+    recurrenceRowId: ignoredRowId,
+    recurrenceOccurrenceId: ignoredOccurrenceId,
+    originalOccurrenceLocalDate: ignoredOriginalDate,
+    originalOccurrenceStartAt: ignoredOriginalStart,
+    generationKind: ignoredGenerationKind,
+    recurrenceException: ignoredException,
+    lastSeriesOperationId: ignoredOperationId,
+    ...details
+  } = appointment;
+  return {
+    ...details,
+    recurrence: appointmentRecurrenceSummary(db, appointment),
+    cancellationActor: appointmentCancellationActorSummary(db, appointment)
+  };
+}
+
+function appointmentAuditDetails(appointment, { recurrenceScope = "", seriesVersion } = {}) {
+  const details = {
     appointmentId: appointment.id,
     serviceCode: appointment.serviceCode,
     status: appointment.status,
@@ -3870,6 +4031,15 @@ function appointmentAuditDetails(appointment) {
     providerUserIds: (appointment.providerAssignments || []).map((assignment) => assignment.userId),
     version: appointment.version
   };
+  if (recurrenceScope) {
+    details.recurrence = {
+      scope: recurrenceScope,
+      isException: Boolean(appointment.recurrenceException),
+      exceptionType: String(appointment.recurrenceException?.type || ""),
+      seriesVersion
+    };
+  }
+  return details;
 }
 
 function filterSessions(sessions, { clientId = "", startDate = "", endDate = "", serviceType = "" } = {}) {
