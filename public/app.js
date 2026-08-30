@@ -1,4 +1,4 @@
-import { cancelAppointment, createAppointment, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { cancelAppointment, createAppointment, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -20,6 +20,8 @@ const state = {
   appointmentOptionsLoaded: false,
   appointmentOptionsLoading: false,
   appointmentSubmitting: false,
+  recurringSeriesRequestId: "",
+  recurringSeriesRequestSignature: "",
   editingServiceLocationId: "",
   serviceLocationSaving: false,
   selectedAppointmentId: "",
@@ -378,6 +380,12 @@ const appointmentFormFields = document.querySelector("#appointment-form-fields")
 const appointmentFormMessage = document.querySelector("#appointment-form-message");
 const appointmentLocationHelp = document.querySelector("#appointment-location-help");
 const appointmentSettingDisplay = document.querySelector("#appointment-setting-display");
+const appointmentZoneDisplay = document.querySelector("#appointment-zone-display");
+const appointmentFormDescription = document.querySelector("#appointment-form-description");
+const appointmentSingleTimeFields = document.querySelector("#appointment-single-time-fields");
+const appointmentRecurrenceFields = document.querySelector("#appointment-recurrence-fields");
+const appointmentRecurrenceRows = document.querySelector("#appointment-recurrence-rows");
+const appointmentAddRecurrenceDayButton = document.querySelector("#appointment-add-recurrence-day");
 const appointmentSubmitButton = document.querySelector("#appointment-submit");
 const appointmentCloseButtons = document.querySelectorAll("[data-close-appointment]");
 const appointmentDetailsModal = document.querySelector("#appointment-details-modal");
@@ -1239,6 +1247,10 @@ function bindEvents() {
   appointmentForm?.elements?.clientId?.addEventListener("change", renderAppointmentServiceLocations);
   appointmentForm?.elements?.serviceCode?.addEventListener("change", renderAppointmentProviderOptions);
   appointmentForm?.elements?.serviceLocationIndex?.addEventListener("change", syncAppointmentSettingFromLocation);
+  appointmentForm?.elements?.repeat?.addEventListener("change", applyAppointmentRecurrenceMode);
+  appointmentAddRecurrenceDayButton?.addEventListener("click", addAppointmentRecurrenceRow);
+  appointmentRecurrenceRows?.addEventListener("click", handleAppointmentRecurrenceRowClick);
+  appointmentRecurrenceRows?.addEventListener("change", updateAppointmentRecurrenceControls);
   appointmentForm?.addEventListener("submit", handleCreateAppointment);
   appointmentCloseButtons.forEach((button) => button.addEventListener("click", closeAppointmentForm));
   appointmentDetailsContent?.addEventListener("click", handleAppointmentDetailsAction);
@@ -1247,6 +1259,7 @@ function bindEvents() {
   appointmentDetailsContent?.addEventListener("submit", handleCancelAppointment);
   appointmentDetailsContent?.addEventListener("submit", handleConfirmAppointment);
   appointmentDetailsCloseButtons.forEach((button) => button.addEventListener("click", requestCloseAppointmentDetails));
+  resetAppointmentRecurrenceForm();
   scheduleSubviewButtons.forEach((button) => {
     button.addEventListener("click", () => {
       void switchScheduleSubview(button.dataset.scheduleSubviewButton);
@@ -1561,6 +1574,8 @@ function resetSensitiveState() {
   state.appointmentOptionsLoaded = false;
   state.appointmentOptionsLoading = false;
   state.appointmentSubmitting = false;
+  state.recurringSeriesRequestId = "";
+  state.recurringSeriesRequestSignature = "";
   state.editingServiceLocationId = "";
   state.serviceLocationSaving = false;
   state.selectedAppointmentId = "";
@@ -4055,6 +4070,12 @@ function activeStructuredClientServiceLocations(clientId) {
     .filter((location) => location?.id && location.isActive !== false);
 }
 
+function appointmentServiceLocationsForMode(clientId, isRecurring) {
+  return isRecurring
+    ? activeStructuredClientServiceLocations(clientId)
+    : clientServiceLocations(clientId);
+}
+
 function legacyDefaultSettingLocations(defaultSetting) {
   const rawValue = String(defaultSetting || "").trim();
   if (!rawValue) return [];
@@ -4084,18 +4105,134 @@ function selectedAppointmentServiceLocation(formData = null) {
   return state.appointmentServiceLocations[Number(rawIndex)] || null;
 }
 
+function appointmentWeekdayForDate(dateValue) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateValue || ""))) return 1;
+  const [year, month, day] = dateValue.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+function appointmentRecurrenceRowMarkup({ weekday = 1, startLocalTime = "09:00", endLocalTime = "10:00" } = {}) {
+  const weekdayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  return `
+    <div class="appointment-recurrence-row" data-appointment-recurrence-row>
+      <label>
+        Weekday
+        <select name="recurrenceWeekday" required>
+          ${weekdayNames.map((name, value) => `<option value="${value}"${value === Number(weekday) ? " selected" : ""}>${name}</option>`).join("")}
+        </select>
+      </label>
+      <label>
+        Start time
+        <input type="time" name="recurrenceStartTime" value="${escapeHtml(startLocalTime)}" required>
+      </label>
+      <label>
+        End time
+        <input type="time" name="recurrenceEndTime" value="${escapeHtml(endLocalTime)}" required>
+      </label>
+      <button type="button" class="secondary-button" data-remove-recurrence-day>Remove</button>
+    </div>
+  `;
+}
+
+function resetAppointmentRecurrenceRows(weekday = 1) {
+  if (!appointmentRecurrenceRows) return;
+  appointmentRecurrenceRows.innerHTML = appointmentRecurrenceRowMarkup({ weekday });
+  updateAppointmentRecurrenceControls();
+}
+
+function appointmentRecurrenceRowValues(formData) {
+  const weekdays = formData.getAll("recurrenceWeekday");
+  const startTimes = formData.getAll("recurrenceStartTime");
+  const endTimes = formData.getAll("recurrenceEndTime");
+  return weekdays.map((weekday, index) => ({
+    weekday: Number(weekday),
+    startLocalTime: String(startTimes[index] || ""),
+    endLocalTime: String(endTimes[index] || "")
+  }));
+}
+
+function updateAppointmentRecurrenceControls() {
+  const rows = [...(appointmentRecurrenceRows?.querySelectorAll("[data-appointment-recurrence-row]") || [])];
+  const selectedWeekdays = rows.map((row) => row.querySelector('[name="recurrenceWeekday"]')?.value || "");
+  const recurrenceEnabled = Boolean(appointmentForm?.elements?.repeat?.checked);
+  rows.forEach((row, rowIndex) => {
+    const select = row.querySelector('[name="recurrenceWeekday"]');
+    [...(select?.options || [])].forEach((option) => {
+      option.disabled = selectedWeekdays.some((value, index) => index !== rowIndex && value === option.value);
+    });
+    const remove = row.querySelector("[data-remove-recurrence-day]");
+    if (remove) remove.disabled = !recurrenceEnabled || rows.length === 1;
+  });
+  if (appointmentAddRecurrenceDayButton) {
+    appointmentAddRecurrenceDayButton.disabled = !recurrenceEnabled || rows.length >= 7;
+    appointmentAddRecurrenceDayButton.classList.toggle("hidden", rows.length >= 7);
+  }
+}
+
+function addAppointmentRecurrenceRow() {
+  if (!appointmentRecurrenceRows || !appointmentForm?.elements?.repeat?.checked) return;
+  const used = new Set([...appointmentRecurrenceRows.querySelectorAll('[name="recurrenceWeekday"]')].map((select) => Number(select.value)));
+  const weekday = [0, 1, 2, 3, 4, 5, 6].find((value) => !used.has(value));
+  if (weekday === undefined) return;
+  appointmentRecurrenceRows.insertAdjacentHTML("beforeend", appointmentRecurrenceRowMarkup({ weekday }));
+  updateAppointmentRecurrenceControls();
+}
+
+function handleAppointmentRecurrenceRowClick(event) {
+  const removeButton = event.target.closest("[data-remove-recurrence-day]");
+  if (!removeButton || !appointmentRecurrenceRows) return;
+  const rows = appointmentRecurrenceRows.querySelectorAll("[data-appointment-recurrence-row]");
+  if (rows.length <= 1) return;
+  removeButton.closest("[data-appointment-recurrence-row]")?.remove();
+  updateAppointmentRecurrenceControls();
+}
+
+function applyAppointmentRecurrenceMode() {
+  const preferredLocationId = selectedAppointmentServiceLocation()?.id || "";
+  const isRecurring = Boolean(appointmentForm?.elements?.repeat?.checked);
+  appointmentSingleTimeFields?.classList.toggle("hidden", isRecurring);
+  appointmentRecurrenceFields?.classList.toggle("hidden", !isRecurring);
+  appointmentSingleTimeFields?.querySelectorAll("input").forEach((input) => {
+    input.disabled = isRecurring;
+  });
+  appointmentRecurrenceFields?.querySelectorAll("input, select").forEach((input) => {
+    input.disabled = !isRecurring;
+  });
+  if (appointmentFormDescription) {
+    appointmentFormDescription.textContent = isRecurring
+      ? "Create a bounded recurring appointment series. This does not create clinical sessions or SOAP notes."
+      : "Create one scheduled appointment. This does not create a clinical session or SOAP note.";
+  }
+  renderAppointmentServiceLocations({ preferredLocationId });
+  updateAppointmentRecurrenceControls();
+  setAppointmentFormBusy(state.appointmentSubmitting);
+}
+
+function resetAppointmentRecurrenceForm(weekday = 1) {
+  state.recurringSeriesRequestId = "";
+  state.recurringSeriesRequestSignature = "";
+  if (appointmentForm?.elements?.repeat) appointmentForm.elements.repeat.checked = false;
+  resetAppointmentRecurrenceRows(weekday);
+  applyAppointmentRecurrenceMode();
+}
+
 function syncAppointmentSettingFromLocation() {
   const location = selectedAppointmentServiceLocation();
   if (appointmentSettingDisplay) {
     appointmentSettingDisplay.value = location?.settingType ? scheduleSettingLabel(location.settingType) : "";
   }
+  if (appointmentZoneDisplay) appointmentZoneDisplay.value = location
+    ? String(location.zone || "Not assigned")
+    : "";
 }
 
-function renderAppointmentServiceLocations() {
+function renderAppointmentServiceLocations({ preferredLocationId = "" } = {}) {
   const select = appointmentForm?.elements?.serviceLocationIndex;
   const clientId = appointmentForm?.elements?.clientId?.value || "";
   if (!select) return;
-  state.appointmentServiceLocations = clientServiceLocations(clientId);
+  const isRecurring = Boolean(appointmentForm?.elements?.repeat?.checked);
+  const previouslySelectedId = preferredLocationId || selectedAppointmentServiceLocation()?.id || "";
+  state.appointmentServiceLocations = appointmentServiceLocationsForMode(clientId, isRecurring);
   if (!clientId) {
     select.innerHTML = '<option value="">Select a client first</option>';
     if (appointmentLocationHelp) appointmentLocationHelp.textContent = "Locations are reused from the Client Profile.";
@@ -4103,8 +4240,10 @@ function renderAppointmentServiceLocations() {
     return;
   }
   if (!state.appointmentServiceLocations.length) {
-    select.innerHTML = '<option value="">No saved service locations</option>';
-    if (appointmentLocationHelp) appointmentLocationHelp.textContent = "Add or reactivate a structured Service Location in the Client Profile before scheduling.";
+    select.innerHTML = `<option value="">${isRecurring ? "No active structured Service Locations" : "No saved service locations"}</option>`;
+    if (appointmentLocationHelp) appointmentLocationHelp.textContent = isRecurring
+      ? "Recurring series require an active structured Service Location. Update the Client Profile before scheduling."
+      : "Add or reactivate a structured Service Location in the Client Profile before scheduling.";
     syncAppointmentSettingFromLocation();
     return;
   }
@@ -4115,8 +4254,10 @@ function renderAppointmentServiceLocations() {
       `<option value="${index}">${appointmentLocationIcon(location)} ${escapeHtml(location.label)}</option>`
     ))
   ].join("");
+  const preferredIndex = state.appointmentServiceLocations.findIndex((location) => location.id === previouslySelectedId);
   const primaryIndex = state.appointmentServiceLocations.findIndex((location) => location.isPrimary);
-  if (!multipleLocations) select.value = "0";
+  if (preferredIndex >= 0) select.value = String(preferredIndex);
+  else if (!multipleLocations) select.value = "0";
   else if (primaryIndex >= 0) select.value = String(primaryIndex);
   if (appointmentLocationHelp) {
     appointmentLocationHelp.textContent = multipleLocations && primaryIndex < 0
@@ -4126,6 +4267,16 @@ function renderAppointmentServiceLocations() {
       : "Automatically selected from the Client Profile.";
   }
   syncAppointmentSettingFromLocation();
+}
+
+function showAppointmentFormMessage(message, { isError = false } = {}) {
+  if (!appointmentFormMessage) return;
+  appointmentFormMessage.textContent = String(message || "");
+  appointmentFormMessage.classList.toggle("appointment-form-error", isError && Boolean(message));
+  if (isError && message) {
+    appointmentFormMessage.scrollIntoView({ block: "nearest" });
+    appointmentFormMessage.focus({ preventScroll: true });
+  }
 }
 
 function renderAppointmentProviderOptions() {
@@ -4148,7 +4299,10 @@ function setAppointmentFormBusy(isBusy) {
   if (appointmentFormFields) appointmentFormFields.disabled = isBusy;
   if (appointmentSubmitButton) {
     appointmentSubmitButton.disabled = isBusy;
-    appointmentSubmitButton.textContent = state.appointmentSubmitting ? "Creating…" : "Create Appointment";
+    const isRecurring = Boolean(appointmentForm?.elements?.repeat?.checked);
+    appointmentSubmitButton.textContent = state.appointmentSubmitting
+      ? (isRecurring ? "Creating series…" : "Creating…")
+      : (isRecurring ? "Create Recurring Series" : "Create Appointment");
   }
 }
 
@@ -4156,24 +4310,28 @@ async function openAppointmentForm() {
   if (!canCreateAppointments() || !appointmentModal || !appointmentForm) return;
   appointmentModal.classList.remove("hidden");
   appointmentModal.setAttribute("aria-hidden", "false");
-  appointmentFormMessage.textContent = "Loading active clients and eligible providers…";
+  showAppointmentFormMessage("Loading active clients and eligible providers…");
   setAppointmentFormBusy(true);
   const { startDate, endDate } = scheduleWeekRangeValues();
   appointmentForm.elements.date.min = startDate;
   appointmentForm.elements.date.max = endDate;
   appointmentForm.elements.date.value = startDate;
+  appointmentForm.elements.recurrenceStartDate.value = startDate;
+  appointmentForm.elements.recurrenceEndDate.value = "";
+  resetAppointmentRecurrenceRows(appointmentWeekdayForDate(startDate));
+  applyAppointmentRecurrenceMode();
   try {
     await ensureAppointmentOptions({ force: true });
     renderAppointmentClientOptions();
     renderAppointmentServiceLocations();
     renderAppointmentProviderOptions();
-    appointmentFormMessage.textContent = state.appointmentClients.length
+    showAppointmentFormMessage(state.appointmentClients.length
       ? ""
-      : "No active clients are available for your agency.";
+      : "No active clients are available for your agency.");
     setAppointmentFormBusy(false);
     appointmentForm.elements.clientId.focus();
   } catch (error) {
-    appointmentFormMessage.textContent = error.message || "Unable to load appointment form options.";
+    showAppointmentFormMessage(error.message || "Unable to load appointment form options.", { isError: true });
   }
 }
 
@@ -4181,8 +4339,9 @@ function closeAppointmentForm() {
   if (state.appointmentSubmitting || !appointmentModal) return;
   appointmentModal.classList.add("hidden");
   appointmentModal.setAttribute("aria-hidden", "true");
-  appointmentFormMessage.textContent = "";
+  showAppointmentFormMessage("");
   appointmentForm?.reset();
+  resetAppointmentRecurrenceForm();
 }
 
 function zonedAppointmentTimestamp(dateValue, timeValue, timeZone) {
@@ -4249,18 +4408,71 @@ function appointmentFormPayload(formData) {
   };
 }
 
+function recurringSeriesFormPayload(formData, requestId) {
+  const serviceLocation = selectedAppointmentServiceLocation(formData) || {};
+  return {
+    requestId,
+    clientId: String(formData.get("clientId") || ""),
+    serviceCode: String(formData.get("serviceCode") || ""),
+    providerUserId: String(formData.get("providerUserId") || ""),
+    serviceLocationId: String(serviceLocation.id || ""),
+    timeZone: String(formData.get("timeZone") || ""),
+    startDate: String(formData.get("recurrenceStartDate") || ""),
+    endDate: String(formData.get("recurrenceEndDate") || ""),
+    recurrenceRows: appointmentRecurrenceRowValues(formData),
+    operationalNote: String(formData.get("notes") || "").trim()
+  };
+}
+
+function recurringSeriesRequestId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `series-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function recurringSeriesSubmissionPayload(formData) {
+  const unsignedPayload = recurringSeriesFormPayload(formData, "");
+  const signature = JSON.stringify(unsignedPayload);
+  if (!state.recurringSeriesRequestId || state.recurringSeriesRequestSignature !== signature) {
+    state.recurringSeriesRequestId = recurringSeriesRequestId();
+    state.recurringSeriesRequestSignature = signature;
+  }
+  return recurringSeriesFormPayload(formData, state.recurringSeriesRequestId);
+}
+
+function recurringSeriesSuccessMessage(result) {
+  const appointmentCount = Number(result?.appointmentCount || 0);
+  const warnings = Array.isArray(result?.collisionWarnings) ? result.collisionWarnings : [];
+  const base = `Recurring series created — ${appointmentCount} appointment${appointmentCount === 1 ? "" : "s"} scheduled.`;
+  if (!warnings.length) return base;
+  const providerCount = warnings.filter((warning) => warning.type === "provider_overlap").length;
+  const clientCount = warnings.filter((warning) => warning.type === "client_overlap").length;
+  const dates = [...new Set(warnings.map((warning) => warning.occurrenceLocalDate).filter(Boolean))];
+  const breakdown = [
+    providerCount ? `${providerCount} provider` : "",
+    clientCount ? `${clientCount} client` : ""
+  ].filter(Boolean).join(", ");
+  const dateSummary = dates.length ? ` across ${dates.length} date${dates.length === 1 ? "" : "s"}` : "";
+  return `${base} ${warnings.length} scheduling overlap${warnings.length === 1 ? " was" : "s were"} detected${breakdown ? ` (${breakdown}${dateSummary})` : dateSummary}; review is needed.`;
+}
+
 function validateAppointmentForm(formData) {
   const errors = [];
   const required = [
     ["clientId", "Client"],
     ["serviceCode", "Service code"],
     ["providerUserId", "Primary provider"],
-    ["date", "Date"],
-    ["startTime", "Start time"],
-    ["endTime", "End time"],
     ["timeZone", "Time zone"],
     ["serviceLocationIndex", "Service Location"]
   ];
+  const isRecurring = String(formData.get("repeat") || "") === "on";
+  required.push(...(isRecurring ? [
+    ["recurrenceStartDate", "Start date"],
+    ["recurrenceEndDate", "End date"]
+  ] : [
+    ["date", "Date"],
+    ["startTime", "Start time"],
+    ["endTime", "End time"]
+  ]));
   required.forEach(([name, label]) => {
     if (!String(formData.get(name) || "").trim()) errors.push(`${label} is required.`);
   });
@@ -4274,6 +4486,31 @@ function validateAppointmentForm(formData) {
   const serviceCode = String(formData.get("serviceCode") || "");
   if (serviceCode && !["97151", "97153", "97155", "97156"].includes(serviceCode)) {
     errors.push("Choose a supported service code.");
+  }
+  const provider = state.appointmentProviders.find((item) => item.id === String(formData.get("providerUserId") || ""));
+  if (provider && provider.role !== appointmentProviderRole(serviceCode)) {
+    errors.push("Choose an active provider who is eligible for the selected service code.");
+  }
+  if (isRecurring && (!serviceLocation?.id || !activeStructuredClientServiceLocations(String(formData.get("clientId") || "")).some((location) => location.id === serviceLocation.id))) {
+    errors.push("Recurring series require an active structured Service Location from the Client Profile.");
+  }
+  if (isRecurring) {
+    const startDate = String(formData.get("recurrenceStartDate") || "");
+    const endDate = String(formData.get("recurrenceEndDate") || "");
+    if (startDate && endDate && endDate < startDate) errors.push("End date must be on or after start date.");
+    const rows = appointmentRecurrenceRowValues(formData);
+    if (!rows.length) errors.push("At least one recurrence day is required.");
+    const weekdays = rows.map((row) => row.weekday);
+    if (new Set(weekdays).size !== weekdays.length) errors.push("Each recurrence weekday may be used only once.");
+    rows.forEach((row, index) => {
+      if (!Number.isInteger(row.weekday) || row.weekday < 0 || row.weekday > 6) errors.push(`Recurrence day ${index + 1} requires a weekday.`);
+      if (!/^\d{2}:\d{2}$/.test(row.startLocalTime)) errors.push(`Recurrence day ${index + 1} requires a start time.`);
+      if (!/^\d{2}:\d{2}$/.test(row.endLocalTime)) errors.push(`Recurrence day ${index + 1} requires an end time.`);
+      if (row.startLocalTime && row.endLocalTime && row.endLocalTime <= row.startLocalTime) {
+        errors.push(`Recurrence day ${index + 1} end time must be after its start time.`);
+      }
+    });
+    return [...new Set(errors)];
   }
   const date = String(formData.get("date") || "");
   const { startDate, endDate } = scheduleWeekRangeValues();
@@ -4299,20 +4536,26 @@ async function handleCreateAppointment(event) {
   const formData = new FormData(appointmentForm);
   const errors = validateAppointmentForm(formData);
   if (errors.length) {
-    appointmentFormMessage.textContent = errors.join(" ");
+    showAppointmentFormMessage(errors.join(" "), { isError: true });
     return;
   }
   state.appointmentSubmitting = true;
-  appointmentFormMessage.textContent = "Creating appointment…";
+  const isRecurring = String(formData.get("repeat") || "") === "on";
+  showAppointmentFormMessage(isRecurring ? "Creating recurring series…" : "Creating appointment…");
   setAppointmentFormBusy(true);
   try {
-    await createAppointment(appointmentFormPayload(formData));
-    state.scheduleSuccessMessage = "Appointment created successfully.";
+    if (isRecurring) {
+      const result = await createRecurringSeries(recurringSeriesSubmissionPayload(formData));
+      state.scheduleSuccessMessage = recurringSeriesSuccessMessage(result);
+    } else {
+      await createAppointment(appointmentFormPayload(formData));
+      state.scheduleSuccessMessage = "Appointment created successfully.";
+    }
     state.appointmentSubmitting = false;
     closeAppointmentForm();
     await ensureScheduleWeekLoaded({ force: true });
   } catch (error) {
-    appointmentFormMessage.textContent = error.message || "Unable to create the appointment.";
+    showAppointmentFormMessage(error.message || "Unable to create the appointment.", { isError: true });
   } finally {
     state.appointmentSubmitting = false;
     setAppointmentFormBusy(false);

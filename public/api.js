@@ -122,6 +122,32 @@ export async function createAppointment(appointment) {
   return parseResponse(response);
 }
 
+export async function createRecurringSeries(series, { timeoutMs = 20000 } = {}) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch("/api/recurring-series", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": series.requestId
+      },
+      body: JSON.stringify(series),
+      signal: controller.signal
+    });
+    return await parseResponse(response);
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      const timeoutError = new Error("The request timed out. The series may have been created; retry to check safely.");
+      timeoutError.code = "REQUEST_TIMEOUT";
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 export async function updateAppointment(appointmentId, appointment) {
   const response = await fetch(`/api/appointments/${encodeURIComponent(appointmentId)}`, {
     method: "PUT",

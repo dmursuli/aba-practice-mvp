@@ -57,7 +57,7 @@ test("creation form contains exactly the requested scheduling fields and canonic
   assert.match(form, /Operational scheduling note/);
   const serviceValues = [...form.matchAll(/<option value="(971\d{2}|parent-training)"/g)].map((match) => match[1]);
   assert.deepEqual(serviceValues, ["97151", "97153", "97155", "97156"]);
-  assert.doesNotMatch(form, /name="(?:soap|behavior|treatment|clinical|assessment|recurrence|cancellation|confirmation|sessionId|planChangeLog)[^"]*"/i);
+  assert.doesNotMatch(form, /name="(?:soap|behavior|treatment|clinical|assessment|cancellation|confirmation|sessionId|planChangeLog)[^"]*"/i);
   assert.doesNotMatch(form, /Edit appointment|Cancel appointment|Confirm appointment|Reschedule appointment/i);
 });
 
@@ -108,6 +108,40 @@ test("service locations reuse Client Profile data and auto-select a single saved
   assert.match(functionSource("renderAppointmentServiceLocations"), /findIndex\(\(location\) => location\.isPrimary\)/);
   assert.match(functionSource("renderAppointmentServiceLocations"), /select\.value = String\(primaryIndex\)/);
   assert.match(appSource, /clientId\?\.addEventListener\("change", renderAppointmentServiceLocations\)/);
+});
+
+test("recurring mode excludes legacy default-setting fallbacks and keeps structured IDs and zones", () => {
+  const context = {
+    state: {
+      clients: [
+        { id: "legacy", defaultSetting: "Clinic and home", profile: {} },
+        { id: "structured", profile: { serviceLocations: [
+          { id: "clinic-1", name: "Clinic", settingType: "clinic", zone: "Doral", isActive: true },
+          { id: "inactive-1", name: "Old Home", settingType: "home", zone: "Kendall", isActive: false }
+        ] } }
+      ]
+    }
+  };
+  vm.runInNewContext([
+    functionSource("canonicalAppointmentSettingType"),
+    functionSource("normalizeClientServiceLocation"),
+    functionSource("legacyDefaultSettingLocations"),
+    functionSource("clientServiceLocations"),
+    functionSource("activeStructuredClientServiceLocations"),
+    functionSource("appointmentServiceLocationsForMode")
+  ].join("\n"), context);
+
+  assert.deepEqual(Array.from(context.appointmentServiceLocationsForMode("legacy", false), (location) => location.label), ["Clinic", "Home"]);
+  assert.equal(context.appointmentServiceLocationsForMode("legacy", true).length, 0);
+  const recurringLocations = context.appointmentServiceLocationsForMode("structured", true);
+  assert.equal(recurringLocations.length, 1);
+  assert.equal(recurringLocations[0].id, "clinic-1");
+  assert.equal(recurringLocations[0].zone, "Doral");
+  const renderer = functionSource("renderAppointmentServiceLocations");
+  assert.match(renderer, /appointmentServiceLocationsForMode\(clientId, isRecurring\)/);
+  assert.match(renderer, /No active structured Service Locations/);
+  assert.match(renderer, /Recurring series require an active structured Service Location/);
+  assert.match(functionSource("applyAppointmentRecurrenceMode"), /renderAppointmentServiceLocations\(\{ preferredLocationId \}\)/);
 });
 
 test("Client Profile provides structured Service Location management without deletion", () => {
@@ -248,6 +282,149 @@ test("submission is guarded, reports state, creates through Phase 2, and refresh
   assert.match(handler, /await ensureScheduleWeekLoaded\(\{ force: true \}\)/);
   assert.match(functionSource("setAppointmentFormBusy"), /appointmentSubmitButton\.disabled = isBusy/);
   assert.match(apiSource, /fetch\("\/api\/appointments",\s*\{[\s\S]*method: "POST"/);
+});
+
+test("Repeat defaults off and toggles between single and recurring time controls without replacing shared fields", () => {
+  const form = htmlSource.slice(htmlSource.indexOf('id="appointment-form"'), htmlSource.indexOf('id="appointment-details-modal"'));
+  assert.match(form, /<input type="checkbox" name="repeat" id="appointment-repeat">/);
+  assert.doesNotMatch(form, /id="appointment-repeat"[^>]*checked/);
+  assert.match(form, /id="appointment-single-time-fields"/);
+  assert.match(form, /class="appointment-recurrence-fields hidden"/);
+  for (const shared of ["clientId", "serviceCode", "providerUserId", "timeZone", "serviceLocationIndex", "notes"]) {
+    assert.match(form, new RegExp(`name="${shared}"`));
+  }
+  const toggle = functionSource("applyAppointmentRecurrenceMode");
+  assert.match(toggle, /appointmentSingleTimeFields\?\.classList\.toggle\("hidden", isRecurring\)/);
+  assert.match(toggle, /appointmentRecurrenceFields\?\.classList\.toggle\("hidden", !isRecurring\)/);
+  assert.doesNotMatch(toggle, /clientId|serviceCode|providerUserId|serviceLocationIndex/);
+});
+
+test("recurrence rows use readable unique weekdays, per-day times, safe removal, and a seven-day cap", () => {
+  const markup = functionSource("appointmentRecurrenceRowMarkup");
+  for (const weekday of ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]) {
+    assert.match(markup, new RegExp(weekday));
+  }
+  assert.match(markup, /name="recurrenceWeekday"/);
+  assert.match(markup, /name="recurrenceStartTime"/);
+  assert.match(markup, /name="recurrenceEndTime"/);
+  assert.match(functionSource("resetAppointmentRecurrenceRows"), /appointmentRecurrenceRowMarkup/);
+  const add = functionSource("addAppointmentRecurrenceRow");
+  assert.match(add, /find\(\(value\) => !used\.has\(value\)\)/);
+  const controls = functionSource("updateAppointmentRecurrenceControls");
+  assert.match(controls, /index !== rowIndex && value === option\.value/);
+  assert.match(controls, /rows\.length === 1/);
+  assert.match(controls, /rows\.length >= 7/);
+  const remove = functionSource("handleAppointmentRecurrenceRowClick");
+  assert.match(remove, /if \(rows\.length <= 1\) return/);
+});
+
+test("recurring validation requires a bounded series, active structured location, compatible provider, and valid rows", () => {
+  const validation = functionSource("validateAppointmentForm");
+  assert.match(validation, /\["recurrenceEndDate", "End date"\]/);
+  assert.match(validation, /End date must be on or after start date/);
+  assert.match(validation, /active structured Service Location/);
+  assert.match(validation, /eligible for the selected service code/);
+  assert.match(validation, /At least one recurrence day is required/);
+  assert.match(validation, /Each recurrence weekday may be used only once/);
+  assert.match(validation, /end time must be after its start time/);
+  assert.match(functionSource("syncAppointmentSettingFromLocation"), /String\(location\.zone \|\| "Not assigned"\)/);
+  assert.match(htmlSource, /id="appointment-setting-display" readonly/);
+  assert.match(htmlSource, /id="appointment-zone-display" readonly/);
+});
+
+test("all client validation failures render beside submit controls and are brought into view", () => {
+  const form = htmlSource.slice(htmlSource.indexOf('<form id="appointment-form"'), htmlSource.indexOf('id="appointment-details-modal"'));
+  assert.match(form, /<form id="appointment-form" novalidate>/);
+  assert.ok(form.indexOf('id="appointment-form-message"') > form.indexOf("</fieldset>"));
+  assert.ok(form.indexOf('id="appointment-form-message"') < form.indexOf('class="form-actions appointment-form-actions"'));
+  const feedback = functionSource("showAppointmentFormMessage");
+  assert.match(feedback, /classList\.toggle\("appointment-form-error"/);
+  assert.match(feedback, /scrollIntoView\(\{ block: "nearest" \}\)/);
+  assert.match(feedback, /focus\(\{ preventScroll: true \}\)/);
+  const handler = functionSource("handleCreateAppointment", { async: true });
+  assert.match(handler, /showAppointmentFormMessage\(errors\.join\(" "\), \{ isError: true \}\)/);
+  assert.match(handler, /showAppointmentFormMessage\(error\.message \|\| "Unable to create the appointment\."/);
+  assert.match(cssSource, /\.appointment-submit-feedback\.appointment-form-error\s*\{/);
+});
+
+test("recurring payload uses the Phase 4B contract and excludes server-managed recurrence data", () => {
+  const payload = functionSource("recurringSeriesFormPayload");
+  for (const field of ["requestId", "clientId", "serviceCode", "providerUserId", "serviceLocationId", "timeZone", "startDate", "endDate", "recurrenceRows", "operationalNote"]) {
+    assert.match(payload, new RegExp(`${field}[,:]`));
+  }
+  assert.doesNotMatch(payload, /locationSnapshot|settingType|rowId|seriesId|revisionId|occurrenceId|status|version|createdAt|createdBy/);
+  assert.match(functionSource("appointmentRecurrenceRowValues"), /weekday: Number\(weekday\)/);
+  assert.match(apiSource, /function createRecurringSeries\(series[\s\S]*fetch\("\/api\/recurring-series"[\s\S]*method: "POST"/);
+  assert.match(apiSource, /"idempotency-key": series\.requestId/);
+});
+
+test("recurring submission prevents duplicates, reuses an ambiguous retry requestId, and refreshes on success", () => {
+  const request = functionSource("recurringSeriesSubmissionPayload");
+  assert.match(request, /state\.recurringSeriesRequestSignature !== signature/);
+  assert.match(request, /state\.recurringSeriesRequestId = recurringSeriesRequestId\(\)/);
+  const handler = functionSource("handleCreateAppointment", { async: true });
+  assert.match(handler, /if \(state\.appointmentSubmitting/);
+  assert.match(handler, /await createRecurringSeries\(recurringSeriesSubmissionPayload\(formData\)\)/);
+  assert.match(handler, /recurringSeriesSuccessMessage\(result\)/);
+  assert.match(handler, /closeAppointmentForm\(\)/);
+  assert.match(handler, /ensureScheduleWeekLoaded\(\{ force: true \}\)/);
+  assert.match(apiSource, /series may have been created; retry to check safely/);
+});
+
+test("requestId remains stable for an unchanged retry and changes after a material recurrence edit", () => {
+  let requestNumber = 0;
+  const context = {
+    state: { recurringSeriesRequestId: "", recurringSeriesRequestSignature: "" },
+    selectedAppointmentServiceLocation: () => ({ id: "location-1" }),
+    crypto: { randomUUID: () => `request-000${++requestNumber}` },
+    String,
+    Number,
+    JSON,
+    Date,
+    Math
+  };
+  vm.runInNewContext([
+    functionSource("appointmentRecurrenceRowValues"),
+    functionSource("recurringSeriesFormPayload"),
+    functionSource("recurringSeriesRequestId"),
+    functionSource("recurringSeriesSubmissionPayload")
+  ].join("\n"), context);
+  const values = {
+    clientId: "client-1",
+    serviceCode: "97153",
+    providerUserId: "user-rbt",
+    serviceLocationIndex: "0",
+    timeZone: "America/New_York",
+    recurrenceStartDate: "2026-09-01",
+    recurrenceEndDate: "2026-12-31",
+    notes: "Use side gate."
+  };
+  const rows = {
+    recurrenceWeekday: ["2", "4"],
+    recurrenceStartTime: ["14:30", "15:00"],
+    recurrenceEndTime: ["18:30", "18:00"]
+  };
+  const formData = {
+    get: (name) => values[name] || "",
+    getAll: (name) => rows[name] || []
+  };
+  const first = context.recurringSeriesSubmissionPayload(formData);
+  const retry = context.recurringSeriesSubmissionPayload(formData);
+  assert.equal(first.requestId, retry.requestId);
+  assert.equal(first.recurrenceRows[0].weekday, 2);
+  values.recurrenceEndDate = "2026-12-30";
+  const edited = context.recurringSeriesSubmissionPayload(formData);
+  assert.notEqual(edited.requestId, first.requestId);
+});
+
+test("recurring success reports appointment counts and non-blocking overlap review without raw IDs", () => {
+  const success = functionSource("recurringSeriesSuccessMessage");
+  assert.match(success, /appointmentCount/);
+  assert.match(success, /scheduling overlap/);
+  assert.match(success, /provider_overlap/);
+  assert.match(success, /client_overlap/);
+  assert.match(success, /review is needed/);
+  assert.doesNotMatch(success, /existingAppointmentId|occurrenceId/);
 });
 
 test("calendar loads appointments with sessions and makes only appointments selectable", () => {

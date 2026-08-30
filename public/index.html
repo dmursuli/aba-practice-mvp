@@ -2134,9 +2134,8 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
           </div>
           <button type="button" class="secondary-button" data-close-appointment>Close</button>
         </div>
-        <p class="muted">Create one scheduled appointment. This does not create a clinical session or SOAP note.</p>
-        <p class="form-message" id="appointment-form-message" role="status" aria-live="polite"></p>
-        <form id="appointment-form">
+        <p class="muted" id="appointment-form-description">Create one scheduled appointment. This does not create a clinical session or SOAP note.</p>
+        <form id="appointment-form" novalidate>
           <fieldset id="appointment-form-fields">
             <div class="form-grid appointment-form-grid">
               <label>
@@ -2161,18 +2160,46 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
                   <option value="">Select a service code first</option>
                 </select>
               </label>
-              <label>
-                Date
-                <input type="date" name="date" required>
+              <label class="appointment-repeat-control">
+                <span>Scheduling pattern</span>
+                <span class="appointment-repeat-choice">
+                  <input type="checkbox" name="repeat" id="appointment-repeat">
+                  Repeat / Create recurring series
+                </span>
               </label>
-              <label>
-                Start time
-                <input type="time" name="startTime" required>
-              </label>
-              <label>
-                End time
-                <input type="time" name="endTime" required>
-              </label>
+              <div class="appointment-single-time-fields" id="appointment-single-time-fields">
+                <label>
+                  Date
+                  <input type="date" name="date" required>
+                </label>
+                <label>
+                  Start time
+                  <input type="time" name="startTime" required>
+                </label>
+                <label>
+                  End time
+                  <input type="time" name="endTime" required>
+                </label>
+              </div>
+              <section class="appointment-recurrence-fields hidden" id="appointment-recurrence-fields" aria-labelledby="appointment-recurrence-heading">
+                <label>
+                  Start date
+                  <input type="date" name="recurrenceStartDate" disabled required>
+                </label>
+                <div class="appointment-recurrence-schedule">
+                  <div class="appointment-recurrence-heading">
+                    <strong id="appointment-recurrence-heading">Recurrence schedule</strong>
+                    <span class="field-help">Each weekday may be used once.</span>
+                  </div>
+                  <div id="appointment-recurrence-rows"></div>
+                  <button type="button" class="secondary-button appointment-add-day" id="appointment-add-recurrence-day" disabled>+ Add Day</button>
+                </div>
+                <label>
+                  End date
+                  <input type="date" name="recurrenceEndDate" disabled required>
+                  <span class="field-help">Required. Choose the last date for this series.</span>
+                </label>
+              </section>
               <label>
                 Time zone
                 <select name="timeZone" required>
@@ -2196,12 +2223,18 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
                 <input type="text" id="appointment-setting-display" readonly placeholder="Select a service location">
                 <span class="field-help">Determined automatically by the selected service location.</span>
               </label>
+              <label>
+                Geographic zone
+                <input type="text" id="appointment-zone-display" readonly placeholder="Select a service location">
+                <span class="field-help">Determined automatically by the selected service location.</span>
+              </label>
               <label class="appointment-note-field">
                 Operational scheduling note
                 <textarea name="notes" rows="3"></textarea>
               </label>
             </div>
           </fieldset>
+          <p class="form-message appointment-submit-feedback" id="appointment-form-message" role="status" aria-live="polite" tabindex="-1"></p>
           <div class="form-actions appointment-form-actions">
             <button type="button" class="secondary-button" data-close-appointment>Close</button>
             <button type="submit" class="primary-button" id="appointment-submit">Create Appointment</button>

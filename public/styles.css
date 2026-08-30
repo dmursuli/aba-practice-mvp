@@ -1950,6 +1950,78 @@ button:focus-visible {
   align-items: start;
 }
 
+.appointment-repeat-control,
+.appointment-recurrence-fields,
+.appointment-single-time-fields {
+  grid-column: 1 / -1;
+}
+
+.appointment-repeat-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fafc;
+  font-weight: 600;
+}
+
+.appointment-repeat-choice input {
+  width: auto;
+  margin: 0;
+}
+
+.appointment-single-time-fields,
+.appointment-recurrence-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.appointment-single-time-fields.hidden,
+.appointment-recurrence-fields.hidden {
+  display: none;
+}
+
+.appointment-recurrence-schedule {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+}
+
+.appointment-recurrence-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#appointment-recurrence-rows {
+  display: grid;
+  gap: 8px;
+}
+
+.appointment-recurrence-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(120px, 1fr) minmax(120px, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.appointment-recurrence-row label {
+  min-width: 0;
+}
+
+.appointment-recurrence-row .secondary-button {
+  min-height: 42px;
+}
+
+.appointment-add-day {
+  justify-self: start;
+}
+
 .appointment-form-grid .field-help {
   color: var(--muted);
   font-size: 0.8rem;
@@ -1961,8 +2033,26 @@ button:focus-visible {
 }
 
 .appointment-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+.appointment-submit-feedback {
+  min-height: 0;
+  margin-top: 16px;
+  padding: 0;
+}
+
+.appointment-submit-feedback.appointment-form-error {
+  padding: 10px 12px;
+  border: 1px solid #f2b8c0;
+  border-radius: 6px;
+  color: #8f2533;
+  background: #fdecef;
+  font-weight: 700;
 }
 
 .appointment-details-panel {
@@ -2452,6 +2542,28 @@ button:disabled {
 
   .appointment-note-field {
     grid-column: auto;
+  }
+
+  .appointment-repeat-control,
+  .appointment-recurrence-fields,
+  .appointment-single-time-fields {
+    grid-column: auto;
+  }
+
+  .appointment-single-time-fields,
+  .appointment-recurrence-fields,
+  .appointment-recurrence-row {
+    grid-template-columns: 1fr;
+  }
+
+  .appointment-recurrence-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .appointment-add-day,
+  .appointment-recurrence-row .secondary-button {
+    width: 100%;
   }
 
   .appointment-form-actions,
