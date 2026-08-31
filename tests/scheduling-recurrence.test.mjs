@@ -124,6 +124,18 @@ test("series revisions must cover the bounded series timeline without overlap or
   overlap.revisions[1].effectiveStartDate = "2026-06-01";
   const overlapResult = sanitizeRecurringSeriesRecord(overlap);
   assert.match(overlapResult.errors.join(" "), /must not overlap/);
+
+  const continuous = validSeries();
+  continuous.revisions = [
+    { ...continuous.revisions[0], effectiveEndDate: "2026-06-01" },
+    {
+      ...structuredClone(continuous.revisions[0]),
+      id: "revision-2",
+      effectiveStartDate: "2026-06-02",
+      effectiveEndDate: "2026-12-31"
+    }
+  ];
+  assert.deepEqual(sanitizeRecurringSeriesRecord(continuous).errors, []);
 });
 
 test("weekday validation requires bounded unique weekday rows while supporting different times", () => {
@@ -165,6 +177,25 @@ test("original-slot identity is stable and duplicate detection is deterministic"
   assert.deepEqual(duplicateOriginalSlotIdentities([
     { originalSlotIdentity: first }, { originalSlotIdentity: different }, { originalSlotIdentity: first }
   ]), [first]);
+
+  const beforeRevision = expandBoundedRecurrence({
+    seriesId: "series-1",
+    revisionId: "revision-1",
+    startDate: "2026-08-18",
+    endDate: "2026-08-18",
+    timeZone: "America/New_York",
+    rows: [{ rowId: "tuesday", weekday: 2, startLocalTime: "14:30", endLocalTime: "18:30" }]
+  });
+  const afterRevision = expandBoundedRecurrence({
+    seriesId: "series-1",
+    revisionId: "revision-2",
+    startDate: "2026-08-18",
+    endDate: "2026-08-18",
+    timeZone: "America/New_York",
+    rows: [{ rowId: "tuesday", weekday: 2, startLocalTime: "15:00", endLocalTime: "18:00" }]
+  });
+  assert.equal(beforeRevision.occurrences[0].originalSlotIdentity, afterRevision.occurrences[0].originalSlotIdentity);
+  assert.notEqual(beforeRevision.occurrences[0].recurrenceRevisionId, afterRevision.occurrences[0].recurrenceRevisionId);
 });
 
 test("bounded recurrence expands across month and year boundaries", () => {
@@ -235,4 +266,17 @@ test("legacy appointments need no recurrence identity while complete recurrence 
     lastSeriesOperationId: "operation-1"
   });
   assert.deepEqual(recurring.errors, []);
+
+  const removed = sanitizeRecurrenceAppointmentIdentity({
+    ...recurring.identity,
+    recurrenceException: {
+      type: "removed_by_series",
+      baseRevisionId: "revision-1",
+      operationId: "operation-2",
+      createdAt: "2026-08-01T12:00:00.000Z",
+      createdBy: "admin-1"
+    }
+  });
+  assert.deepEqual(removed.errors, []);
+  assert.equal(removed.identity.recurrenceException.type, "removed_by_series");
 });

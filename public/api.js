@@ -157,6 +157,15 @@ export async function updateAppointment(appointmentId, appointment) {
   return parseResponse(response);
 }
 
+export async function updateRecurringThisAndFuture(appointmentId, appointment) {
+  const response = await fetch(`/api/appointments/${encodeURIComponent(appointmentId)}/this-and-future`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(appointment)
+  });
+  return parseResponse(response);
+}
+
 export async function cancelAppointment(appointmentId, cancellation) {
   const response = await fetch(`/api/appointments/${encodeURIComponent(appointmentId)}/cancel`, {
     method: "POST",

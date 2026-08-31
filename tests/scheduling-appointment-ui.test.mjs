@@ -664,11 +664,19 @@ test("edit payload sends expectedVersion and only editable operational values", 
   assert.match(apiSource, /function updateAppointment\(appointmentId, appointment\)[\s\S]*method: "PUT"/);
 });
 
-test("recurring edit makes this-appointment-only scope explicit and sends both current versions", () => {
+test("recurring edit offers only This Appointment and eligible This and Future scopes", () => {
   const renderer = functionSource("renderAppointmentEditForm");
   assert.match(renderer, /appointment\.recurrence\?\.isRecurring/);
-  assert.match(renderer, /This change applies only to this appointment\./);
-  assert.doesNotMatch(renderer, /This and future|Entire series|Edit Series/);
+  assert.match(renderer, /name="editScope" value="this_appointment_only" checked/);
+  assert.match(renderer, /This appointment only/);
+  assert.match(renderer, /name="editScope" value="this_and_future"/);
+  assert.match(renderer, /This and future appointments/);
+  assert.match(renderer, /appointment\.recurrence\.canEditThisAndFuture/);
+  assert.match(renderer, /thisAndFutureUnavailableReason/);
+  assert.match(renderer, /Date changes this recurrence row's weekday/);
+  assert.match(renderer, /effective date remains the selected occurrence's original series date/);
+  assert.match(renderer, /Past, completed, linked, cancelled, no-show, confirmed/);
+  assert.doesNotMatch(renderer, /Entire series|Edit Series/);
   const payload = functionSource("appointmentEditPayload");
   assert.match(payload, /appointment\?\.recurrence\?\.isRecurring/);
   assert.match(payload, /expectedAppointmentVersion: Number\(appointment\?\.version\)/);
@@ -676,6 +684,7 @@ test("recurring edit makes this-appointment-only scope explicit and sends both c
   assert.match(payload, /: \{ expectedVersion: Number\(appointment\?\.version\) \}/);
   assert.doesNotMatch(payload, /recurrenceSeriesId|recurrenceRevisionId|recurrenceRowId|recurrenceOccurrenceId/);
   assert.match(cssSource, /\.appointment-recurrence-scope-message\s*\{/);
+  assert.match(apiSource, /function updateRecurringThisAndFuture\(appointmentId, appointment\)[\s\S]*\/this-and-future[\s\S]*method: "POST"/);
 });
 
 test("edit validation rejects invalid time, incompatible providers, and inactive locations", () => {
@@ -693,6 +702,12 @@ test("save prevents double-submit, refreshes details and calendar, and reports m
   assert.match(handler, /state\.appointmentEditSubmitting = true/);
   assert.match(handler, /Saving appointment/);
   assert.match(handler, /await updateAppointment\(/);
+  assert.match(handler, /await updateRecurringThisAndFuture\(/);
+  assert.match(handler, /await getAppointment\(appointmentId\)/);
+  assert.match(handler, /operation\.updatedCount/);
+  assert.match(handler, /operation\.protectedCount/);
+  assert.match(handler, /operation\.collisionWarnings/);
+  assert.match(handler, /scheduling overlap warning/);
   assert.match(handler, /state\.selectedAppointmentDetails = appointment/);
   assert.match(handler, /await ensureScheduleWeekLoaded\(\{ force: true \}\)/);
   assert.match(handler, /Appointment updated successfully/);
@@ -970,6 +985,9 @@ test("cancelled appointment details show operational history with a readable act
   assert.match(category, /client_cancelled/);
   assert.match(category, /provider_cancelled/);
   assert.match(category, /agency_cancelled/);
+  assert.match(category, /removed_by_series/);
+  assert.match(functionSource("appointmentCancellationReasonLabel"), /recurrence_schedule_change/);
+  assert.match(functionSource("appointmentCancellationReasonLabel"), /Recurring schedule changed/);
   assert.match(category, /return ""/);
 });
 

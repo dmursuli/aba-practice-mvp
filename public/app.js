@@ -1,4 +1,4 @@
-import { cancelAppointment, createAppointment, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { cancelAppointment, createAppointment, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -4661,6 +4661,7 @@ function scheduleStatusLabel(status) {
 
 function appointmentCancellationCategory(appointment) {
   const storedCategory = String(appointment?.cancellation?.category || "").trim();
+  if (storedCategory === "system" || appointment?.recurrence?.exceptionType === "removed_by_series") return "system";
   if (appointmentCancellationReasons[storedCategory]) return storedCategory;
   const reason = String(appointment?.cancellation?.reason || "").trim();
   if (["client_cancelled", "illness", "vacation", "family_emergency", "no_show"].includes(reason)) return "client";
@@ -4671,6 +4672,7 @@ function appointmentCancellationCategory(appointment) {
 
 function appointmentCancellationReasonLabel(appointment) {
   const reason = String(appointment?.cancellation?.reason || "").trim();
+  if (reason === "recurrence_schedule_change") return "Recurring schedule changed";
   const category = appointmentCancellationCategory(appointment);
   const option = appointmentCancellationReasons[category]?.find(([value]) => value === reason)
     || Object.values(appointmentCancellationReasons).flat().find(([value]) => value === reason);
@@ -4822,7 +4824,21 @@ function renderAppointmentEditForm(appointment) {
   appointmentDetailsContent.innerHTML = `
     <form id="appointment-edit-form">
       ${appointment.recurrence?.isRecurring ? `
-        <p class="appointment-recurrence-scope-message" role="note">This change applies only to this appointment.</p>
+        <fieldset class="appointment-recurrence-scope-message">
+          <legend>Apply changes to</legend>
+          <label>
+            <input type="radio" name="editScope" value="this_appointment_only" checked>
+            This appointment only
+          </label>
+          <label>
+            <input type="radio" name="editScope" value="this_and_future"${appointment.recurrence.canEditThisAndFuture ? "" : " disabled"}>
+            This and future appointments
+          </label>
+          <span class="field-help">For This and Future, Date changes this recurrence row's weekday; the effective date remains the selected occurrence's original series date. Past, completed, linked, cancelled, no-show, confirmed, and individually modified appointments remain unchanged. Eligible future scheduled appointments are reconciled.</span>
+          ${appointment.recurrence.canEditThisAndFuture ? "" : `
+            <span class="field-help">${escapeHtml(appointment.recurrence.thisAndFutureUnavailableReason || "This appointment cannot start a future-series change.")}</span>
+          `}
+        </fieldset>
       ` : ""}
       <fieldset id="appointment-edit-fields">
         <div class="form-grid appointment-form-grid">
@@ -5545,19 +5561,26 @@ async function handleUpdateAppointment(event) {
   if (message) message.textContent = "Saving appointment…";
   setAppointmentEditBusy(true);
   try {
-    const appointment = await updateAppointment(
-      state.selectedAppointmentDetails.id,
-      appointmentEditPayload(formData)
-    );
+    const appointmentId = state.selectedAppointmentDetails.id;
+    const thisAndFuture = String(formData.get("editScope") || "") === "this_and_future";
+    const operation = thisAndFuture
+      ? await updateRecurringThisAndFuture(appointmentId, appointmentEditPayload(formData))
+      : await updateAppointment(appointmentId, appointmentEditPayload(formData));
+    const appointment = thisAndFuture ? await getAppointment(appointmentId) : operation;
     const movedOutsideWeek = !appointmentDateIsInVisibleWeek(appointment);
     state.selectedAppointmentDetails = appointment;
     state.appointmentEditing = false;
     state.appointmentEditConflict = false;
     state.appointmentEditError = "";
     state.appointmentEditInitialValues = "";
-    const successMessage = movedOutsideWeek
-      ? `Appointment updated successfully and moved to ${formatDate(scheduleAppointmentDate(appointment))}, outside the visible week.`
-      : "Appointment updated successfully.";
+    const overlapWarning = thisAndFuture && operation.collisionWarnings?.length
+      ? ` Review ${operation.collisionWarnings.length} scheduling overlap warning${operation.collisionWarnings.length === 1 ? "" : "s"}.`
+      : "";
+    const successMessage = thisAndFuture
+      ? `This and future appointments updated: ${operation.updatedCount} updated, ${operation.createdCount} created, ${operation.cancelledCount} removed from the schedule, and ${operation.protectedCount} protected.${overlapWarning}`
+      : movedOutsideWeek
+        ? `Appointment updated successfully and moved to ${formatDate(scheduleAppointmentDate(appointment))}, outside the visible week.`
+        : "Appointment updated successfully.";
     state.scheduleSuccessMessage = successMessage;
     state.appointmentDetailsNotice = successMessage;
     state.preserveAppointmentDetailsOnScheduleRefresh = true;
