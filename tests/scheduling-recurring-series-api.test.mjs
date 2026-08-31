@@ -570,29 +570,131 @@ test("individual edits create protected modified and moved exceptions atomically
   assert.equal(JSON.stringify(seriesAudits).includes("Scheduling logistics only"), false);
 });
 
-test("confirmation and cancellation of a recurring occurrence remain unchanged and do not bump the series", async () => {
+test("recurring confirmation requires both current versions and increments the parent series atomically", async () => {
   await resetDb();
   const cookie = await login();
-  await createSeries(cookie, { requestId: "recurring-status-inspection" });
+  await createSeries(cookie, { requestId: "recurring-confirmation-versioning" });
   let persisted = await readDb();
   const appointment = persisted.appointments[0];
-  const confirmed = await request(`/api/appointments/${appointment.id}`, {
+  const identityFields = [
+    "recurrenceSeriesId", "recurrenceRevisionId", "recurrenceRowId", "recurrenceOccurrenceId",
+    "originalOccurrenceLocalDate", "originalOccurrenceStartAt", "generationKind"
+  ];
+  const originalIdentity = Object.fromEntries(identityFields.map((field) => [field, appointment[field]]));
+
+  const missingSeriesVersion = await request(`/api/appointments/${appointment.id}`, {
     method: "PUT",
     cookie,
     body: { expectedVersion: appointment.version, status: "confirmed" }
   });
+  assert.equal(missingSeriesVersion.response.status, 400);
+  assert.match(missingSeriesVersion.json.errors.join(" "), /expectedSeriesVersion/);
+
+  for (const versions of [
+    { expectedVersion: appointment.version + 1, expectedSeriesVersion: 1 },
+    { expectedVersion: appointment.version, expectedSeriesVersion: 2 }
+  ]) {
+    const before = await readDb();
+    const stale = await request(`/api/appointments/${appointment.id}`, {
+      method: "PUT",
+      cookie,
+      body: { ...versions, status: "confirmed" }
+    });
+    assert.equal(stale.response.status, 409);
+    const after = await readDb();
+    assert.deepEqual(after.appointments, before.appointments);
+    assert.deepEqual(after.recurringAppointmentSeries, before.recurringAppointmentSeries);
+    assert.deepEqual(after.auditLog, before.auditLog);
+  }
+
+  const confirmed = await request(`/api/appointments/${appointment.id}`, {
+    method: "PUT",
+    cookie,
+    body: { expectedVersion: appointment.version, expectedSeriesVersion: 1, status: "confirmed" }
+  });
   assert.equal(confirmed.response.status, 200);
+  assert.equal(confirmed.json.version, appointment.version + 1);
+  assert.equal(confirmed.json.recurrence.seriesVersion, 2);
+  assert.equal(confirmed.json.recurrence.isException, false);
   persisted = await readDb();
-  assert.equal(persisted.recurringAppointmentSeries[0].version, 1);
-  assert.equal(persisted.appointments.find((item) => item.id === appointment.id).recurrenceException, null);
+  const stored = persisted.appointments.find((item) => item.id === appointment.id);
+  assert.equal(stored.status, "confirmed");
+  assert.equal(stored.recurrenceException, null);
+  assert.deepEqual(Object.fromEntries(identityFields.map((field) => [field, stored[field]])), originalIdentity);
+  assert.equal(persisted.recurringAppointmentSeries[0].version, 2);
+  const seriesAudits = persisted.auditLog.filter((entry) => entry.action === "recurring-series-occurrence-confirmed");
+  assert.equal(seriesAudits.length, 1);
+  assert.equal(seriesAudits[0].details.version, 2);
+  assert.equal(JSON.stringify(seriesAudits).includes("Recurring Client"), false);
+  assert.equal(JSON.stringify(seriesAudits).includes("123 Authoritative Way"), false);
+  assert.equal(JSON.stringify(seriesAudits).includes("Scheduling logistics only"), false);
+});
+
+test("recurring cancellation requires both current versions and preserves cancellation and recurrence identity", async () => {
+  await resetDb();
+  const cookie = await login();
+  await createSeries(cookie, { requestId: "recurring-cancellation-versioning" });
+  let persisted = await readDb();
+  const appointment = persisted.appointments[0];
+  const identityFields = [
+    "recurrenceSeriesId", "recurrenceRevisionId", "recurrenceRowId", "recurrenceOccurrenceId",
+    "originalOccurrenceLocalDate", "originalOccurrenceStartAt", "generationKind"
+  ];
+  const originalIdentity = Object.fromEntries(identityFields.map((field) => [field, appointment[field]]));
+
+  const missingSeriesVersion = await request(`/api/appointments/${appointment.id}/cancel`, {
+    method: "POST",
+    cookie,
+    body: { expectedVersion: appointment.version, category: "client", reason: "client_cancelled" }
+  });
+  assert.equal(missingSeriesVersion.response.status, 400);
+  assert.match(missingSeriesVersion.json.errors.join(" "), /expectedSeriesVersion/);
+
+  for (const versions of [
+    { expectedVersion: appointment.version + 1, expectedSeriesVersion: 1 },
+    { expectedVersion: appointment.version, expectedSeriesVersion: 2 }
+  ]) {
+    const before = await readDb();
+    const stale = await request(`/api/appointments/${appointment.id}/cancel`, {
+      method: "POST",
+      cookie,
+      body: { ...versions, category: "provider", reason: "provider_cancelled", note: "Call caregiver." }
+    });
+    assert.equal(stale.response.status, 409);
+    const after = await readDb();
+    assert.deepEqual(after.appointments, before.appointments);
+    assert.deepEqual(after.recurringAppointmentSeries, before.recurringAppointmentSeries);
+    assert.deepEqual(after.auditLog, before.auditLog);
+  }
 
   const cancelled = await request(`/api/appointments/${appointment.id}/cancel`, {
     method: "POST",
     cookie,
-    body: { expectedVersion: confirmed.json.version, category: "client", reason: "client_cancelled" }
+    body: {
+      expectedVersion: appointment.version,
+      expectedSeriesVersion: 1,
+      category: "provider",
+      reason: "provider_cancelled",
+      note: "Call caregiver."
+    }
   });
   assert.equal(cancelled.response.status, 200);
+  assert.equal(cancelled.json.version, appointment.version + 1);
+  assert.equal(cancelled.json.recurrence.seriesVersion, 2);
   persisted = await readDb();
-  assert.equal(persisted.recurringAppointmentSeries[0].version, 1);
-  assert.equal(persisted.appointments.find((item) => item.id === appointment.id).recurrenceException, null);
+  const stored = persisted.appointments.find((item) => item.id === appointment.id);
+  assert.equal(stored.status, "cancelled");
+  assert.equal(stored.cancellation.category, "provider");
+  assert.equal(stored.cancellation.reason, "provider_cancelled");
+  assert.equal(stored.cancellation.note, "Call caregiver.");
+  assert.equal(stored.recurrenceException, null);
+  assert.deepEqual(Object.fromEntries(identityFields.map((field) => [field, stored[field]])), originalIdentity);
+  assert.equal(persisted.recurringAppointmentSeries[0].version, 2);
+  const seriesAudits = persisted.auditLog.filter((entry) => entry.action === "recurring-series-occurrence-cancelled");
+  assert.equal(seriesAudits.length, 1);
+  assert.equal(seriesAudits[0].details.version, 2);
+  assert.equal(JSON.stringify(seriesAudits).includes("Recurring Client"), false);
+  assert.equal(JSON.stringify(seriesAudits).includes("Call caregiver."), false);
+  assert.equal(JSON.stringify(seriesAudits).includes("provider_cancelled"), false);
+  assert.equal(JSON.stringify(seriesAudits).includes("123 Authoritative Way"), false);
 });

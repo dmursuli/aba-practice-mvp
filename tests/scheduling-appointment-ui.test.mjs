@@ -780,9 +780,12 @@ test("confirmation state displays the required immutable summary and explicit ac
   assert.doesNotMatch(renderer, /name="(?:note|reason)"/i);
 });
 
-test("confirmation sends only confirmed status and the current expectedVersion", () => {
+test("confirmation sends the current appointment version and recurring series version only when needed", () => {
   const payload = functionSource("appointmentConfirmationPayload");
   assert.match(payload, /expectedVersion: Number\(state\.selectedAppointmentDetails\?\.version\)/);
+  assert.match(payload, /state\.selectedAppointmentDetails\?\.recurrence\?\.isRecurring/);
+  assert.match(payload, /expectedSeriesVersion: Number\(state\.selectedAppointmentDetails\.recurrence\.seriesVersion\)/);
+  assert.match(payload, /: \{\}/);
   assert.match(payload, /status: "confirmed"/);
   for (const forbidden of [
     "clientId", "providerAssignments", "serviceCode", "scheduledStartAt", "scheduledEndAt",
@@ -902,9 +905,12 @@ test("cancellation reasons are structured and filtered by category", () => {
   assert.match(validation, /Confirm that this appointment should be cancelled/);
 });
 
-test("cancellation submits only the current version and structured operational cancellation values", () => {
+test("cancellation submits current versions and structured operational cancellation values", () => {
   const payload = functionSource("appointmentCancellationPayload");
   assert.match(payload, /expectedVersion: Number\(state\.selectedAppointmentDetails\?\.version\)/);
+  assert.match(payload, /state\.selectedAppointmentDetails\?\.recurrence\?\.isRecurring/);
+  assert.match(payload, /expectedSeriesVersion: Number\(state\.selectedAppointmentDetails\.recurrence\.seriesVersion\)/);
+  assert.match(payload, /: \{\}/);
   for (const field of ["category", "reason", "note"]) assert.match(payload, new RegExp(`${field}:`));
   for (const forbidden of ["sessionId", "soap", "planChangeLog", "treatmentPlan", "billing", "locationSnapshot", "providerAssignments"]) {
     assert.doesNotMatch(payload, new RegExp(forbidden, "i"));

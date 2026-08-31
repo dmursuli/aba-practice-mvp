@@ -1288,7 +1288,9 @@ export function createAppServer() {
             throw new AppointmentMutationRequestError(403, ["You cannot update this appointment."]);
           }
 
-          const recurringEdit = isRecurringOccurrence(appointment) && hasAppointmentSchedulingEditFields(payload);
+          const recurringOccurrence = isRecurringOccurrence(appointment);
+          const recurringEdit = recurringOccurrence && hasAppointmentSchedulingEditFields(payload);
+          const recurringConfirmation = recurringOccurrence && payload.status === "confirmed";
           const expectedVersion = recurringEdit
             ? appointmentExpectedAppointmentVersion(payload)
             : appointmentExpectedVersion(payload);
@@ -1305,7 +1307,7 @@ export function createAppServer() {
           }
 
           let series = null;
-          if (recurringEdit) {
+          if (recurringEdit || recurringConfirmation) {
             const expectedSeriesVersion = appointmentExpectedSeriesVersion(payload);
             if (!expectedSeriesVersion) {
               throw new AppointmentMutationRequestError(400, [
@@ -1332,6 +1334,7 @@ export function createAppServer() {
           if (errors.length) throw new AppointmentMutationRequestError(400, errors);
           const materiallyChanged = recurringEdit
             && appointmentSchedulingMateriallyChanged(appointment, updatedAppointment);
+          const parentSeriesChanged = materiallyChanged || recurringConfirmation;
           let operationId = "";
           if (materiallyChanged) {
             const now = updatedAppointment.updatedAt;
@@ -1343,7 +1346,9 @@ export function createAppServer() {
               createdAt: now,
               createdBy: actor.id
             };
-            series.updatedAt = now;
+          }
+          if (parentSeriesChanged) {
+            series.updatedAt = updatedAppointment.updatedAt;
             series.updatedBy = actor.id;
             series.version += 1;
           }
@@ -1353,20 +1358,25 @@ export function createAppServer() {
             clientId: appointment.clientId,
             agency: appointment.agency,
             details: appointmentAuditDetails(appointment, {
-              recurrenceScope: materiallyChanged ? "this_appointment_only" : "",
-              seriesVersion: materiallyChanged ? series.version : undefined
+              recurrenceScope: parentSeriesChanged ? "this_appointment_only" : "",
+              seriesVersion: parentSeriesChanged ? series.version : undefined
             })
           });
-          if (materiallyChanged) {
-            logAudit(db, req, actor, "recurring-series-occurrence-updated", {
-              clientId: appointment.clientId,
+          if (parentSeriesChanged) {
+            logAudit(db, req, actor, recurringConfirmation
+              ? "recurring-series-occurrence-confirmed"
+              : "recurring-series-occurrence-updated", {
+              clientId: recurringConfirmation ? "" : appointment.clientId,
               agency: appointment.agency,
               details: {
                 seriesId: series.id,
                 appointmentId: appointment.id,
                 scope: "this_appointment_only",
-                exceptionType: appointment.recurrenceException.type,
-                operationId,
+                mutation: recurringConfirmation ? "confirmed" : "modified",
+                ...(materiallyChanged ? {
+                  exceptionType: appointment.recurrenceException.type,
+                  operationId
+                } : {}),
                 version: series.version
               }
             });
@@ -1387,82 +1397,146 @@ export function createAppServer() {
 
     const appointmentCancelMatch = url.pathname.match(/^\/api\/appointments\/([^/]+)\/cancel$/);
     if (req.method === "POST" && appointmentCancelMatch) {
-      await withAppointmentMutationLock(async () => {
-      const db = await readSchedulingDb();
-      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
-      const actor = currentUser(req, db);
+      const authDb = await readSchedulingDb();
+      if (!requireRole(req, res, authDb, ["admin", "bcba"])) return;
       const payload = await readBody(req);
-      const appointment = (db.appointments || []).find((item) => item.id === appointmentCancelMatch[1]);
-      if (!appointment) {
-        sendJson(res, 404, { errors: ["Appointment not found."] });
-        return;
-      }
-      if (!canAccessAgency(actor, appointment.agency)) {
-        sendJson(res, 403, { errors: ["You cannot cancel this appointment."] });
-        return;
-      }
-      const expectedVersion = appointmentExpectedVersion(payload);
-      if (!expectedVersion) {
-        sendJson(res, 400, { errors: ["expectedVersion is required and must be a positive integer."] });
-        return;
-      }
-      if (expectedVersion !== appointment.version) {
-        sendJson(res, 409, {
-          errors: ["Appointment has changed. Reload it and try again."],
-          currentVersion: appointment.version
+      let result;
+      try {
+        await mutateSchedulingDb((db) => {
+          ensureSchedulingState(db);
+          db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
+          const state = sessionStatus(req, db);
+          if (state.status !== "ok") {
+            throw new AppointmentMutationRequestError(401, ["Authentication is required."]);
+          }
+          if (!["admin", "bcba"].includes(state.user.role)) {
+            throw new AppointmentMutationRequestError(403, ["Your role cannot perform this action."]);
+          }
+          const actor = state.user;
+          const appointment = (db.appointments || []).find((item) => item.id === appointmentCancelMatch[1]);
+          if (!appointment) {
+            throw new AppointmentMutationRequestError(404, ["Appointment not found."]);
+          }
+          if (!canAccessAgency(actor, appointment.agency)) {
+            throw new AppointmentMutationRequestError(403, ["You cannot cancel this appointment."]);
+          }
+          const expectedVersion = appointmentExpectedVersion(payload);
+          if (!expectedVersion) {
+            throw new AppointmentMutationRequestError(400, [
+              "expectedVersion is required and must be a positive integer."
+            ]);
+          }
+          if (expectedVersion !== appointment.version) {
+            throw new AppointmentMutationRequestError(409, [
+              "Appointment has changed. Reload it and try again."
+            ], { currentVersion: appointment.version });
+          }
+
+          const recurringOccurrence = isRecurringOccurrence(appointment);
+          let series = null;
+          if (recurringOccurrence) {
+            const expectedSeriesVersion = appointmentExpectedSeriesVersion(payload);
+            if (!expectedSeriesVersion) {
+              throw new AppointmentMutationRequestError(400, [
+                "expectedSeriesVersion is required and must be a positive integer."
+              ]);
+            }
+            series = (db.recurringAppointmentSeries || []).find((item) => (
+              item.id === appointment.recurrenceSeriesId
+              && normalizeAgency(item.agency) === normalizeAgency(appointment.agency)
+            ));
+            if (!series) {
+              throw new AppointmentMutationRequestError(409, [
+                "The recurring series changed or is unavailable. Reload the appointment and try again."
+              ]);
+            }
+            if (expectedSeriesVersion !== series.version) {
+              throw new AppointmentMutationRequestError(409, [
+                "The recurring series has changed. Reload the appointment and try again."
+              ], { currentVersion: appointment.version });
+            }
+          }
+
+          const category = String(payload.category || "").trim();
+          const supportedReasons = APPOINTMENT_CANCELLATION_REASONS_BY_CATEGORY.get(category);
+          if (!supportedReasons) {
+            throw new AppointmentMutationRequestError(400, [
+              "Cancellation category must be client, provider, or agency."
+            ]);
+          }
+          const reason = String(payload.reason || "").trim();
+          if (!supportedReasons.has(reason)) {
+            throw new AppointmentMutationRequestError(400, [
+              "Cancellation reason is not supported for the selected category."
+            ]);
+          }
+          const note = String(payload.note || "").trim();
+          if (note.length > SHORT_OPERATIONAL_NOTE_MAX_LENGTH) {
+            throw new AppointmentMutationRequestError(400, [
+              `Cancellation note must be ${SHORT_OPERATIONAL_NOTE_MAX_LENGTH} characters or fewer.`
+            ]);
+          }
+          if (!canTransitionAppointmentStatus(appointment.status, "cancelled")) {
+            throw new AppointmentMutationRequestError(400, [
+              `Appointment status cannot change from ${appointment.status} to cancelled.`
+            ]);
+          }
+
+          const now = new Date().toISOString();
+          // Phase 3C compatibility: client/no_show remains a cancellation until a separate no-show workflow is approved.
+          appointment.status = "cancelled";
+          appointment.cancellation = {
+            category,
+            reason,
+            note,
+            cancelledAt: now,
+            cancelledBy: actor.id
+          };
+          appointment.updatedAt = now;
+          appointment.updatedBy = actor.id;
+          appointment.version += 1;
+          if (recurringOccurrence) {
+            series.updatedAt = now;
+            series.updatedBy = actor.id;
+            series.version += 1;
+          }
+          logAudit(db, req, actor, "appointment-cancelled", {
+            clientId: appointment.clientId,
+            agency: appointment.agency,
+            details: {
+              ...appointmentAuditDetails(appointment, {
+                recurrenceScope: recurringOccurrence ? "this_appointment_only" : "",
+                seriesVersion: recurringOccurrence ? series.version : undefined
+              }),
+              cancellationCategory: category,
+              cancellationReason: reason,
+              cancellationActorId: actor.id,
+              cancellationTimestamp: now
+            }
+          });
+          if (recurringOccurrence) {
+            logAudit(db, req, actor, "recurring-series-occurrence-cancelled", {
+              agency: appointment.agency,
+              details: {
+                seriesId: series.id,
+                appointmentId: appointment.id,
+                scope: "this_appointment_only",
+                mutation: "cancelled",
+                version: series.version
+              }
+            });
+          }
+          result = appointmentDetailsResponse(db, appointment);
+          return db;
         });
-        return;
-      }
-      const category = String(payload.category || "").trim();
-      const supportedReasons = APPOINTMENT_CANCELLATION_REASONS_BY_CATEGORY.get(category);
-      if (!supportedReasons) {
-        sendJson(res, 400, { errors: ["Cancellation category must be client, provider, or agency."] });
-        return;
-      }
-      const reason = String(payload.reason || "").trim();
-      if (!supportedReasons.has(reason)) {
-        sendJson(res, 400, { errors: ["Cancellation reason is not supported for the selected category."] });
-        return;
-      }
-      const note = String(payload.note || "").trim();
-      if (note.length > SHORT_OPERATIONAL_NOTE_MAX_LENGTH) {
-        sendJson(res, 400, {
-          errors: [`Cancellation note must be ${SHORT_OPERATIONAL_NOTE_MAX_LENGTH} characters or fewer.`]
-        });
-        return;
-      }
-      if (!canTransitionAppointmentStatus(appointment.status, "cancelled")) {
-        sendJson(res, 400, { errors: [`Appointment status cannot change from ${appointment.status} to cancelled.`] });
-        return;
-      }
-      const now = new Date().toISOString();
-      // Phase 3C compatibility: client/no_show remains a cancellation until a separate no-show workflow is approved.
-      appointment.status = "cancelled";
-      appointment.cancellation = {
-        category,
-        reason,
-        note,
-        cancelledAt: now,
-        cancelledBy: actor.id
-      };
-      appointment.updatedAt = now;
-      appointment.updatedBy = actor.id;
-      appointment.version += 1;
-      logAudit(db, req, actor, "appointment-cancelled", {
-        clientId: appointment.clientId,
-        agency: appointment.agency,
-        details: {
-          ...appointmentAuditDetails(appointment),
-          cancellationCategory: category,
-          cancellationReason: reason,
-          cancellationActorId: actor.id,
-          cancellationTimestamp: now
+      } catch (error) {
+        if (error instanceof AppointmentMutationRequestError) {
+          sendJson(res, error.status, { errors: error.errors, ...error.extra });
+          return;
         }
-      });
-      await writeDb(db);
-      sendJson(res, 200, appointment);
-      return;
-      });
+        throw error;
+      }
+      sendJson(res, 200, result);
       return;
     }
 

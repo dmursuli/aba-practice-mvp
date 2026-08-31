@@ -5103,6 +5103,9 @@ function validateAppointmentCancellationForm(formData) {
 function appointmentCancellationPayload(formData) {
   return {
     expectedVersion: Number(state.selectedAppointmentDetails?.version),
+    ...(state.selectedAppointmentDetails?.recurrence?.isRecurring
+      ? { expectedSeriesVersion: Number(state.selectedAppointmentDetails.recurrence.seriesVersion) }
+      : {}),
     category: String(formData.get("category") || ""),
     reason: String(formData.get("reason") || ""),
     note: String(formData.get("note") || "").trim()
@@ -5183,6 +5186,9 @@ function renderAppointmentConfirmationForm(appointment) {
 function appointmentConfirmationPayload() {
   return {
     expectedVersion: Number(state.selectedAppointmentDetails?.version),
+    ...(state.selectedAppointmentDetails?.recurrence?.isRecurring
+      ? { expectedSeriesVersion: Number(state.selectedAppointmentDetails.recurrence.seriesVersion) }
+      : {}),
     status: "confirmed"
   };
 }
