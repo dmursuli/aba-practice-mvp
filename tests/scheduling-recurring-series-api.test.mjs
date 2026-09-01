@@ -161,6 +161,14 @@ function thisAndFuturePayload(appointment, series, overrides = {}) {
   return occurrenceEditPayload(appointment, series, overrides);
 }
 
+function entireSeriesFuturePayload(appointment, series, overrides = {}) {
+  return {
+    ...occurrenceEditPayload(appointment, series),
+    recurrenceRows: [{ weekday: 1, startLocalTime: "09:00", endLocalTime: "10:30" }],
+    ...overrides
+  };
+}
+
 test("Admin and BCBA can create series while RBT and read-only users cannot", async () => {
   await resetDb();
   const adminCookie = await login();
@@ -459,7 +467,10 @@ test("recurring occurrence details expose a safe recurrence summary without raw 
     isException: false,
     exceptionType: "",
     canEditThisAndFuture: false,
-    thisAndFutureUnavailableReason: "This occurrence begins the current series revision and cannot split it safely."
+    thisAndFutureUnavailableReason: "This occurrence begins the current series revision and cannot split it safely.",
+    canEditEntireSeriesFuture: false,
+    entireSeriesFutureUnavailableReason: "This recurring series has no future portion to update.",
+    futureRecurrenceRows: []
   });
   for (const field of [
     "recurrenceSeriesId", "recurrenceRevisionId", "recurrenceRowId", "recurrenceOccurrenceId",
@@ -1026,4 +1037,228 @@ test("This and Future rejects missing, stale, boundary, and concurrent versions 
   assert.equal(persisted.recurringAppointmentSeries[0].version, 2);
   assert.equal(persisted.recurringAppointmentSeries[0].revisions.length, 2);
   assert.equal(persisted.auditLog.filter((entry) => entry.action === "recurring-series-this-and-future-updated").length, 1);
+});
+
+test("Entire Series future uses the earliest boundary and replaces the complete future pattern", async () => {
+  await resetDb();
+  const cookie = await login();
+  await createSeries(cookie, {
+    requestId: "entire-series-future-pattern",
+    startDate: "2026-09-07",
+    endDate: "2026-10-05"
+  });
+  let persisted = await readDb();
+  persisted.clients[0].profile.serviceLocations.push({
+    ...structuredClone(location), id: "location-school", name: "School",
+    settingType: "school", zone: "Doral", isPrimary: false
+  });
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+  persisted = await readDb();
+  const series = persisted.recurringAppointmentSeries[0];
+  const originalRevision = structuredClone(series.revisions[0]);
+  const selected = persisted.appointments.find((item) => item.originalOccurrenceLocalDate === "2026-10-05");
+  const result = await request(`/api/appointments/${selected.id}/entire-series-future`, {
+    method: "POST",
+    cookie,
+    body: entireSeriesFuturePayload(selected, series, {
+      serviceCode: "97155",
+      providerAssignments: [{ userId: "user-bcba", assignmentRole: "primary" }],
+      locationId: "location-school",
+      notes: "Future pattern logistics.",
+      recurrenceRows: [
+        { weekday: 1, startLocalTime: "10:00", endLocalTime: "12:00" },
+        { weekday: 3, startLocalTime: "10:00", endLocalTime: "12:00" },
+        { weekday: 5, startLocalTime: "09:00", endLocalTime: "11:00" }
+      ]
+    })
+  });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.json.effectiveDate, "2026-09-07");
+  assert.equal(result.json.seriesVersion, 2);
+  assert.equal(result.json.updatedCount, 5);
+  assert.equal(result.json.createdCount, 8);
+  assert.equal(result.json.cancelledCount, 0);
+  assert.equal(result.json.protectedCount, 0);
+  assert.equal(JSON.stringify(result.json).includes(series.id), false);
+
+  persisted = await readDb();
+  const updatedSeries = persisted.recurringAppointmentSeries[0];
+  assert.equal(updatedSeries.version, 2);
+  assert.equal(updatedSeries.revisions.length, 2);
+  const superseded = updatedSeries.revisions.find((revision) => revision.status === "superseded");
+  const active = updatedSeries.revisions.find((revision) => revision.status === "active");
+  assert.deepEqual(superseded.template, originalRevision.template);
+  assert.equal(superseded.effectiveStartDate, "2026-09-07");
+  assert.equal(superseded.effectiveEndDate, "2026-10-05");
+  assert.equal(superseded.supersededByRevisionId, active.id);
+  assert.equal(active.effectiveStartDate, "2026-09-07");
+  assert.equal(active.effectiveEndDate, "2026-10-05");
+  assert.deepEqual(active.template.rows.map((row) => [row.weekday, row.startLocalTime, row.endLocalTime]), [
+    [1, "10:00", "12:00"], [3, "10:00", "12:00"], [5, "09:00", "11:00"]
+  ]);
+  assert.equal(active.template.serviceCode, "97155");
+  assert.equal(active.template.providerAssignments[0].userId, "user-bcba");
+  assert.equal(active.template.locationId, "location-school");
+  assert.equal(active.template.locationSnapshot.label, "School");
+  assert.equal(active.template.operationalNote, "Future pattern logistics.");
+  assert.equal(new Set(persisted.appointments.map((item) => item.recurrenceOccurrenceId)).size, persisted.appointments.length);
+  const operationAudits = persisted.auditLog.filter((entry) => entry.action === "recurring-series-future-updated");
+  assert.equal(operationAudits.length, 1);
+  assert.equal(operationAudits[0].details.scope, "entire_series_future");
+  assert.equal(operationAudits[0].details.version, 2);
+  assert.equal(JSON.stringify(operationAudits[0]).includes("Future pattern logistics."), false);
+  assert.equal(JSON.stringify(operationAudits[0]).includes("123 Authoritative Way"), false);
+});
+
+test("Entire Series future leaves past and protected appointments unchanged and retains removed slots", async () => {
+  await resetDb();
+  const cookie = await login();
+  await createSeries(cookie, {
+    requestId: "entire-series-protection",
+    startDate: "2026-08-24",
+    endDate: "2026-10-26"
+  });
+  let persisted = await readDb();
+  const byDate = new Map(persisted.appointments.map((item) => [item.originalOccurrenceLocalDate, item]));
+  const pastSnapshots = ["2026-08-24", "2026-08-31"].map((date) => structuredClone(byDate.get(date)));
+  byDate.get("2026-09-07").status = "confirmed";
+  byDate.get("2026-09-14").status = "completed";
+  byDate.get("2026-09-21").status = "cancelled";
+  byDate.get("2026-09-28").status = "no_show";
+  byDate.get("2026-10-05").sessionId = "session-sentinel";
+  byDate.get("2026-10-05").linkedAt = "2026-08-31T12:00:00.000Z";
+  byDate.get("2026-10-05").linkedBy = "user-admin";
+  byDate.get("2026-10-12").recurrenceException = {
+    type: "modified", baseRevisionId: byDate.get("2026-10-12").recurrenceRevisionId,
+    operationId: "prior-modification", createdAt: "2026-08-31T12:00:00.000Z", createdBy: "user-admin"
+  };
+  byDate.get("2026-10-19").recurrenceException = {
+    type: "moved", baseRevisionId: byDate.get("2026-10-19").recurrenceRevisionId,
+    operationId: "prior-move", createdAt: "2026-08-31T12:00:00.000Z", createdBy: "user-admin"
+  };
+  const protectedIds = ["2026-09-07", "2026-09-14", "2026-09-21", "2026-09-28", "2026-10-05", "2026-10-12", "2026-10-19"]
+    .map((date) => byDate.get(date).id);
+  const protectedSnapshots = new Map(protectedIds.map((id) => [
+    id, structuredClone(persisted.appointments.find((item) => item.id === id))
+  ]));
+  const selected = byDate.get("2026-10-26");
+  const series = persisted.recurringAppointmentSeries[0];
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+
+  const result = await request(`/api/appointments/${selected.id}/entire-series-future`, {
+    method: "POST",
+    cookie,
+    body: entireSeriesFuturePayload(selected, series, {
+      recurrenceRows: [{ weekday: 2, startLocalTime: "13:00", endLocalTime: "14:30" }]
+    })
+  });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.json.effectiveDate, "2026-09-01");
+  assert.equal(result.json.protectedCount, 7);
+  assert.equal(result.json.cancelledCount, 1);
+  assert.equal(result.json.createdCount, 8);
+
+  persisted = await readDb();
+  for (const snapshot of pastSnapshots) {
+    assert.deepEqual(persisted.appointments.find((item) => item.id === snapshot.id), snapshot);
+  }
+  for (const [id, snapshot] of protectedSnapshots) {
+    assert.deepEqual(persisted.appointments.find((item) => item.id === id), snapshot);
+  }
+  const removed = persisted.appointments.find((item) => item.id === selected.id);
+  assert.equal(removed.status, "cancelled");
+  assert.equal(removed.cancellation.category, "system");
+  assert.equal(removed.cancellation.reason, "recurrence_schedule_change");
+  assert.equal(removed.recurrenceException.type, "removed_by_series");
+  assert.ok(removed.recurrenceOccurrenceId);
+  assert.equal(new Set(persisted.appointments.map((item) => item.recurrenceOccurrenceId)).size, persisted.appointments.length);
+});
+
+test("Entire Series future rejects invalid rows and stale versions with atomic zero mutation", async () => {
+  await resetDb();
+  const cookie = await login();
+  await createSeries(cookie, {
+    requestId: "entire-series-validation",
+    startDate: "2026-09-07",
+    endDate: "2026-10-05"
+  });
+  const persisted = await readDb();
+  const series = persisted.recurringAppointmentSeries[0];
+  const selected = persisted.appointments.at(-1);
+  const cases = [
+    [entireSeriesFuturePayload(selected, series, { expectedAppointmentVersion: selected.version + 1 }), 409],
+    [entireSeriesFuturePayload(selected, series, { expectedSeriesVersion: series.version + 1 }), 409],
+    [entireSeriesFuturePayload(selected, series, { recurrenceRows: [
+      { weekday: 1, startLocalTime: "09:00", endLocalTime: "10:00" },
+      { weekday: 1, startLocalTime: "11:00", endLocalTime: "12:00" }
+    ] }), 400],
+    [entireSeriesFuturePayload(selected, series, { recurrenceRows: [
+      { weekday: 2, startLocalTime: "14:00", endLocalTime: "13:00" }
+    ] }), 400],
+    [entireSeriesFuturePayload(selected, series, { recurrenceRows: Array.from({ length: 8 }, (_, weekday) => ({
+      weekday, startLocalTime: "09:00", endLocalTime: "10:00"
+    })) }), 400]
+  ];
+  for (const [body, status] of cases) {
+    const before = await readDb();
+    const result = await request(`/api/appointments/${selected.id}/entire-series-future`, {
+      method: "POST", cookie, body
+    });
+    assert.equal(result.response.status, status);
+    assert.deepEqual(await readDb(), before);
+  }
+});
+
+test("Entire Series future preserves and replaces later active revision segments", async () => {
+  await resetDb();
+  const cookie = await login();
+  await createSeries(cookie, {
+    requestId: "entire-series-existing-revisions",
+    startDate: "2026-09-07",
+    endDate: "2026-10-05"
+  });
+  let persisted = await readDb();
+  let series = persisted.recurringAppointmentSeries[0];
+  let selected = persisted.appointments.find((item) => item.originalOccurrenceLocalDate === "2026-09-14");
+  const split = await request(`/api/appointments/${selected.id}/this-and-future`, {
+    method: "POST",
+    cookie,
+    body: thisAndFuturePayload(selected, series, {
+      scheduledStartAt: "2026-09-14T10:00:00-04:00",
+      scheduledEndAt: "2026-09-14T11:00:00-04:00"
+    })
+  });
+  assert.equal(split.response.status, 200);
+
+  persisted = await readDb();
+  series = persisted.recurringAppointmentSeries[0];
+  const historicalRevisions = structuredClone(series.revisions);
+  selected = persisted.appointments.find((item) => item.originalOccurrenceLocalDate === "2026-10-05");
+  const result = await request(`/api/appointments/${selected.id}/entire-series-future`, {
+    method: "POST",
+    cookie,
+    body: entireSeriesFuturePayload(selected, series, {
+      recurrenceRows: [{ weekday: 3, startLocalTime: "12:00", endLocalTime: "13:30" }]
+    })
+  });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.json.effectiveDate, "2026-09-07");
+  assert.equal(result.json.seriesVersion, 3);
+
+  persisted = await readDb();
+  series = persisted.recurringAppointmentSeries[0];
+  assert.equal(series.revisions.length, 4);
+  assert.equal(series.revisions.filter((revision) => revision.status === "superseded").length, 2);
+  const active = series.revisions.filter((revision) => revision.status === "active")
+    .sort((left, right) => left.effectiveStartDate.localeCompare(right.effectiveStartDate));
+  assert.deepEqual(active.map((revision) => [revision.effectiveStartDate, revision.effectiveEndDate]), [
+    ["2026-09-07", "2026-09-13"], ["2026-09-14", "2026-10-05"]
+  ]);
+  assert.ok(active.every((revision) => revision.template.rows[0].weekday === 3));
+  for (const historical of historicalRevisions) {
+    const stored = series.revisions.find((revision) => revision.id === historical.id);
+    assert.deepEqual(stored.template, historical.template);
+    assert.equal(stored.effectiveStartDate, historical.effectiveStartDate);
+    assert.equal(stored.effectiveEndDate, historical.effectiveEndDate);
+  }
 });

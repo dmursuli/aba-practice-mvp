@@ -265,6 +265,14 @@ test("weekday validation requires bounded unique weekday rows while supporting d
   ]);
   assert.match(inverted.errors.join(" "), /0 through 6/);
   assert.match(inverted.errors.join(" "), /must be after/);
+
+  const tooMany = sanitizeRecurrenceRows(Array.from({ length: 8 }, (_, weekday) => ({
+    rowId: `row-${weekday}`,
+    weekday,
+    startLocalTime: "09:00",
+    endLocalTime: "10:00"
+  })));
+  assert.match(tooMany.errors.join(" "), /At most seven recurrence rows/);
 });
 
 test("weekday helpers use calendar dates deterministically", () => {

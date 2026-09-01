@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import { mutateJsonStateAtomically, writeJsonStateAtomically } from "./lib/json-state-store.mjs";
 import {
   activeRecurringSeriesRevisions,
+  expandActiveRecurringSeries,
   expandBoundedRecurrence,
   governingRecurringSeriesRevision,
   sanitizeRecurrenceAppointmentIdentity,
@@ -1268,6 +1269,50 @@ export function createAppServer() {
             throw new AppointmentMutationRequestError(operation.status, operation.errors, operation.extra);
           }
           logAudit(db, req, state.user, "recurring-series-this-and-future-updated", {
+            agency: appointment.agency,
+            details: operation.auditDetails
+          });
+          result = operation.response;
+          return db;
+        });
+      } catch (error) {
+        if (error instanceof AppointmentMutationRequestError) {
+          sendJson(res, error.status, { errors: error.errors, ...error.extra });
+          return;
+        }
+        throw error;
+      }
+      sendJson(res, 200, result);
+      return;
+    }
+
+    const appointmentEntireSeriesFutureMatch = url.pathname.match(/^\/api\/appointments\/([^/]+)\/entire-series-future$/);
+    if (req.method === "POST" && appointmentEntireSeriesFutureMatch) {
+      const authDb = await readSchedulingDb();
+      if (!requireRole(req, res, authDb, ["admin", "bcba"])) return;
+      const payload = await readBody(req);
+      let result;
+      try {
+        await mutateSchedulingDb((db) => {
+          ensureSchedulingState(db);
+          db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
+          const state = sessionStatus(req, db);
+          if (state.status !== "ok") {
+            throw new AppointmentMutationRequestError(401, ["Authentication is required."]);
+          }
+          if (!["admin", "bcba"].includes(state.user.role)) {
+            throw new AppointmentMutationRequestError(403, ["Your role cannot perform this action."]);
+          }
+          const appointment = (db.appointments || []).find((item) => item.id === appointmentEntireSeriesFutureMatch[1]);
+          if (!appointment) throw new AppointmentMutationRequestError(404, ["Appointment not found."]);
+          if (!canAccessAgency(state.user, appointment.agency)) {
+            throw new AppointmentMutationRequestError(403, ["You cannot update this appointment."]);
+          }
+          const operation = updateRecurringEntireSeriesFutureOperation(appointment, payload, db, state.user);
+          if (operation.status) {
+            throw new AppointmentMutationRequestError(operation.status, operation.errors, operation.extra);
+          }
+          logAudit(db, req, state.user, "recurring-series-future-updated", {
             agency: appointment.agency,
             details: operation.auditDetails
           });
@@ -3351,6 +3396,11 @@ function previousDateOnly(dateValue) {
   return new Date(Date.UTC(year, month - 1, day - 1)).toISOString().slice(0, 10);
 }
 
+function nextDateOnly(dateValue) {
+  const [year, month, day] = String(dateValue || "").split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
+}
+
 function appointmentLocalTime(timestamp, timeZone) {
   if (!isExplicitOffsetIsoTimestamp(timestamp) || !isValidIanaTimeZone(timeZone)) return "";
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -3413,6 +3463,149 @@ function safeRecurringCollisionWarnings(warnings) {
     occurrenceLocalDate,
     existingAppointmentId
   }));
+}
+
+function reconcileRecurringSeriesFutureAppointments({
+  db, actor, series, revisedSeries, effectiveDate, operationId, now
+}) {
+  const expansion = expandActiveRecurringSeries({
+    series: revisedSeries,
+    startDate: effectiveDate,
+    endDate: revisedSeries.endDate
+  });
+  if (expansion.errors.length) return { status: 400, errors: expansion.errors };
+  const desiredById = new Map(expansion.occurrences.map((occurrence) => (
+    [occurrence.originalSlotIdentity, occurrence]
+  )));
+  const templatesByRevisionId = new Map(activeRecurringSeriesRevisions(revisedSeries).map((revision) => (
+    [revision.id, revision.template]
+  )));
+  const existingSeriesAppointments = (db.appointments || []).filter((appointment) => (
+    appointment.recurrenceSeriesId === series.id
+    && appointment.originalOccurrenceLocalDate >= effectiveDate
+  ));
+  const existingByOccurrenceId = new Map(existingSeriesAppointments.map((appointment) => (
+    [appointment.recurrenceOccurrenceId, appointment]
+  )));
+  const client = (db.clients || []).find((item) => item.id === series.clientId);
+  const impactedAppointments = [];
+  let updatedCount = 0;
+  let createdCount = 0;
+  let cancelledCount = 0;
+  let protectedCount = 0;
+
+  for (const appointment of existingSeriesAppointments) {
+    if (recurringSeriesAppointmentIsProtected(appointment)) {
+      protectedCount += 1;
+      continue;
+    }
+    const desired = desiredById.get(appointment.recurrenceOccurrenceId);
+    if (!desired) {
+      appointment.status = "cancelled";
+      appointment.cancellation = {
+        category: "system",
+        reason: "recurrence_schedule_change",
+        note: "",
+        cancelledAt: now,
+        cancelledBy: actor.id
+      };
+      appointment.recurrenceException = {
+        type: "removed_by_series",
+        baseRevisionId: appointment.recurrenceRevisionId,
+        operationId,
+        createdAt: now,
+        createdBy: actor.id
+      };
+      appointment.lastSeriesOperationId = operationId;
+      appointment.updatedAt = now;
+      appointment.updatedBy = actor.id;
+      appointment.version += 1;
+      cancelledCount += 1;
+      impactedAppointments.push(appointment);
+      continue;
+    }
+    const template = templatesByRevisionId.get(desired.recurrenceRevisionId);
+    const serviceLocation = clientServiceLocationRecords(client).find((location) => location.id === template?.locationId);
+    Object.assign(appointment, {
+      serviceCode: template.serviceCode,
+      providerAssignments: template.providerAssignments,
+      scheduledStartAt: desired.scheduledStartAt,
+      scheduledEndAt: desired.scheduledEndAt,
+      timeZone: revisedSeries.timeZone,
+      settingType: String(serviceLocation?.settingType || "").trim().toLowerCase(),
+      locationId: template.locationId,
+      locationSnapshot: template.locationSnapshot,
+      authorizationRef: template.authorizationRef,
+      notes: template.operationalNote,
+      recurrenceRevisionId: desired.recurrenceRevisionId,
+      lastSeriesOperationId: operationId,
+      updatedAt: now,
+      updatedBy: actor.id,
+      version: appointment.version + 1
+    });
+    const validationErrors = validateAppointmentRecord(appointment, db, actor);
+    if (validationErrors.length) return { status: 400, errors: validationErrors };
+    updatedCount += 1;
+    impactedAppointments.push(appointment);
+  }
+
+  for (const occurrence of expansion.occurrences) {
+    if (existingByOccurrenceId.has(occurrence.originalSlotIdentity)) continue;
+    const template = templatesByRevisionId.get(occurrence.recurrenceRevisionId);
+    const serviceLocation = clientServiceLocationRecords(client).find((location) => location.id === template?.locationId);
+    const recurrenceIdentity = sanitizeRecurrenceAppointmentIdentity({
+      ...occurrence,
+      recurrenceOccurrenceId: occurrence.originalSlotIdentity,
+      generationKind: "generated",
+      recurrenceException: null,
+      lastSeriesOperationId: operationId
+    });
+    if (recurrenceIdentity.errors.length) return { status: 400, errors: recurrenceIdentity.errors };
+    const appointment = {
+      id: crypto.randomUUID(),
+      agency: series.agency,
+      clientId: series.clientId,
+      serviceCode: template.serviceCode,
+      providerAssignments: template.providerAssignments,
+      scheduledStartAt: occurrence.scheduledStartAt,
+      scheduledEndAt: occurrence.scheduledEndAt,
+      timeZone: revisedSeries.timeZone,
+      status: "scheduled",
+      settingType: String(serviceLocation?.settingType || "").trim().toLowerCase(),
+      locationId: template.locationId,
+      locationSnapshot: template.locationSnapshot,
+      authorizationRef: template.authorizationRef,
+      notes: template.operationalNote,
+      ...recurrenceIdentity.identity,
+      sessionId: "",
+      linkedAt: "",
+      linkedBy: "",
+      cancellation: null,
+      replacesAppointmentId: "",
+      replacedByAppointmentId: "",
+      createdAt: now,
+      createdBy: actor.id,
+      updatedAt: now,
+      updatedBy: actor.id,
+      version: 1
+    };
+    const validationErrors = validateAppointmentRecord(appointment, db, actor);
+    if (validationErrors.length) return { status: 400, errors: validationErrors };
+    db.appointments.unshift(appointment);
+    existingByOccurrenceId.set(appointment.recurrenceOccurrenceId, appointment);
+    createdCount += 1;
+    impactedAppointments.push(appointment);
+  }
+
+  const impactedIds = new Set(impactedAppointments.map((appointment) => appointment.id));
+  const collisionWarnings = safeRecurringCollisionWarnings(recurringSeriesCollisionWarnings(
+    impactedAppointments.filter((appointment) => !["cancelled", "no_show"].includes(appointment.status)),
+    (db.appointments || []).filter((appointment) => !impactedIds.has(appointment.id))
+  ));
+  return {
+    counts: { updatedCount, createdCount, cancelledCount, protectedCount },
+    collisionWarnings
+  };
 }
 
 function updateRecurringSeriesThisAndFutureOperation(selected, payload, db, actor) {
@@ -3506,140 +3699,12 @@ function updateRecurringSeriesThisAndFutureOperation(selected, payload, db, acto
   if (sanitized.errors.length) return { status: 400, errors: sanitized.errors };
   Object.assign(revisedSeries, sanitized.series);
 
-  const expansion = expandBoundedRecurrence({
-    seriesId: series.id,
-    revisionId,
-    startDate: effectiveDate,
-    endDate: series.endDate,
-    timeZone: series.timeZone,
-    rows: newRevision.template.rows
+  const reconciliation = reconcileRecurringSeriesFutureAppointments({
+    db, actor, series, revisedSeries, effectiveDate, operationId, now
   });
-  if (expansion.errors.length) return { status: 400, errors: expansion.errors };
-  const desiredById = new Map(expansion.occurrences.map((occurrence) => (
-    [occurrence.originalSlotIdentity, occurrence]
-  )));
-  const existingSeriesAppointments = (db.appointments || []).filter((appointment) => (
-    appointment.recurrenceSeriesId === series.id
-    && appointment.originalOccurrenceLocalDate >= effectiveDate
-  ));
-  const existingByOccurrenceId = new Map(existingSeriesAppointments.map((appointment) => (
-    [appointment.recurrenceOccurrenceId, appointment]
-  )));
-  const serviceLocation = clientServiceLocationRecords(
-    (db.clients || []).find((client) => client.id === series.clientId)
-  ).find((location) => location.id === newRevision.template.locationId);
-  const impactedAppointments = [];
-  let updatedCount = 0;
-  let createdCount = 0;
-  let cancelledCount = 0;
-  let protectedCount = 0;
-
-  for (const appointment of existingSeriesAppointments) {
-    if (recurringSeriesAppointmentIsProtected(appointment)) {
-      protectedCount += 1;
-      continue;
-    }
-    const desired = desiredById.get(appointment.recurrenceOccurrenceId);
-    if (!desired) {
-      appointment.status = "cancelled";
-      appointment.cancellation = {
-        category: "system",
-        reason: "recurrence_schedule_change",
-        note: "",
-        cancelledAt: now,
-        cancelledBy: actor.id
-      };
-      appointment.recurrenceException = {
-        type: "removed_by_series",
-        baseRevisionId: appointment.recurrenceRevisionId,
-        operationId,
-        createdAt: now,
-        createdBy: actor.id
-      };
-      appointment.lastSeriesOperationId = operationId;
-      appointment.updatedAt = now;
-      appointment.updatedBy = actor.id;
-      appointment.version += 1;
-      cancelledCount += 1;
-      impactedAppointments.push(appointment);
-      continue;
-    }
-    Object.assign(appointment, {
-      serviceCode: newRevision.template.serviceCode,
-      providerAssignments: newRevision.template.providerAssignments,
-      scheduledStartAt: desired.scheduledStartAt,
-      scheduledEndAt: desired.scheduledEndAt,
-      timeZone: series.timeZone,
-      settingType: String(serviceLocation?.settingType || "").trim().toLowerCase(),
-      locationId: newRevision.template.locationId,
-      locationSnapshot: newRevision.template.locationSnapshot,
-      authorizationRef: newRevision.template.authorizationRef,
-      notes: newRevision.template.operationalNote,
-      recurrenceRevisionId: revisionId,
-      lastSeriesOperationId: operationId,
-      updatedAt: now,
-      updatedBy: actor.id,
-      version: appointment.version + 1
-    });
-    const validationErrors = validateAppointmentRecord(appointment, db, actor);
-    if (validationErrors.length) return { status: 400, errors: validationErrors };
-    updatedCount += 1;
-    impactedAppointments.push(appointment);
-  }
-
-  for (const occurrence of expansion.occurrences) {
-    if (existingByOccurrenceId.has(occurrence.originalSlotIdentity)) continue;
-    const recurrenceIdentity = sanitizeRecurrenceAppointmentIdentity({
-      ...occurrence,
-      recurrenceOccurrenceId: occurrence.originalSlotIdentity,
-      generationKind: "generated",
-      recurrenceException: null,
-      lastSeriesOperationId: operationId
-    });
-    if (recurrenceIdentity.errors.length) return { status: 400, errors: recurrenceIdentity.errors };
-    const appointment = {
-      id: crypto.randomUUID(),
-      agency: series.agency,
-      clientId: series.clientId,
-      serviceCode: newRevision.template.serviceCode,
-      providerAssignments: newRevision.template.providerAssignments,
-      scheduledStartAt: occurrence.scheduledStartAt,
-      scheduledEndAt: occurrence.scheduledEndAt,
-      timeZone: series.timeZone,
-      status: "scheduled",
-      settingType: String(serviceLocation?.settingType || "").trim().toLowerCase(),
-      locationId: newRevision.template.locationId,
-      locationSnapshot: newRevision.template.locationSnapshot,
-      authorizationRef: newRevision.template.authorizationRef,
-      notes: newRevision.template.operationalNote,
-      ...recurrenceIdentity.identity,
-      sessionId: "",
-      linkedAt: "",
-      linkedBy: "",
-      cancellation: null,
-      replacesAppointmentId: "",
-      replacedByAppointmentId: "",
-      createdAt: now,
-      createdBy: actor.id,
-      updatedAt: now,
-      updatedBy: actor.id,
-      version: 1
-    };
-    const validationErrors = validateAppointmentRecord(appointment, db, actor);
-    if (validationErrors.length) return { status: 400, errors: validationErrors };
-    db.appointments.unshift(appointment);
-    existingByOccurrenceId.set(appointment.recurrenceOccurrenceId, appointment);
-    createdCount += 1;
-    impactedAppointments.push(appointment);
-  }
-
+  if (reconciliation.status) return reconciliation;
   Object.assign(series, revisedSeries);
-  const impactedIds = new Set(impactedAppointments.map((appointment) => appointment.id));
-  const collisionWarnings = safeRecurringCollisionWarnings(recurringSeriesCollisionWarnings(
-    impactedAppointments.filter((appointment) => !["cancelled", "no_show"].includes(appointment.status)),
-    (db.appointments || []).filter((appointment) => !impactedIds.has(appointment.id))
-  ));
-  const counts = { updatedCount, createdCount, cancelledCount, protectedCount };
+  const { counts, collisionWarnings } = reconciliation;
   return {
     response: {
       seriesVersion: series.version,
@@ -3651,6 +3716,201 @@ function updateRecurringSeriesThisAndFutureOperation(selected, payload, db, acto
       seriesId: series.id,
       appointmentId: selected.id,
       scope: "this_and_future",
+      effectiveDate,
+      operationId,
+      version: series.version,
+      ...counts,
+      collisionWarningCount: collisionWarnings.length
+    }
+  };
+}
+
+function earliestSafeRecurringSeriesFutureDate(series, now = new Date().toISOString()) {
+  const today = appointmentLocalDate(now, series.timeZone);
+  if (!today) return { errors: ["The current date could not be resolved in the recurring series time zone."] };
+  let effectiveDate = series.startDate > today ? series.startDate : today;
+  if (effectiveDate > series.endDate) {
+    return { errors: ["This recurring series has no future portion to update."] };
+  }
+  if (effectiveDate === today) {
+    const revision = governingRecurringSeriesRevision(series, today);
+    if (!revision) return { errors: ["The active recurring-series timeline does not govern the current date."] };
+    const todayExpansion = expandBoundedRecurrence({
+      seriesId: series.id,
+      revisionId: revision.id,
+      startDate: today,
+      endDate: today,
+      timeZone: series.timeZone,
+      rows: revision.template.rows
+    });
+    if (todayExpansion.errors.length) return { errors: todayExpansion.errors };
+    const todayOccurrence = todayExpansion.occurrences[0];
+    if (todayOccurrence && Date.parse(todayOccurrence.scheduledStartAt) <= Date.parse(now)) {
+      effectiveDate = nextDateOnly(today);
+    }
+  }
+  if (effectiveDate > series.endDate) {
+    return { errors: ["This recurring series has no future portion to update."] };
+  }
+  return { effectiveDate, errors: [] };
+}
+
+function updateRecurringEntireSeriesFutureOperation(selected, payload, db, actor) {
+  const expectedAppointmentVersion = appointmentExpectedAppointmentVersion(payload);
+  if (!expectedAppointmentVersion) {
+    return { status: 400, errors: ["expectedAppointmentVersion is required and must be a positive integer."] };
+  }
+  if (expectedAppointmentVersion !== selected.version) {
+    return {
+      status: 409,
+      errors: ["Appointment has changed. Reload it and try again."],
+      extra: { currentVersion: selected.version }
+    };
+  }
+  const expectedSeriesVersion = appointmentExpectedSeriesVersion(payload);
+  if (!expectedSeriesVersion) {
+    return { status: 400, errors: ["expectedSeriesVersion is required and must be a positive integer."] };
+  }
+  if (!isRecurringOccurrence(selected)) {
+    return { status: 400, errors: ["This appointment is not part of a recurring series."] };
+  }
+  const series = (db.recurringAppointmentSeries || []).find((item) => (
+    item.id === selected.recurrenceSeriesId
+    && normalizeAgency(item.agency) === normalizeAgency(selected.agency)
+  ));
+  if (!series || series.status !== "active") {
+    return { status: 409, errors: ["The recurring series is unavailable. Reload the appointment and try again."] };
+  }
+  if (expectedSeriesVersion !== series.version) {
+    return {
+      status: 409,
+      errors: ["The recurring series has changed. Reload the appointment and try again."],
+      extra: { currentVersion: selected.version }
+    };
+  }
+  if (payload.timeZone !== undefined && String(payload.timeZone || "").trim() !== series.timeZone) {
+    return { status: 400, errors: ["The recurring series time zone cannot be changed."] };
+  }
+  const now = new Date().toISOString();
+  const boundary = earliestSafeRecurringSeriesFutureDate(series, now);
+  if (boundary.errors.length) return { status: 400, errors: boundary.errors };
+  let effectiveDate = boundary.effectiveDate;
+  let governingRevision = governingRecurringSeriesRevision(series, effectiveDate);
+  if (!governingRevision) {
+    return { status: 400, errors: ["The active recurring-series timeline does not cover the future boundary."] };
+  }
+
+  const candidateResult = updateAppointmentRecord(selected, payload, db, actor);
+  if (candidateResult.errors.length) return { status: 400, errors: candidateResult.errors };
+  const candidate = candidateResult.appointment;
+  if (!Array.isArray(payload.recurrenceRows) || !payload.recurrenceRows.length) {
+    return { status: 400, errors: ["At least one future recurrence day is required."] };
+  }
+  const buildFutureRows = (revision) => {
+    const governingRowsByWeekday = new Map((revision.template.rows || []).map((row) => [row.weekday, row]));
+    return payload.recurrenceRows.map((row) => {
+      const weekday = Number(row?.weekday);
+      return {
+        rowId: governingRowsByWeekday.get(weekday)?.rowId || crypto.randomUUID(),
+        weekday,
+        startLocalTime: String(row?.startLocalTime || "").trim(),
+        endLocalTime: String(row?.endLocalTime || "").trim()
+      };
+    });
+  };
+  let futureRows = buildFutureRows(governingRevision);
+  const today = appointmentLocalDate(now, series.timeZone);
+  if (effectiveDate === today) {
+    const proposedToday = expandBoundedRecurrence({
+      seriesId: series.id,
+      revisionId: governingRevision.id,
+      startDate: today,
+      endDate: today,
+      timeZone: series.timeZone,
+      rows: futureRows
+    });
+    if (proposedToday.errors.length) return { status: 400, errors: proposedToday.errors };
+    const proposedOccurrence = proposedToday.occurrences[0];
+    if (proposedOccurrence && Date.parse(proposedOccurrence.scheduledStartAt) <= Date.parse(now)) {
+      effectiveDate = nextDateOnly(today);
+      if (effectiveDate > series.endDate) {
+        return { status: 400, errors: ["This recurring series has no future portion to update."] };
+      }
+      governingRevision = governingRecurringSeriesRevision(series, effectiveDate);
+      if (!governingRevision) {
+        return { status: 400, errors: ["The active recurring-series timeline does not cover the future boundary."] };
+      }
+      futureRows = buildFutureRows(governingRevision);
+    }
+  }
+  const operationId = crypto.randomUUID();
+  const replacementRevisions = [];
+  const retainedRevisions = (series.revisions || []).map((revision) => {
+    if (String(revision.status || "active") !== "active" || revision.effectiveEndDate < effectiveDate) return revision;
+    const replacementId = crypto.randomUUID();
+    const replacementStart = revision.effectiveStartDate < effectiveDate
+      ? effectiveDate
+      : revision.effectiveStartDate;
+    replacementRevisions.push({
+      id: replacementId,
+      effectiveStartDate: replacementStart,
+      effectiveEndDate: revision.effectiveEndDate,
+      template: {
+        serviceCode: candidate.serviceCode,
+        providerAssignments: candidate.providerAssignments,
+        locationId: candidate.locationId,
+        locationSnapshot: candidate.locationSnapshot,
+        rows: futureRows,
+        authorizationRef: revision.template.authorizationRef,
+        operationalNote: candidate.notes
+      },
+      createdAt: now,
+      createdBy: actor.id,
+      status: "active",
+      supersededAt: "",
+      supersededByRevisionId: "",
+      supersededByOperationId: ""
+    });
+    if (revision.effectiveStartDate < effectiveDate) {
+      return { ...revision, effectiveEndDate: previousDateOnly(effectiveDate) };
+    }
+    return {
+      ...revision,
+      status: "superseded",
+      supersededAt: now,
+      supersededByRevisionId: replacementId,
+      supersededByOperationId: operationId
+    };
+  });
+  const revisedSeries = {
+    ...series,
+    revisions: [...retainedRevisions, ...replacementRevisions],
+    updatedAt: now,
+    updatedBy: actor.id,
+    version: series.version + 1
+  };
+  const sanitized = sanitizeRecurringSeriesRecord(revisedSeries, {
+    clients: db.clients || [], users: db.users || [], validateReferences: true, requireActiveReferences: true
+  });
+  if (sanitized.errors.length) return { status: 400, errors: sanitized.errors };
+  Object.assign(revisedSeries, sanitized.series);
+  const reconciliation = reconcileRecurringSeriesFutureAppointments({
+    db, actor, series, revisedSeries, effectiveDate, operationId, now
+  });
+  if (reconciliation.status) return reconciliation;
+  Object.assign(series, revisedSeries);
+  const { counts, collisionWarnings } = reconciliation;
+  return {
+    response: {
+      seriesVersion: series.version,
+      effectiveDate,
+      ...counts,
+      collisionWarnings
+    },
+    auditDetails: {
+      seriesId: series.id,
+      appointmentId: selected.id,
+      scope: "entire_series_future",
       effectiveDate,
       operationId,
       version: series.version,
@@ -4428,7 +4688,10 @@ function appointmentRecurrenceSummary(db, appointment) {
       isException: false,
       exceptionType: "",
       canEditThisAndFuture: false,
-      thisAndFutureUnavailableReason: ""
+      thisAndFutureUnavailableReason: "",
+      canEditEntireSeriesFuture: false,
+      entireSeriesFutureUnavailableReason: "",
+      futureRecurrenceRows: []
     };
   }
   const series = (db.recurringAppointmentSeries || []).find((item) => (
@@ -4437,13 +4700,28 @@ function appointmentRecurrenceSummary(db, appointment) {
   ));
   const exceptionType = String(appointment.recurrenceException?.type || "").trim();
   const eligibility = recurringThisAndFutureEligibility(db, appointment);
+  const futureBoundary = series?.status === "active"
+    ? earliestSafeRecurringSeriesFutureDate(series)
+    : { errors: ["The recurring series is not available for future edits."] };
+  const futureRevision = futureBoundary.effectiveDate
+    ? governingRecurringSeriesRevision(series, futureBoundary.effectiveDate)
+    : null;
   return {
     isRecurring: true,
     seriesVersion: Number.isInteger(series?.version) ? series.version : null,
     isException: Boolean(exceptionType),
     exceptionType,
     canEditThisAndFuture: eligibility.eligible,
-    thisAndFutureUnavailableReason: eligibility.eligible ? "" : eligibility.reason
+    thisAndFutureUnavailableReason: eligibility.eligible ? "" : eligibility.reason,
+    canEditEntireSeriesFuture: Boolean(futureRevision && !futureBoundary.errors.length),
+    entireSeriesFutureUnavailableReason: futureRevision
+      ? ""
+      : futureBoundary.errors[0] || "The recurring series has no future appointments to update.",
+    futureRecurrenceRows: (futureRevision?.template?.rows || []).map((row) => ({
+      weekday: row.weekday,
+      startLocalTime: row.startLocalTime,
+      endLocalTime: row.endLocalTime
+    }))
   };
 }
 

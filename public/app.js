@@ -1,4 +1,4 @@
-import { cancelAppointment, createAppointment, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { cancelAppointment, createAppointment, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -4815,6 +4815,74 @@ function appointmentEditLocationOptions(appointment) {
   };
 }
 
+function appointmentEntireSeriesRowMarkup({ weekday = 1, startLocalTime = "09:00", endLocalTime = "10:00" } = {}) {
+  const weekdayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  return `
+    <div class="appointment-recurrence-row" data-entire-series-recurrence-row>
+      <label>
+        Weekday
+        <select name="futureRecurrenceWeekday" required disabled>
+          ${weekdayNames.map((name, value) => `<option value="${value}"${value === Number(weekday) ? " selected" : ""}>${name}</option>`).join("")}
+        </select>
+      </label>
+      <label>
+        Start time
+        <input type="time" name="futureRecurrenceStartTime" value="${escapeHtml(startLocalTime)}" required disabled>
+      </label>
+      <label>
+        End time
+        <input type="time" name="futureRecurrenceEndTime" value="${escapeHtml(endLocalTime)}" required disabled>
+      </label>
+      <button type="button" class="secondary-button" data-appointment-edit-action="remove-future-recurrence-day">Remove Day</button>
+    </div>
+  `;
+}
+
+function appointmentEntireSeriesRowValues(formData) {
+  const weekdays = formData.getAll("futureRecurrenceWeekday");
+  const startTimes = formData.getAll("futureRecurrenceStartTime");
+  const endTimes = formData.getAll("futureRecurrenceEndTime");
+  return weekdays.map((weekday, index) => ({
+    weekday: Number(weekday),
+    startLocalTime: String(startTimes[index] || ""),
+    endLocalTime: String(endTimes[index] || "")
+  }));
+}
+
+function syncAppointmentEntireSeriesEditor() {
+  const form = appointmentDetailsContent?.querySelector("#appointment-edit-form");
+  const editor = form?.querySelector("#appointment-entire-series-schedule");
+  if (!form || !editor) return;
+  const enabled = form.elements.editScope?.value === "entire_series_future";
+  editor.classList.toggle("hidden", !enabled);
+  form.querySelectorAll("[data-selected-occurrence-schedule-field]").forEach((field) => {
+    field.classList.toggle("hidden", enabled);
+  });
+  editor.querySelectorAll("select, input").forEach((field) => { field.disabled = !enabled; });
+  const rows = [...editor.querySelectorAll("[data-entire-series-recurrence-row]")];
+  editor.querySelector("[data-appointment-edit-action='add-future-recurrence-day']").disabled = !enabled || rows.length >= 7;
+  rows.forEach((row) => {
+    row.querySelector("[data-appointment-edit-action='remove-future-recurrence-day']").disabled = !enabled || rows.length === 1;
+  });
+}
+
+function addAppointmentEntireSeriesRow() {
+  const container = appointmentDetailsContent?.querySelector("#appointment-entire-series-rows");
+  if (!container || container.children.length >= 7) return;
+  const used = new Set([...container.querySelectorAll('[name="futureRecurrenceWeekday"]')].map((field) => Number(field.value)));
+  const weekday = [1, 2, 3, 4, 5, 6, 0].find((value) => !used.has(value));
+  if (weekday === undefined) return;
+  container.insertAdjacentHTML("beforeend", appointmentEntireSeriesRowMarkup({ weekday }));
+  syncAppointmentEntireSeriesEditor();
+}
+
+function removeAppointmentEntireSeriesRow(button) {
+  const container = appointmentDetailsContent?.querySelector("#appointment-entire-series-rows");
+  if (!container || container.children.length <= 1) return;
+  button.closest("[data-entire-series-recurrence-row]")?.remove();
+  syncAppointmentEntireSeriesEditor();
+}
+
 function renderAppointmentEditForm(appointment) {
   const locationOptions = appointmentEditLocationOptions(appointment);
   const providerId = appointmentPrimaryProviderId(appointment);
@@ -4834,9 +4902,16 @@ function renderAppointmentEditForm(appointment) {
             <input type="radio" name="editScope" value="this_and_future"${appointment.recurrence.canEditThisAndFuture ? "" : " disabled"}>
             This and future appointments
           </label>
+          <label>
+            <input type="radio" name="editScope" value="entire_series_future"${appointment.recurrence.canEditEntireSeriesFuture ? "" : " disabled"}>
+            Entire series (future appointments only)
+          </label>
           <span class="field-help">For This and Future, Date changes this recurrence row's weekday; the effective date remains the selected occurrence's original series date. Past, completed, linked, cancelled, no-show, confirmed, and individually modified appointments remain unchanged. Eligible future scheduled appointments are reconciled.</span>
           ${appointment.recurrence.canEditThisAndFuture ? "" : `
             <span class="field-help">${escapeHtml(appointment.recurrence.thisAndFutureUnavailableReason || "This appointment cannot start a future-series change.")}</span>
+          `}
+          ${appointment.recurrence.canEditEntireSeriesFuture ? "" : `
+            <span class="field-help">${escapeHtml(appointment.recurrence.entireSeriesFutureUnavailableReason || "This series has no future appointments to update.")}</span>
           `}
         </fieldset>
       ` : ""}
@@ -4860,15 +4935,15 @@ function renderAppointmentEditForm(appointment) {
             Primary provider
             <select name="providerUserId" required data-current-provider-id="${escapeHtml(providerId)}"></select>
           </label>
-          <label>
+          <label data-selected-occurrence-schedule-field>
             Date
             <input type="date" name="date" value="${escapeHtml(date)}" required>
           </label>
-          <label>
+          <label data-selected-occurrence-schedule-field>
             Start time
             <input type="time" name="startTime" value="${escapeHtml(startTime)}" required>
           </label>
-          <label>
+          <label data-selected-occurrence-schedule-field>
             End time
             <input type="time" name="endTime" value="${escapeHtml(endTime)}" required>
           </label>
@@ -4899,6 +4974,21 @@ function renderAppointmentEditForm(appointment) {
             <textarea name="notes" rows="3" placeholder="Scheduling logistics only; do not enter clinical narrative.">${escapeHtml(appointment.notes || "")}</textarea>
           </label>
         </div>
+        ${appointment.recurrence?.isRecurring ? `
+          <section class="appointment-recurrence-schedule hidden" id="appointment-entire-series-schedule">
+            <div class="appointment-recurrence-heading">
+              <strong>Future recurring schedule</strong>
+              <span>Changes will apply to eligible future appointments in this recurring series. Past and protected appointments will not be changed.</span>
+            </div>
+            <div id="appointment-entire-series-rows">
+              ${(appointment.recurrence.futureRecurrenceRows?.length
+                ? appointment.recurrence.futureRecurrenceRows
+                : [{ weekday: appointmentWeekdayForDate(date), startLocalTime: startTime, endLocalTime: endTime }]
+              ).map((row) => appointmentEntireSeriesRowMarkup(row)).join("")}
+            </div>
+            <button type="button" class="secondary-button appointment-add-day" data-appointment-edit-action="add-future-recurrence-day">+ Add Day</button>
+          </section>
+        ` : ""}
       </fieldset>
       <p id="appointment-edit-message" class="form-message" role="status" aria-live="polite">${escapeHtml(state.appointmentEditError)}</p>
       <section id="appointment-edit-conflict" class="appointment-edit-conflict${state.appointmentEditConflict ? "" : " hidden"}" role="alert">
@@ -4922,6 +5012,7 @@ function renderAppointmentEditForm(appointment) {
     provider.id === providerId && provider.role === appointmentProviderRole(appointment.serviceCode)
   )) ? providerId : "";
   syncAppointmentEditLocationDetails();
+  syncAppointmentEntireSeriesEditor();
   state.appointmentEditInitialValues = appointmentEditFormValues();
   setAppointmentEditBusy(state.appointmentEditSubmitting);
 }
@@ -4957,6 +5048,24 @@ function validateAppointmentEditForm(formData) {
   if (date && endTime && !zonedAppointmentTimestamp(date, endTime, timeZone)) {
     errors.push("End time is not valid in the appointment time zone.");
   }
+  if (String(formData.get("editScope") || "") === "entire_series_future") {
+    const rows = appointmentEntireSeriesRowValues(formData);
+    if (!rows.length) errors.push("At least one future recurrence day is required.");
+    if (rows.length > 7) errors.push("At most seven future recurrence days are supported.");
+    if (new Set(rows.map((row) => row.weekday)).size !== rows.length) {
+      errors.push("Each future recurrence weekday may be used only once.");
+    }
+    rows.forEach((row) => {
+      if (!Number.isInteger(row.weekday) || row.weekday < 0 || row.weekday > 6) {
+        errors.push("Choose a valid weekday for every future recurrence day.");
+      }
+      if (!/^\d{2}:\d{2}$/.test(row.startLocalTime) || !/^\d{2}:\d{2}$/.test(row.endLocalTime)) {
+        errors.push("Enter valid start and end times for every future recurrence day.");
+      } else if (row.endLocalTime <= row.startLocalTime) {
+        errors.push("Every future recurrence end time must be after its start time.");
+      }
+    });
+  }
   return [...new Set(errors)];
 }
 
@@ -4983,6 +5092,13 @@ function appointmentEditPayload(formData) {
     timeZone,
     ...(locationId === "__current__" ? {} : { locationId }),
     notes: String(formData.get("notes") || "").trim()
+  };
+}
+
+function appointmentEntireSeriesFuturePayload(formData) {
+  return {
+    ...appointmentEditPayload(formData),
+    recurrenceRows: appointmentEntireSeriesRowValues(formData)
   };
 }
 
@@ -5562,22 +5678,27 @@ async function handleUpdateAppointment(event) {
   setAppointmentEditBusy(true);
   try {
     const appointmentId = state.selectedAppointmentDetails.id;
-    const thisAndFuture = String(formData.get("editScope") || "") === "this_and_future";
-    const operation = thisAndFuture
-      ? await updateRecurringThisAndFuture(appointmentId, appointmentEditPayload(formData))
-      : await updateAppointment(appointmentId, appointmentEditPayload(formData));
-    const appointment = thisAndFuture ? await getAppointment(appointmentId) : operation;
+    const editScope = String(formData.get("editScope") || "");
+    const thisAndFuture = editScope === "this_and_future";
+    const entireSeriesFuture = editScope === "entire_series_future";
+    const recurringSeriesOperation = thisAndFuture || entireSeriesFuture;
+    const operation = entireSeriesFuture
+      ? await updateRecurringEntireSeriesFuture(appointmentId, appointmentEntireSeriesFuturePayload(formData))
+      : thisAndFuture
+        ? await updateRecurringThisAndFuture(appointmentId, appointmentEditPayload(formData))
+        : await updateAppointment(appointmentId, appointmentEditPayload(formData));
+    const appointment = recurringSeriesOperation ? await getAppointment(appointmentId) : operation;
     const movedOutsideWeek = !appointmentDateIsInVisibleWeek(appointment);
     state.selectedAppointmentDetails = appointment;
     state.appointmentEditing = false;
     state.appointmentEditConflict = false;
     state.appointmentEditError = "";
     state.appointmentEditInitialValues = "";
-    const overlapWarning = thisAndFuture && operation.collisionWarnings?.length
+    const overlapWarning = recurringSeriesOperation && operation.collisionWarnings?.length
       ? ` Review ${operation.collisionWarnings.length} scheduling overlap warning${operation.collisionWarnings.length === 1 ? "" : "s"}.`
       : "";
-    const successMessage = thisAndFuture
-      ? `This and future appointments updated: ${operation.updatedCount} updated, ${operation.createdCount} created, ${operation.cancelledCount} removed from the schedule, and ${operation.protectedCount} protected.${overlapWarning}`
+    const successMessage = recurringSeriesOperation
+      ? `${entireSeriesFuture ? "Future recurring series" : "This and future appointments"} updated: ${operation.updatedCount} updated, ${operation.createdCount} created, ${operation.cancelledCount} removed from the schedule, and ${operation.protectedCount} protected.${overlapWarning}`
       : movedOutsideWeek
         ? `Appointment updated successfully and moved to ${formatDate(scheduleAppointmentDate(appointment))}, outside the visible week.`
         : "Appointment updated successfully.";
@@ -5617,11 +5738,14 @@ function handleAppointmentDetailsAction(event) {
   if (action === "confirm-appointment") beginAppointmentConfirmation();
   if (action === "close-confirmation") closeAppointmentConfirmation();
   if (action === "reload-confirmation") void reloadLatestAppointment({ confirmDiscard: false });
+  if (action === "add-future-recurrence-day") addAppointmentEntireSeriesRow();
+  if (action === "remove-future-recurrence-day") removeAppointmentEntireSeriesRow(button);
 }
 
 function handleAppointmentEditChange(event) {
   if (event.target?.name === "serviceCode") renderAppointmentEditProviderOptions();
   if (event.target?.name === "locationId") syncAppointmentEditLocationDetails();
+  if (event.target?.name === "editScope") syncAppointmentEntireSeriesEditor();
   if (event.target?.name === "category") renderAppointmentCancellationReasonOptions();
 }
 

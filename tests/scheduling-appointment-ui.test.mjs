@@ -664,7 +664,7 @@ test("edit payload sends expectedVersion and only editable operational values", 
   assert.match(apiSource, /function updateAppointment\(appointmentId, appointment\)[\s\S]*method: "PUT"/);
 });
 
-test("recurring edit offers only This Appointment and eligible This and Future scopes", () => {
+test("recurring edit defaults to This Appointment and offers all three approved scopes", () => {
   const renderer = functionSource("renderAppointmentEditForm");
   assert.match(renderer, /appointment\.recurrence\?\.isRecurring/);
   assert.match(renderer, /name="editScope" value="this_appointment_only" checked/);
@@ -676,7 +676,10 @@ test("recurring edit offers only This Appointment and eligible This and Future s
   assert.match(renderer, /Date changes this recurrence row's weekday/);
   assert.match(renderer, /effective date remains the selected occurrence's original series date/);
   assert.match(renderer, /Past, completed, linked, cancelled, no-show, confirmed/);
-  assert.doesNotMatch(renderer, /Entire series|Edit Series/);
+  assert.match(renderer, /name="editScope" value="entire_series_future"/);
+  assert.match(renderer, /Entire series \(future appointments only\)/);
+  assert.match(renderer, /canEditEntireSeriesFuture/);
+  assert.doesNotMatch(renderer, /Edit Series/);
   const payload = functionSource("appointmentEditPayload");
   assert.match(payload, /appointment\?\.recurrence\?\.isRecurring/);
   assert.match(payload, /expectedAppointmentVersion: Number\(appointment\?\.version\)/);
@@ -685,6 +688,31 @@ test("recurring edit offers only This Appointment and eligible This and Future s
   assert.doesNotMatch(payload, /recurrenceSeriesId|recurrenceRevisionId|recurrenceRowId|recurrenceOccurrenceId/);
   assert.match(cssSource, /\.appointment-recurrence-scope-message\s*\{/);
   assert.match(apiSource, /function updateRecurringThisAndFuture\(appointmentId, appointment\)[\s\S]*\/this-and-future[\s\S]*method: "POST"/);
+  assert.match(apiSource, /function updateRecurringEntireSeriesFuture\(appointmentId, appointment\)[\s\S]*\/entire-series-future[\s\S]*method: "POST"/);
+});
+
+test("Entire Series switches to a complete future weekday and time editor", () => {
+  const renderer = functionSource("renderAppointmentEditForm");
+  assert.match(renderer, /Future recurring schedule/);
+  assert.match(renderer, /Changes will apply to eligible future appointments in this recurring series/);
+  assert.match(renderer, /Past and protected appointments will not be changed/);
+  assert.match(renderer, /futureRecurrenceRows/);
+  assert.match(renderer, /appointmentEntireSeriesRowMarkup/);
+  const row = functionSource("appointmentEntireSeriesRowMarkup");
+  assert.match(row, /futureRecurrenceWeekday/);
+  assert.match(row, /futureRecurrenceStartTime/);
+  assert.match(row, /futureRecurrenceEndTime/);
+  assert.match(row, /remove-future-recurrence-day/);
+  const sync = functionSource("syncAppointmentEntireSeriesEditor");
+  assert.match(sync, /entire_series_future/);
+  assert.match(sync, /data-selected-occurrence-schedule-field/);
+  assert.match(sync, /rows\.length >= 7/);
+  assert.match(functionSource("addAppointmentEntireSeriesRow"), /appointmentEntireSeriesRowMarkup/);
+  assert.match(functionSource("removeAppointmentEntireSeriesRow"), /children\.length <= 1/);
+  const payload = functionSource("appointmentEntireSeriesFuturePayload");
+  assert.match(payload, /appointmentEditPayload\(formData\)/);
+  assert.match(payload, /recurrenceRows: appointmentEntireSeriesRowValues\(formData\)/);
+  assert.doesNotMatch(payload, /recurrenceSeriesId|recurrenceRevisionId|recurrenceRowId|recurrenceOccurrenceId/);
 });
 
 test("edit validation rejects invalid time, incompatible providers, and inactive locations", () => {
@@ -703,11 +731,13 @@ test("save prevents double-submit, refreshes details and calendar, and reports m
   assert.match(handler, /Saving appointment/);
   assert.match(handler, /await updateAppointment\(/);
   assert.match(handler, /await updateRecurringThisAndFuture\(/);
+  assert.match(handler, /await updateRecurringEntireSeriesFuture\(/);
   assert.match(handler, /await getAppointment\(appointmentId\)/);
   assert.match(handler, /operation\.updatedCount/);
   assert.match(handler, /operation\.protectedCount/);
   assert.match(handler, /operation\.collisionWarnings/);
   assert.match(handler, /scheduling overlap warning/);
+  assert.match(handler, /Future recurring series/);
   assert.match(handler, /state\.selectedAppointmentDetails = appointment/);
   assert.match(handler, /await ensureScheduleWeekLoaded\(\{ force: true \}\)/);
   assert.match(handler, /Appointment updated successfully/);
