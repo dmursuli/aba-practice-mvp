@@ -370,6 +370,52 @@ test("creation emits one compact audit and does not mutate clinical or billing s
   assert.equal(JSON.stringify(audits[0]).includes("Scheduling logistics only"), false);
 });
 
+test("practice backup and restore preserve superseded revision lifecycle history", async () => {
+  await resetDb();
+  const cookie = await login();
+  await createSeries(cookie, { requestId: "superseded-revision-backup" });
+  let persisted = await readDb();
+  const active = persisted.recurringAppointmentSeries[0].revisions[0];
+  const replacementId = "backup-replacement-revision";
+  const supersededAt = new Date(Date.parse(active.createdAt) + 1000).toISOString();
+  persisted.recurringAppointmentSeries[0].revisions = [
+    {
+      ...structuredClone(active),
+      status: "superseded",
+      supersededAt,
+      supersededByRevisionId: replacementId,
+      supersededByOperationId: "backup-supersession-operation"
+    },
+    {
+      ...structuredClone(active),
+      id: replacementId,
+      status: "active",
+      supersededAt: "",
+      supersededByRevisionId: "",
+      supersededByOperationId: "",
+      createdAt: supersededAt
+    }
+  ];
+  const expectedSeries = structuredClone(persisted.recurringAppointmentSeries[0]);
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+
+  const backup = await request("/api/backup", { cookie });
+  assert.equal(backup.response.status, 200);
+  assert.deepEqual(backup.json.data.recurringAppointmentSeries[0], expectedSeries);
+
+  persisted = await readDb();
+  persisted.recurringAppointmentSeries = [];
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+  const restored = await request("/api/backup/restore", {
+    method: "POST",
+    cookie,
+    body: backup.json
+  });
+  assert.equal(restored.response.status, 200);
+  persisted = await readDb();
+  assert.deepEqual(persisted.recurringAppointmentSeries[0], expectedSeries);
+});
+
 test("overlaps return warnings without moving or blocking existing appointments", async () => {
   await resetDb();
   const cookie = await login();
@@ -773,6 +819,8 @@ test("This and Future splits the governing revision and updates eligible future 
   assert.equal(updatedSeries.revisions[0].effectiveEndDate, "2026-09-13");
   assert.equal(updatedSeries.revisions[1].effectiveStartDate, "2026-09-14");
   assert.equal(updatedSeries.revisions[1].effectiveEndDate, "2026-10-05");
+  assert.ok(updatedSeries.revisions.every((revision) => revision.status === "active"));
+  assert.ok(updatedSeries.revisions.every((revision) => !revision.supersededByRevisionId));
   assert.equal(updatedSeries.revisions[1].template.rows[0].rowId, originalRevision.template.rows[0].rowId);
   assert.equal(updatedSeries.revisions[1].template.rows[0].weekday, 1);
   assert.equal(updatedSeries.revisions[1].template.rows[0].startLocalTime, "10:00");

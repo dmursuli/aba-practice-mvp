@@ -2,8 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   INITIAL_RECURRING_SERIES_VERSION,
+  activeRecurringSeriesRevisions,
   duplicateOriginalSlotIdentities,
+  expandActiveRecurringSeries,
   expandBoundedRecurrence,
+  governingRecurringSeriesRevision,
   localDateTimeToZonedTimestamp,
   recurrenceRowMatchesDate,
   sanitizeRecurrenceAppointmentIdentity,
@@ -79,6 +82,110 @@ test("series sanitizer accepts a valid complete revision and uses the authoritat
     result.series.revisions[0].template.rows.map((row) => row.rowId),
     ["tuesday", "thursday"]
   );
+  assert.equal(result.series.revisions[0].status, "active");
+  assert.equal(result.series.revisions[0].supersededAt, "");
+});
+
+test("legacy revisions behave as active without mutating the source record", () => {
+  const legacy = validSeries();
+  const source = structuredClone(legacy);
+  assert.equal(activeRecurringSeriesRevisions(legacy)[0], legacy.revisions[0]);
+  assert.equal(governingRecurringSeriesRevision(legacy, "2026-08-18"), legacy.revisions[0]);
+  assert.deepEqual(legacy, source);
+
+  const sanitized = sanitizeRecurringSeriesRecord(legacy);
+  assert.deepEqual(sanitized.errors, []);
+  assert.equal(sanitized.series.revisions[0].status, "active");
+  assert.equal(Object.hasOwn(legacy.revisions[0], "status"), false);
+});
+
+test("superseded history is retained while same-date active replacement governs and generates", () => {
+  const candidate = validSeries();
+  const original = structuredClone(candidate.revisions[0]);
+  const normalizedOriginalTemplate = sanitizeRecurringSeriesRecord(validSeries()).series.revisions[0].template;
+  const replacement = structuredClone(original);
+  replacement.id = "revision-2";
+  replacement.createdAt = "2025-12-02T12:00:00.000Z";
+  replacement.status = "active";
+  replacement.supersededAt = "";
+  replacement.supersededByRevisionId = "";
+  replacement.supersededByOperationId = "";
+  replacement.template.rows = [{
+    rowId: "monday", weekday: 1, startLocalTime: "10:00", endLocalTime: "12:00"
+  }];
+  candidate.revisions = [{
+    ...original,
+    status: "superseded",
+    supersededAt: "2025-12-02T12:00:00.000Z",
+    supersededByRevisionId: "revision-2",
+    supersededByOperationId: "operation-2"
+  }, replacement];
+
+  const result = sanitizeRecurringSeriesRecord(candidate);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.series.revisions.length, 2);
+  assert.deepEqual(result.series.revisions[0].template, normalizedOriginalTemplate);
+  assert.equal(result.series.revisions[0].effectiveStartDate, original.effectiveStartDate);
+  assert.equal(result.series.revisions[0].effectiveEndDate, original.effectiveEndDate);
+  assert.deepEqual(activeRecurringSeriesRevisions(result.series).map((revision) => revision.id), ["revision-2"]);
+  assert.equal(governingRecurringSeriesRevision(result.series, "2026-01-05").id, "revision-2");
+
+  const expansion = expandActiveRecurringSeries({
+    series: result.series,
+    startDate: "2026-01-01",
+    endDate: "2026-01-12"
+  });
+  assert.deepEqual(expansion.errors, []);
+  assert.deepEqual(expansion.occurrences.map((occurrence) => occurrence.originalOccurrenceLocalDate), [
+    "2026-01-05", "2026-01-12"
+  ]);
+  assert.ok(expansion.occurrences.every((occurrence) => occurrence.recurrenceRevisionId === "revision-2"));
+  assert.ok(expansion.occurrences.every((occurrence) => occurrence.scheduledStartAt.includes("T10:00:00")));
+  assert.deepEqual(JSON.parse(JSON.stringify(result.series)), result.series);
+});
+
+test("supersession metadata and references reject invalid, active, and circular lifecycle state", () => {
+  const missing = validSeries();
+  missing.revisions = [{
+    ...missing.revisions[0],
+    status: "superseded",
+    supersededAt: "2025-12-02T12:00:00.000Z",
+    supersededByRevisionId: "missing-revision",
+    supersededByOperationId: "operation-2"
+  }, {
+    ...structuredClone(missing.revisions[0]),
+    id: "revision-2",
+    status: "active",
+    supersededAt: "",
+    supersededByRevisionId: "",
+    supersededByOperationId: ""
+  }];
+  assert.match(sanitizeRecurringSeriesRecord(missing).errors.join(" "), /reference an existing revision/);
+
+  const activeWithMetadata = validSeries();
+  activeWithMetadata.revisions[0].supersededAt = "2025-12-02T12:00:00.000Z";
+  assert.match(sanitizeRecurringSeriesRecord(activeWithMetadata).errors.join(" "), /active and cannot include supersession metadata/);
+
+  const circular = validSeries();
+  const base = circular.revisions[0];
+  circular.revisions = [
+    {
+      ...structuredClone(base), id: "revision-a", status: "superseded",
+      supersededAt: "2025-12-02T12:00:00.000Z", supersededByRevisionId: "revision-b",
+      supersededByOperationId: "operation-a"
+    },
+    {
+      ...structuredClone(base), id: "revision-b", status: "superseded",
+      supersededAt: "2025-12-02T12:00:00.000Z", supersededByRevisionId: "revision-a",
+      supersededByOperationId: "operation-b"
+    },
+    {
+      ...structuredClone(base), id: "revision-active", status: "active",
+      createdAt: "2025-12-02T12:00:00.000Z", supersededAt: "",
+      supersededByRevisionId: "", supersededByOperationId: ""
+    }
+  ];
+  assert.match(sanitizeRecurringSeriesRecord(circular).errors.join(" "), /must not be circular/);
 });
 
 test("series sanitizer rejects invalid state, client, agency, provider, and location shapes", () => {

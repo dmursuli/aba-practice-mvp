@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import { mutateJsonStateAtomically, writeJsonStateAtomically } from "./lib/json-state-store.mjs";
 import {
+  activeRecurringSeriesRevisions,
   expandBoundedRecurrence,
+  governingRecurringSeriesRevision,
   sanitizeRecurrenceAppointmentIdentity,
   sanitizeRecurringSeriesRecord
 } from "./lib/scheduling-recurrence.mjs";
@@ -3313,7 +3315,8 @@ function authoritativeAuthorizationRef(client) {
 }
 
 function recurringSeriesResponse(db, series, appointments, { replayed = false } = {}) {
-  const revision = series.revisions[0];
+  const revision = governingRecurringSeriesRevision(series, series.startDate)
+    || activeRecurringSeriesRevisions(series)[0];
   const template = revision.template;
   const client = (db.clients || []).find((item) => item.id === series.clientId);
   const providerId = template.providerAssignments[0]?.userId || "";
@@ -3378,15 +3381,14 @@ function recurringThisAndFutureEligibility(db, appointment) {
     return { eligible: false, reason: "The recurring series is not available for future edits." };
   }
   const effectiveDate = String(appointment.originalOccurrenceLocalDate || "");
-  const revisionIndex = (series.revisions || []).findIndex((revision) => (
-    revision.effectiveStartDate <= effectiveDate && revision.effectiveEndDate >= effectiveDate
-  ));
-  const revision = series.revisions?.[revisionIndex];
+  const activeRevisions = activeRecurringSeriesRevisions(series);
+  const revision = governingRecurringSeriesRevision(series, effectiveDate);
+  const revisionIndex = (series.revisions || []).indexOf(revision);
   if (!isValidDateOnly(effectiveDate) || !revision
     || !revision.template?.rows?.some((row) => row.rowId === appointment.recurrenceRowId)) {
     return { eligible: false, reason: "This occurrence does not have a current series anchor.", series };
   }
-  if (revisionIndex !== series.revisions.length - 1) {
+  if (activeRevisions.indexOf(revision) !== activeRevisions.length - 1) {
     return { eligible: false, reason: "A later series revision already governs future appointments.", series };
   }
   if (effectiveDate === revision.effectiveStartDate) {
@@ -3489,8 +3491,9 @@ function updateRecurringSeriesThisAndFutureOperation(selected, payload, db, acto
   const revisedSeries = {
     ...series,
     revisions: [
-      ...series.revisions.slice(0, revisionIndex),
-      { ...revision, effectiveEndDate: previousDateOnly(effectiveDate) },
+      ...series.revisions.map((item, index) => (
+        index === revisionIndex ? { ...revision, effectiveEndDate: previousDateOnly(effectiveDate) } : item
+      )),
       newRevision
     ],
     updatedAt: now,
