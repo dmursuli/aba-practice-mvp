@@ -1,6 +1,12 @@
-const palette = ["#167c80", "#d1495b", "#edae49", "#4b7bec", "#6a994e", "#9d4edd"];
+const palette = [
+  "#006d77", "#b23a48", "#9c6500", "#3559a8", "#4f772d", "#7b2cbf",
+  "#0077b6", "#a23e8c", "#9b4d00", "#2a9d8f", "#6b4f9e", "#bc4749",
+  "#3a6b35", "#8f2d56", "#4361a1", "#7f5539", "#087e8b", "#5f0f40",
+  "#3d5a80", "#6a7b1f", "#a44a3f", "#4c4c9d", "#187b5c", "#8a5a00"
+];
 const MOVING_AVERAGE_WINDOW = 5;
-const DENSE_DATE_THRESHOLD = 32;
+const TREND_SLOPE_TOLERANCE = 0.01;
+const assignedColorIndexes = new Map();
 
 export function drawLineChart(canvas, series, options = {}) {
   if (!canvas) return;
@@ -8,7 +14,7 @@ export function drawLineChart(canvas, series, options = {}) {
   const allPoints = series.flatMap((item) => item.points);
   const dateCount = new Set(allPoints.map((point) => point.x)).size;
   const useAngledDates = dateCount > 8;
-  const showPointMarkers = shouldShowPointMarkers(series, options);
+  const seriesStyles = buildSeriesStyles(series);
   canvas.style.width = "100%";
   canvas.style.maxWidth = "100%";
   const rect = canvas.getBoundingClientRect();
@@ -83,7 +89,7 @@ export function drawLineChart(canvas, series, options = {}) {
       })
     : [];
   movingAverageSeries.forEach((item, seriesIndex) => {
-    const color = palette[seriesIndex % palette.length];
+    const color = seriesStyles[seriesIndex].color;
     const points = item.points
       .slice()
       .sort((a, b) => a.x.localeCompare(b.x))
@@ -105,15 +111,16 @@ export function drawLineChart(canvas, series, options = {}) {
     ctx.strokeStyle = `${color}99`;
     ctx.lineWidth = 2;
     ctx.setLineDash([8, 6]);
-    drawPhaseSegments(ctx, points, phaseBoundary, breakLines);
+    drawPhaseSegments(ctx, points.map((point) => ({ ...point, phase: "rolling" })), null, phaseMarkerXs);
     ctx.restore();
   });
   series.forEach((item, seriesIndex) => {
-    const color = palette[seriesIndex % palette.length];
+    const style = seriesStyles[seriesIndex];
+    const color = style.color;
     const points = item.points
       .slice()
       .sort((a, b) => a.x.localeCompare(b.x))
-      .map((point) => {
+      .map((point, pointIndex) => {
         const dateIndex = dates.indexOf(point.x);
         const baseX = xPositions[dateIndex];
         return {
@@ -121,24 +128,25 @@ export function drawLineChart(canvas, series, options = {}) {
           y: margin.top + plotHeight - (point.y / yTop) * plotHeight,
           value: point.y,
           dateIndex,
-          phase: derivedPointPhase(dateIndex, phaseBoundary),
+          phase: classifySeriesPointPhase(point, pointIndex, phaseBoundary, dates),
           label: item.name,
           date: point.x,
           source: point
         };
       });
 
+    ctx.save();
     ctx.strokeStyle = color;
     ctx.lineWidth = 3;
+    ctx.setLineDash(style.dashPattern);
     drawPhaseSegments(ctx, points, phaseBoundary, breakLines);
+    ctx.restore();
 
     points.forEach((point) => {
-      if (showPointMarkers) {
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
-        ctx.fill();
-      }
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+      ctx.fill();
       interactivePoints.push(point);
     });
   });
@@ -160,10 +168,41 @@ export function buildClinicalGraphModel(series, options = {}) {
 }
 
 export function buildLegendItems(series) {
+  const styles = buildSeriesStyles(series);
   return series.map((item, index) => ({
     label: item.name,
-    color: palette[index % palette.length]
+    color: styles[index].color
   }));
+}
+
+export function buildSeriesStyles(series = []) {
+  return series.map((item) => {
+    const key = stableSeriesIdentifier(item);
+    if (!assignedColorIndexes.has(key)) {
+      const claimed = new Set([...assignedColorIndexes.values()].map((assignment) => assignment.colorIndex));
+      const preferred = stableHash(key) % palette.length;
+      let selected = preferred;
+      let patternIndex = 0;
+      if (assignedColorIndexes.size < palette.length) {
+        for (let offset = 0; offset < palette.length; offset += 1) {
+          const candidate = (preferred + offset) % palette.length;
+          if (!claimed.has(candidate)) {
+            selected = candidate;
+            break;
+          }
+        }
+      } else {
+        patternIndex = 1 + (Math.floor((assignedColorIndexes.size - palette.length) / palette.length) % 3);
+      }
+      assignedColorIndexes.set(key, { colorIndex: selected, patternIndex });
+    }
+    const assignment = assignedColorIndexes.get(key);
+    return {
+      key,
+      color: palette[assignment.colorIndex],
+      dashPattern: linePatternForIndex(assignment.patternIndex)
+    };
+  });
 }
 
 export function buildGraphAnalysis(series, options = {}) {
@@ -187,9 +226,7 @@ export function buildGraphAnalysis(series, options = {}) {
     dates: model.dates,
     rangeLabel: options.rangeLabel || "selected date range",
     trendLineEligible: analyses.some((entry) => entry.trendLineEligible),
-    trendLineMessage: analyses.some((entry) => !entry.trendLineEligible)
-      ? "Trend line requires at least 5 data points."
-      : "",
+    trendLineMessage: "",
     analyses
   };
 }
@@ -251,10 +288,7 @@ export function buildDateTicks(series, options = {}) {
 }
 
 export function shouldShowPointMarkers(series, options = {}) {
-  if (typeof options.showPointMarkers === "boolean") return options.showPointMarkers;
-  const pointCount = (series || []).reduce((sum, item) => sum + (item.points || []).length, 0);
-  const dateCount = new Set((series || []).flatMap((item) => (item.points || []).map((point) => point.x))).size;
-  return pointCount <= 60 && dateCount <= DENSE_DATE_THRESHOLD;
+  return true;
 }
 
 export function buildMovingAveragePoints(points, options = {}) {
@@ -264,33 +298,24 @@ export function buildMovingAveragePoints(points, options = {}) {
   const normalized = (points || [])
     .slice()
     .sort((a, b) => a.x.localeCompare(b.x))
-    .map((point) => {
+    .map((point, pointIndex) => {
       const dateIndex = dates.indexOf(point.x);
-      const derivedPhase = derivedPointPhase(dateIndex, phaseBoundary);
       return {
         ...point,
         dateIndex,
-        phase: point.phase === "baseline" ? "baseline" : derivedPhase
+        phase: classifySeriesPointPhase(point, pointIndex, phaseBoundary, dates)
       };
     });
-  const grouped = normalized.reduce((map, point) => {
-    if (!map.has(point.phase)) map.set(point.phase, []);
-    map.get(point.phase).push(point);
-    return map;
-  }, new Map());
-  return [...grouped.entries()].flatMap(([, phasePoints]) => {
-    if (phasePoints.length < windowSize) return [];
-    return phasePoints.map((point, index) => {
-      if (index + 1 < windowSize) return null;
-      const windowPoints = phasePoints.slice(index + 1 - windowSize, index + 1);
+  return normalized.map((point, index) => {
+      const windowStart = Math.max(0, index + 1 - windowSize);
+      const windowPoints = normalized.slice(windowStart, index + 1);
       const average = mean(windowPoints.map((entry) => Number(entry.y || 0)));
       return {
         x: point.x,
         y: roundMetric(average, 1),
         phase: point.phase
       };
-    }).filter(Boolean);
-  });
+    });
 }
 
 function analyzeSingleSeries(series, options) {
@@ -300,10 +325,9 @@ function analyzeSingleSeries(series, options) {
   const normalized = (series.points || [])
     .slice()
     .sort((a, b) => a.x.localeCompare(b.x))
-    .map((point) => {
+    .map((point, pointIndex) => {
       const dateIndex = options.dates.indexOf(point.x);
-      const derivedPhase = derivedPointPhase(dateIndex, options.phaseBoundary);
-      const phase = point.phase === "baseline" ? "baseline" : derivedPhase;
+      const phase = classifySeriesPointPhase(point, pointIndex, options.phaseBoundary, options.dates);
       const normalizedPoint = { ...point, dateIndex, phase };
       if (phase === "baseline") baselinePoints.push(normalizedPoint);
       else treatmentPoints.push(normalizedPoint);
@@ -324,9 +348,11 @@ function analyzeSingleSeries(series, options) {
       ? baselineAverage - treatmentAverage
       : treatmentAverage - baselineAverage
     : null;
-  const percentChange = graphType === "skill"
-    ? percentChangeMetric(baselineAverage, treatmentAverage)
+  const changeFromBaseline = baselineAverage !== null && treatmentAverage !== null
+    ? treatmentAverage - baselineAverage
     : null;
+  const relativePercentChange = percentChangeMetric(baselineAverage, treatmentAverage);
+  const percentChange = graphType === "skill" ? relativePercentChange : null;
   const sessionsToMastery = graphType === "skill"
     ? calculateSessionsToMastery(series, treatmentPoints, options.phaseMarkers)
     : null;
@@ -358,6 +384,8 @@ function analyzeSingleSeries(series, options) {
     magnitudeOfImprovement,
     difference,
     percentChange,
+    changeFromBaseline,
+    relativePercentChange,
     percentReduction,
     overlap,
     immediacy,
@@ -379,6 +407,8 @@ function analyzeSingleSeries(series, options) {
     magnitudeOfImprovement,
     difference: roundMetric(difference),
     percentChange,
+    changeFromBaseline: roundMetric(changeFromBaseline),
+    relativePercentChange,
     sessionsToMastery,
     masteryStatus,
     percentReduction,
@@ -387,7 +417,7 @@ function analyzeSingleSeries(series, options) {
     interpretation,
     baselineAvailable: baselineValues.length > 0,
     treatmentAvailable: treatmentValues.length > 0,
-    trendLineEligible: normalized.length >= MOVING_AVERAGE_WINDOW,
+    trendLineEligible: normalized.length > 0,
     movingAveragePoints: options.movingAveragePoints || []
   };
 }
@@ -421,7 +451,7 @@ export function resolveTreatmentPhaseBoundary(dates, treatmentPhaseLine = null, 
         lineStyle: treatmentPhaseLine.lineStyle === "dashed" ? "dashed" : "solid",
         note: treatmentPhaseLine.note || "",
         phaseType: "baselineToTreatment",
-        sourceType: treatmentPhaseLine.phaseType || "userTreatmentOverride"
+        sourceType: treatmentPhaseLine.sourceType || treatmentPhaseLine.phaseType || "userTreatmentOverride"
       };
     }
     return null;
@@ -482,6 +512,17 @@ function phaseMarkerOrder(marker) {
 export function derivedPointPhase(dateIndex, phaseBoundary = null) {
   if (!phaseBoundary) return "baseline";
   return dateIndex <= phaseBoundary.leftIndex ? "baseline" : "intervention";
+}
+
+export function classifySeriesPointPhase(point, pointIndex, phaseBoundary = null, dates = []) {
+  const hasExplicitBoundary = phaseBoundary && phaseBoundary.sourceType !== "autoTreatment";
+  if (hasExplicitBoundary) {
+    const pointDate = point?.x || dates[pointIndex];
+    const treatmentDate = phaseBoundary.configuredDate || phaseBoundary.date || dates[phaseBoundary.rightIndex];
+    return pointDate && treatmentDate && pointDate >= treatmentDate ? "intervention" : "baseline";
+  }
+  if (point?.phase === "baseline") return "baseline";
+  return pointIndex === 0 ? "baseline" : "intervention";
 }
 
 function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options) {
@@ -712,23 +753,18 @@ export function formatGraphDate(value) {
 }
 
 function classifyTrend(values, graphType) {
-  if (!Array.isArray(values) || values.length < 3) {
+  if (!Array.isArray(values) || values.length < 2) {
     return {
-      direction: "Unavailable",
+      direction: "Insufficient data",
       slope: 0,
       confidence: "Insufficient data for trend interpretation."
     };
   }
   const slope = linearRegressionSlope(values);
-  const range = Math.max(...values) - Math.min(...values);
-  const threshold = Math.max(range * 0.1, graphType === "skill" ? 1 : 0.25);
-  if (Math.abs(slope) <= threshold) {
-    return { direction: "flat", slope, confidence: "" };
+  if (Math.abs(slope) <= TREND_SLOPE_TOLERANCE) {
+    return { direction: "Flat", slope, confidence: "" };
   }
-  if (graphType === "behavior") {
-    return { direction: slope < 0 ? "decreasing" : "increasing", slope, confidence: "" };
-  }
-  return { direction: slope > 0 ? "ascending" : "descending", slope, confidence: "" };
+  return { direction: slope > 0 ? "Ascending" : "Descending", slope, confidence: "" };
 }
 
 function classifyVariability(values) {
@@ -830,6 +866,8 @@ function buildInterpretation(context) {
     magnitudeOfImprovement,
     difference,
     percentChange,
+    changeFromBaseline,
+    relativePercentChange,
     percentReduction,
     overlap,
     immediacy,
@@ -846,22 +884,22 @@ function buildInterpretation(context) {
     const limitedConfidence = baselineValues.length < 3 || treatmentValues.length < 3;
     let reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, indicating no change from baseline.`;
     if (baselineAverage === 0) {
-      if (treatmentAverage > baselineAverage) {
-        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${roundMetric(treatmentAverage - baselineAverage, 1)}-point absolute increase from baseline.`;
-      } else if (treatmentAverage < baselineAverage) {
-        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${roundMetric(baselineAverage - treatmentAverage, 1)}-point absolute decrease from baseline.`;
+      if (changeFromBaseline > 0) {
+        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${roundMetric(changeFromBaseline, 1)}-point absolute increase from baseline.`;
+      } else if (changeFromBaseline < 0) {
+        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${Math.abs(roundMetric(changeFromBaseline, 1))}-point absolute decrease from baseline.`;
       }
     } else {
-      const percentChangeValue = roundMetric((((treatmentAverage ?? 0) - baselineAverage) / baselineAverage) * 100, 1);
-      if (percentChangeValue > 0) {
-        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${Math.abs(percentChangeValue)}% increase from baseline.`;
-      } else if (percentChangeValue < 0) {
-        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${Math.abs(percentChangeValue)}% reduction from baseline.`;
+      const relativeValue = Number.parseFloat(relativePercentChange);
+      if (changeFromBaseline > 0) {
+        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${Math.abs(relativeValue)}% increase from baseline.`;
+      } else if (changeFromBaseline < 0) {
+        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${Math.abs(relativeValue)}% reduction from baseline.`;
       }
     }
-    const trendClause = trend.direction === "Unavailable"
+    const trendClause = trend.direction === "Insufficient data"
       ? "Additional data are needed to establish a stable trend."
-      : `Data show a ${trend.direction} trend.`;
+      : `Data show a ${trend.direction.toLowerCase()} trend.`;
     const supportClauses = [
       variability && !String(variability).includes("requires") ? `${variability} variability` : "",
       stability && !String(stability).includes("requires") ? `${stability} stability` : "",
@@ -871,12 +909,18 @@ function buildInterpretation(context) {
     return `${label}: Baseline frequency averaged ${roundMetric(baselineAverage, 1)} based on ${baselineValues.length} baseline data point${baselineValues.length === 1 ? "" : "s"}. ${reductionClause} ${trendClause}${supportClauses.length ? ` Observed response showed ${supportClauses.join(", ")}.` : ""}${limitedConfidence ? " Interpretation is limited by the small number of data points." : ""}`.trim();
   }
   const limitedConfidence = baselineValues.length < 3 || treatmentValues.length < 3;
-  const changeClause = baselineAverage === 0
-    ? `Treatment level averaged ${roundMetric(treatmentAverage, 1)}%, representing a ${roundMetric(difference, 1)}-percentage-point increase from baseline.`
-    : `Treatment performance averaged ${roundMetric(treatmentAverage, 1)}%, representing a ${roundMetric(difference, 1)}-percentage-point improvement${percentChange && !String(percentChange).includes("unavailable") ? ` (${percentChange})` : ""}.`;
-  const trendClause = trend.direction === "Unavailable"
+  const pointChange = Math.abs(roundMetric(changeFromBaseline, 1));
+  const relativeClause = relativePercentChange && !String(relativePercentChange).includes("unavailable")
+    ? ` (${relativePercentChange})`
+    : "";
+  const changeClause = changeFromBaseline > 0
+    ? `Treatment performance averaged ${roundMetric(treatmentAverage, 1)}%, representing a ${pointChange}-percentage-point ${baselineAverage === 0 ? "increase" : "improvement"}${relativeClause}.`
+    : changeFromBaseline < 0
+      ? `Treatment performance averaged ${roundMetric(treatmentAverage, 1)}%, representing a ${pointChange}-percentage-point decrease${relativeClause}.`
+      : `Treatment performance averaged ${roundMetric(treatmentAverage, 1)}%, representing no change from baseline.`;
+  const trendClause = trend.direction === "Insufficient data"
     ? "Additional treatment data are needed to establish a stable trend."
-    : `Data demonstrate a ${trend.direction} trend.`;
+    : `Data demonstrate a ${trend.direction.toLowerCase()} trend.`;
   const supportClauses = [
     variability && !String(variability).includes("requires") ? `${variability} variability` : "",
     stability && !String(stability).includes("requires") ? `${stability} stability` : ""
@@ -899,6 +943,33 @@ function linearRegressionSlope(values) {
     denominator += (index - xMean) ** 2;
   });
   return denominator ? numerator / denominator : 0;
+}
+
+function stableSeriesIdentifier(series = {}) {
+  return String(
+    series.meta?.targetId
+    || series.meta?.behaviorId
+    || series.meta?.caregiverTargetId
+    || series.meta?.goalKey
+    || series.meta?.goalName
+    || series.id
+    || series.name
+    || "series"
+  );
+}
+
+function stableHash(value) {
+  let hash = 2166136261;
+  for (const character of String(value)) {
+    hash ^= character.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function linePatternForIndex(index) {
+  const patterns = [[], [10, 4], [3, 4], [10, 3, 2, 3]];
+  return patterns[index % patterns.length];
 }
 
 function mean(values) {

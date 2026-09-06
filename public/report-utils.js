@@ -11,9 +11,7 @@ export function buildCompactGraphAnalysisSentence(entry, graphType) {
   const metrics = [
     `Baseline: ${formatMetricValue(entry.baselineLevel, graphType)}`,
     `Treatment: ${formatMetricValue(entry.treatmentLevel ?? entry.treatmentAverage, graphType)}`,
-    graphType === "behavior"
-      ? `Reduction: ${entry.percentReduction || "Unavailable"}`
-      : `Change: ${formatMetricValue(entry.difference, graphType)}${entry.percentChange && !String(entry.percentChange).includes("unavailable") ? ` (${entry.percentChange})` : ""}`,
+    `Change: ${formatMetricValue(entry.changeFromBaseline ?? entry.difference, graphType)}${(entry.relativePercentChange || entry.percentChange) && !String(entry.relativePercentChange || entry.percentChange).includes("unavailable") ? ` (${entry.relativePercentChange || entry.percentChange})` : ""}`,
     `Trend: ${entry.trendDirection || "Unavailable"}`
   ];
   return `${metrics.join(". ")}. ${String(entry.interpretation || "").trim()}`.replace(/\s+/g, " ").trim();
