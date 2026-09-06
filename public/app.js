@@ -7397,7 +7397,7 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
         <div class="graph-phase-line-item graph-phase-line-item-treatment">
           <div>
             <strong>${escapeHtml(treatmentRecord.label || "Treatment")}</strong>
-            <span>Deleted - baseline/treatment analysis may be limited.</span>
+            <span>Deleted - analytics use each target's first observation as baseline.</span>
             ${treatmentRecord.note ? `<p class="graph-phase-line-note">${escapeHtml(treatmentRecord.note)}</p>` : ""}
           </div>
           ${options.readOnly ? "" : `
@@ -7408,13 +7408,13 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
         </div>
       `
     : !treatmentLine
-      ? `<p class="muted">Treatment phase line unavailable; baseline/treatment analysis may be limited.</p>`
+      ? `<p class="muted">No explicit treatment phase line. Analytics use each target's first observation as baseline and later observations as treatment.</p>`
     : treatmentLine.hidden
       ? `
         <div class="graph-phase-line-item graph-phase-line-item-treatment">
           <div>
             <strong>${escapeHtml(treatmentLine.label || "Treatment")}</strong>
-            <span>Hidden - baseline/treatment analysis may be limited.</span>
+            <span>Hidden - analytics use each target's first observation as baseline.</span>
             ${treatmentLine.note ? `<p class="graph-phase-line-note">${escapeHtml(treatmentLine.note)}</p>` : ""}
           </div>
           ${options.readOnly ? "" : `
@@ -11536,7 +11536,7 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
         </label>
       </div>
       <p class="graph-analysis-note">Analysis based on ${escapeHtml(options.rangeLabel || analysis.rangeLabel || "selected date range")}.</p>
-      ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">Treatment phase line unavailable; baseline/treatment analysis may be limited.</p>' : ""}
+      ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">No explicit treatment phase line; using each target’s first observation as baseline.</p>' : ""}
       ${options.treatmentBeforeRange ? '<p class="graph-analysis-note">Treatment phase began before selected range.</p>' : ""}
       ${showTrendLine && analysis.trendLineMessage ? `<p class="graph-analysis-note">${escapeHtml(analysis.trendLineMessage)}</p>` : ""}
       ${analysis.analyses.map((entry) => `
@@ -11551,11 +11551,9 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
             ${renderGraphMetricCell("Treatment level", formatAnalysisMetric(entry.treatmentLevel ?? entry.treatmentAverage, analysis.graphType))}
             ${renderGraphMetricCell("Current level", formatAnalysisMetric(entry.currentLevel, analysis.graphType))}
             ${renderGraphMetricCell("Trend", entry.trendDirection)}
-            ${analysis.graphType === "skill"
-              ? renderGraphMetricCell("Change from baseline", entry.percentChange && !String(entry.percentChange).includes("unavailable")
-                ? `${formatAnalysisMetric(entry.difference, analysis.graphType)} (${entry.percentChange})`
-                : formatAnalysisMetric(entry.difference, analysis.graphType))
-              : renderGraphMetricCell("Percent reduction", entry.percentReduction || "Unavailable")}
+            ${renderGraphMetricCell("Change from baseline", entry.relativePercentChange && !String(entry.relativePercentChange).includes("unavailable")
+              ? `${formatAnalysisMetric(entry.changeFromBaseline ?? entry.difference, analysis.graphType)} (${entry.relativePercentChange})`
+              : formatAnalysisMetric(entry.changeFromBaseline ?? entry.difference, analysis.graphType))}
           </div>
           <details class="graph-analysis-details">
             <summary>Advanced analysis</summary>
@@ -11583,7 +11581,7 @@ function renderReportGraphAnalysisMarkup(analysis, options = {}) {
   return `
     <section class="report-graph-analysis" aria-label="Graph Analysis">
       <p class="graph-analysis-note">Analysis based on ${escapeHtml(options.rangeLabel || analysis.rangeLabel || "selected date range")}.</p>
-      ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">Treatment phase line unavailable; baseline/treatment analysis may be limited.</p>' : ""}
+      ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">No explicit treatment phase line; using each target’s first observation as baseline.</p>' : ""}
       ${analysis.analyses.map((entry) => `
         <p class="report-graph-analysis-line">
           <strong>${escapeHtml(entry.label)}:</strong>

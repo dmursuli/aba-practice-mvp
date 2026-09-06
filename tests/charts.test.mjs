@@ -8,6 +8,8 @@ import {
   buildGraphAnalysis,
   buildLegendItems,
   buildMovingAverageSeriesSet,
+  buildSeriesStyles,
+  drawLineChart,
   derivedPointPhase,
   filterSeriesPointsByDateRange,
   formatGraphDate
@@ -401,7 +403,8 @@ test('graph layout uses responsive width without data-length based canvas sizing
   assert.match(appSource, /data-hide-treatment-phase-line/);
   assert.match(appSource, /data-reset-treatment-phase-line/);
   assert.match(appSource, /data-phase-line-kind=\"treatment\"/);
-  assert.match(appSource, /Treatment phase line unavailable; baseline\/treatment analysis may be limited\./);
+  assert.doesNotMatch(appSource, /Treatment phase line unavailable; baseline\/treatment analysis may be limited\./);
+  assert.match(appSource, /using each target.s first observation as baseline/i);
   assert.match(appSource, /showPointMarkers: state\.behaviorGraphShowPoints/);
   assert.match(appSource, /<div class="graph-canvas-scroll">/);
   assert.doesNotMatch(appSource, /showAllDateLabels: true/);
@@ -443,7 +446,7 @@ test('skill graph analysis reports baseline, treatment, trend, and mastery metri
   assert.equal(analysis.analyses[0].baselineAverage, 20);
   assert.equal(analysis.analyses[0].treatmentAverage, 67.5);
   assert.equal(analysis.analyses[0].currentLevel, 90);
-  assert.equal(analysis.analyses[0].trendDirection, 'ascending');
+  assert.equal(analysis.analyses[0].trendDirection, 'Ascending');
   assert.equal(analysis.analyses[0].masteryStatus, 'mastered');
   assert.equal(analysis.analyses[0].sessionsToMastery, 4);
 });
@@ -467,7 +470,7 @@ test('behavior graph analysis reports reduction, overlap, and immediacy metrics'
   assert.equal(analysis.analyses[0].baselineAverage, 10);
   assert.equal(analysis.analyses[0].treatmentAverage, 5);
   assert.equal(analysis.analyses[0].currentLevel, 2);
-  assert.equal(analysis.analyses[0].trendDirection, 'decreasing');
+  assert.equal(analysis.analyses[0].trendDirection, 'Descending');
   assert.equal(analysis.analyses[0].percentReduction, '50%');
   assert.equal(analysis.analyses[0].overlap, '0%');
   assert.match(analysis.analyses[0].immediacy, /Immediate decrease/);
@@ -529,13 +532,13 @@ test('graph analysis uses insufficient-data messaging when treatment data are to
   assert.equal(analysis.analyses[0].baselineLevel, 30);
   assert.equal(analysis.analyses[0].treatmentLevel, 50);
   assert.equal(analysis.analyses[0].difference, 20);
-  assert.equal(analysis.analyses[0].trendDirection, 'Unavailable');
+  assert.equal(analysis.analyses[0].trendDirection, 'Insufficient data');
   assert.match(analysis.analyses[0].interpretation, /representing a 20-percentage-point improvement/i);
   assert.match(analysis.analyses[0].interpretation, /Interpretation is limited by the small number of data points/i);
   assert.match(analysis.analyses[0].stability, /requires at least 3 treatment data points/i);
 });
 
-test('five-session moving average requires at least five points in a phase segment', () => {
+test('five-session moving average is progressive from the first observation', () => {
   const movingAverage = buildMovingAverageSeriesSet([{
     name: 'Target A',
     points: [
@@ -546,10 +549,10 @@ test('five-session moving average requires at least five points in a phase segme
     ]
   }]);
 
-  assert.deepEqual(movingAverage[0].points, []);
+  assert.deepEqual(movingAverage[0].points.map((point) => point.y), [10, 15, 20, 25]);
 });
 
-test('five-session moving average stays separated by phase boundary', () => {
+test('five-session moving average rolls across the full target series', () => {
   const movingAverage = buildMovingAverageSeriesSet([{
     name: 'Target B',
     points: [
@@ -562,9 +565,8 @@ test('five-session moving average stays separated by phase boundary', () => {
     ]
   }]);
 
-  assert.equal(movingAverage[0].points.length, 1);
-  assert.equal(movingAverage[0].points[0].x, '2026-06-11');
-  assert.equal(movingAverage[0].points[0].phase, 'intervention');
+  assert.equal(movingAverage[0].points.length, 6);
+  assert.deepEqual(movingAverage[0].points.map((point) => point.y), [10, 15, 20, 25, 30, 40]);
 });
 
 test('five-session moving average is calculated independently for each series', () => {
@@ -594,10 +596,10 @@ test('five-session moving average is calculated independently for each series', 
   ]);
 
   assert.equal(movingAverage.length, 2);
-  assert.equal(movingAverage[0].points.length, 1);
-  assert.equal(movingAverage[1].points.length, 1);
-  assert.equal(movingAverage[0].points[0].y, 40);
-  assert.equal(movingAverage[1].points[0].y, 30);
+  assert.equal(movingAverage[0].points.length, 6);
+  assert.equal(movingAverage[1].points.length, 6);
+  assert.deepEqual(movingAverage[0].points.map((point) => point.y), [10, 15, 20, 25, 30, 40]);
+  assert.deepEqual(movingAverage[1].points.map((point) => point.y), [60, 55, 50, 45, 40, 30]);
 });
 
 test('graph analysis identifies trend-line eligibility when a series has five treatment points', () => {
@@ -618,7 +620,7 @@ test('graph analysis identifies trend-line eligibility when a series has five tr
   assert.equal(analysis.trendLineMessage, '');
 });
 
-test('graph analysis reports trend-line ineligibility when fewer than five treatment points exist', () => {
+test('graph analysis permits a progressive trend line with fewer than five treatment points', () => {
   const analysis = buildGraphAnalysis([{
     name: 'Tantrums',
     points: [
@@ -629,9 +631,9 @@ test('graph analysis reports trend-line ineligibility when fewer than five treat
     ]
   }], { graphType: 'behavior' });
 
-  assert.equal(analysis.trendLineEligible, false);
-  assert.equal(analysis.analyses[0].trendLineEligible, false);
-  assert.match(analysis.trendLineMessage, /requires at least 5 data points/i);
+  assert.equal(analysis.trendLineEligible, true);
+  assert.equal(analysis.analyses[0].trendLineEligible, true);
+  assert.equal(analysis.trendLineMessage, '');
 });
 
 test('graph UI exposes a trend-line toggle and report insertion action', () => {
@@ -690,7 +692,7 @@ test('baseline and treatment comparison calculate with one point in each phase f
   assert.equal(analysis.analyses[0].treatmentLevel, 3);
   assert.equal(analysis.analyses[0].difference, 5);
   assert.equal(analysis.analyses[0].percentReduction, '62.5%');
-  assert.equal(analysis.analyses[0].trendDirection, 'Unavailable');
+  assert.equal(analysis.analyses[0].trendDirection, 'Insufficient data');
 });
 
 test('baseline mean of zero does not cause divide-by-zero errors', () => {
@@ -757,4 +759,148 @@ test('behavior analysis still calculates baseline level when stored phase labels
   assert.equal(analysis.analyses[0].baselineLevel, 7);
   assert.equal(analysis.analyses[0].treatmentLevel, 4);
   assert.match(analysis.analyses[0].interpretation, /Baseline frequency averaged 7 based on 1 baseline data point/i);
+});
+
+test('missing phase line still classifies the first target observation as baseline', () => {
+  const analysis = buildGraphAnalysis([{
+    name: 'Independent work',
+    meta: { targetId: 'fallback-target' },
+    points: [
+      { x: '2026-07-01', y: 90 },
+      { x: '2026-07-02', y: 60 },
+      { x: '2026-07-03', y: 90 },
+      { x: '2026-07-04', y: 60 },
+      { x: '2026-07-05', y: 70 },
+      { x: '2026-07-06', y: 90 },
+      { x: '2026-07-07', y: 90 },
+      { x: '2026-07-08', y: 100 },
+      { x: '2026-07-09', y: 80 }
+    ]
+  }], { graphType: 'skill', suppressAutoTreatmentBoundary: true });
+
+  assert.equal(analysis.phaseBoundary, null);
+  assert.equal(analysis.analyses[0].baselineLevel, 90);
+  assert.equal(analysis.analyses[0].treatmentLevel, 80);
+  assert.equal(analysis.analyses[0].currentLevel, 80);
+  assert.equal(analysis.analyses[0].difference, -10);
+  assert.equal(analysis.analyses[0].percentChange, '-11.1%');
+  assert.doesNotMatch(analysis.analyses[0].interpretation, /Treatment data are unavailable/i);
+});
+
+test('trend direction uses all treatment points and only one is insufficient', () => {
+  const trendFor = (values) => buildGraphAnalysis([{
+    name: 'Trend target',
+    points: [
+      { x: '2026-08-01', y: 50 },
+      ...values.map((y, index) => ({ x: `2026-08-${String(index + 2).padStart(2, '0')}`, y }))
+    ]
+  }], { graphType: 'skill' }).analyses[0].trendDirection;
+
+  assert.equal(trendFor([90]), 'Insufficient data');
+  assert.equal(trendFor([90, 90]), 'Flat');
+  assert.equal(trendFor([70, 80]), 'Ascending');
+  assert.equal(trendFor([80, 70]), 'Descending');
+});
+
+test('sparse targets retain their own first observation and never receive fabricated dates', () => {
+  const series = [
+    {
+      name: 'Older target',
+      meta: { targetId: 'older-target' },
+      points: [
+        { x: '2026-09-01', y: 10 },
+        { x: '2026-09-02', y: 20 },
+        { x: '2026-09-03', y: 30 }
+      ]
+    },
+    {
+      name: 'New target',
+      meta: { targetId: 'new-target' },
+      points: [
+        { x: '2026-09-03', y: 40 },
+        { x: '2026-09-05', y: 60 }
+      ]
+    }
+  ];
+  const model = buildClinicalGraphModel(series);
+  const analysis = buildGraphAnalysis(series, { graphType: 'skill' });
+
+  assert.deepEqual(model.dates, ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-05']);
+  assert.deepEqual(series[1].points.map((point) => point.x), ['2026-09-03', '2026-09-05']);
+  assert.equal(analysis.analyses[1].baselineLevel, 40);
+  assert.equal(analysis.analyses[1].treatmentLevel, 60);
+});
+
+test('stable target colors are distinct for ten targets and do not shift when one is added', () => {
+  const initial = Array.from({ length: 10 }, (_, index) => ({
+    name: `Target ${index + 1}`,
+    meta: { targetId: `palette-regression-${index + 1}` },
+    points: []
+  }));
+  const before = buildSeriesStyles(initial).map((style) => style.color);
+  const after = buildSeriesStyles([
+    ...initial,
+    { name: 'Later target', meta: { targetId: 'palette-regression-11' }, points: [] }
+  ]).map((style) => style.color);
+
+  assert.equal(new Set(before).size, 10);
+  assert.deepEqual(after.slice(0, 10), before);
+});
+
+function makeCanvasRecorder() {
+  const calls = { arcs: 0, dashed: 0 };
+  const context = {
+    scale() {}, clearRect() {}, fillRect() {}, save() {}, restore() {}, translate() {},
+    rotate() {}, fillText() {}, stroke() {}, beginPath() {}, moveTo() {}, lineTo() {}, fill() {},
+    arc() { calls.arcs += 1; },
+    setLineDash(pattern) { if (pattern.length) calls.dashed += 1; }
+  };
+  return {
+    calls,
+    canvas: {
+      style: {},
+      title: '',
+      getContext: () => context,
+      getBoundingClientRect: () => ({ width: 760, left: 0, top: 0 })
+    }
+  };
+}
+
+test('raw point markers render for every observation in single and multi-target charts', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  try {
+    const single = makeCanvasRecorder();
+    drawLineChart(single.canvas, [{ name: 'One', points: [
+      { x: '2026-09-01', y: 10 }, { x: '2026-09-02', y: 20 }, { x: '2026-09-03', y: 30 }
+    ] }], { showPointMarkers: false });
+    assert.equal(single.calls.arcs, 3);
+
+    const multi = makeCanvasRecorder();
+    drawLineChart(multi.canvas, [
+      { name: 'One', points: [{ x: '2026-09-01', y: 10 }, { x: '2026-09-02', y: 20 }] },
+      { name: 'Two', points: [{ x: '2026-09-02', y: 30 }, { x: '2026-09-04', y: 40 }] }
+    ], { showPointMarkers: false });
+    assert.equal(multi.calls.arcs, 4);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test('trend-line rendering responds immediately to the showTrendLine option', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  const series = [{ name: 'Toggle target', points: [
+    { x: '2026-09-01', y: 10 }, { x: '2026-09-02', y: 20 }, { x: '2026-09-03', y: 30 }
+  ] }];
+  try {
+    const off = makeCanvasRecorder();
+    drawLineChart(off.canvas, series, { showTrendLine: false });
+    const on = makeCanvasRecorder();
+    drawLineChart(on.canvas, series, { showTrendLine: true });
+    assert.equal(off.calls.dashed, 0);
+    assert.ok(on.calls.dashed > 0);
+  } finally {
+    globalThis.window = previousWindow;
+  }
 });
