@@ -1,8 +1,8 @@
 const palette = [
-  "#006d77", "#b23a48", "#9c6500", "#3559a8", "#4f772d", "#7b2cbf",
-  "#0077b6", "#a23e8c", "#9b4d00", "#2a9d8f", "#6b4f9e", "#bc4749",
-  "#3a6b35", "#8f2d56", "#4361a1", "#7f5539", "#087e8b", "#5f0f40",
-  "#3d5a80", "#6a7b1f", "#a44a3f", "#4c4c9d", "#187b5c", "#8a5a00"
+  "#167c80", "#d1495b", "#edae49", "#4b7bec", "#6a994e", "#9d4edd",
+  "#00a6d6", "#e83e8c", "#f77f00", "#2a9d8f", "#7b61ff", "#ff6b6b",
+  "#4caf50", "#d81b60", "#1e88e5", "#f4a261", "#00a878", "#c44bc9",
+  "#ff595e", "#3db7e9", "#8ac926", "#ff9f1c", "#5e60ce", "#e76f51"
 ];
 const MOVING_AVERAGE_WINDOW = 5;
 const TREND_SLOPE_TOLERANCE = 0.01;
