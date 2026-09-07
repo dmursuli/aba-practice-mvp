@@ -900,11 +900,16 @@ test('graph-local line patterns differentiate series after the full palette is e
 });
 
 function makeCanvasRecorder(width = 760) {
-  const calls = { arcs: 0, dashed: 0, lines: [], moves: [], rotations: [], text: [], strokes: [] };
+  const calls = { arcs: 0, dashed: 0, lines: [], moves: [], rotations: [], text: [], textPositions: [], translations: [], strokes: [] };
   let currentDash = [];
   const context = {
-    scale() {}, clearRect() {}, fillRect() {}, save() {}, restore() {}, translate() {},
-    rotate(value) { calls.rotations.push(value); }, fillText(value) { calls.text.push(String(value)); },
+    scale() {}, clearRect() {}, fillRect() {}, save() {}, restore() {},
+    translate(x, y) { calls.translations.push({ x, y }); },
+    rotate(value) { calls.rotations.push(value); },
+    fillText(value, x, y) {
+      calls.text.push(String(value));
+      calls.textPositions.push({ value: String(value), x, y });
+    },
     stroke() { calls.strokes.push({ color: this.strokeStyle, dash: currentDash.slice() }); },
     beginPath() {}, moveTo(x, y) { calls.moves.push({ x, y }); }, lineTo(x, y) { calls.lines.push({ x, y }); }, fill() {},
     arc() { calls.arcs += 1; },
@@ -940,10 +945,10 @@ test('clinical plot height and desktop width cap keep the plotting region balanc
     assert.equal(desktop.canvas.style.marginInline, 'auto');
     assert.equal(desktop.canvas.width, 804);
     assert.equal(desktop.canvas.height, 440);
-    assert.deepEqual(desktop.calls.moves[0], { x: 42, y: 52 });
+    assert.deepEqual(desktop.calls.moves[0], { x: 64, y: 52 });
     assert.deepEqual(desktop.calls.lines.slice(0, 2), [
-      { x: 42, y: 372 },
-      { x: 762, y: 372 }
+      { x: 64, y: 372 },
+      { x: 784, y: 372 }
     ]);
 
     const rotated = makeCanvasRecorder(1400);
@@ -958,8 +963,8 @@ test('clinical plot height and desktop width cap keep the plotting region balanc
     drawLineChart(responsive.canvas, [{ name: 'Responsive target', points: [
       { x: '2026-01-01', y: 10 }, { x: '2026-01-08', y: 20 }
     ] }]);
-    assert.deepEqual(responsive.calls.moves[0], { x: 56, y: 52 });
-    assert.deepEqual(responsive.calls.lines[1], { x: 732, y: 372 });
+    assert.deepEqual(responsive.calls.moves[0], { x: 64, y: 52 });
+    assert.deepEqual(responsive.calls.lines[1], { x: 740, y: 372 });
   } finally {
     globalThis.window = previousWindow;
   }
@@ -1129,6 +1134,28 @@ test('treatment heading remains once without a duplicate rotated boundary label'
     ] }]);
     assert.equal(recorder.calls.text.filter((value) => value === 'Baseline').length, 1);
     assert.equal(recorder.calls.text.filter((value) => value === 'Treatment').length, 1);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test('y-axis title clears tick labels and phase headings center over their intervals', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  try {
+    const recorder = makeCanvasRecorder();
+    drawLineChart(recorder.canvas, [{ name: 'Phase target', points: [
+      { x: '2026-09-01', y: 10 }, { x: '2026-09-02', y: 20 }
+    ] }], { maxY: 100, yLabel: '% independence' });
+
+    assert.ok(recorder.calls.translations.some(({ x, y }) => x === 12 && y === 220));
+    assert.deepEqual(
+      recorder.calls.textPositions.filter(({ value }) => value === 'Baseline' || value === 'Treatment'),
+      [
+        { value: 'Baseline', x: 233, y: 38 },
+        { value: 'Treatment', x: 571, y: 38 }
+      ]
+    );
   } finally {
     globalThis.window = previousWindow;
   }

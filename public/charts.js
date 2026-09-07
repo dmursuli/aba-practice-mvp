@@ -10,6 +10,8 @@ const DATE_LABEL_MIN_SPACING = 72;
 const CLINICAL_CHART_HEIGHT = 440;
 const MAX_DESKTOP_PLOT_WIDTH = 720;
 const MAX_DESKTOP_CANVAS_WIDTH = MAX_DESKTOP_PLOT_WIDTH + 84;
+const PLOT_LEFT_MARGIN = 64;
+const PLOT_RIGHT_MARGIN = 20;
 
 export function drawLineChart(canvas, series, options = {}) {
   if (!canvas) return;
@@ -29,12 +31,9 @@ export function drawLineChart(canvas, series, options = {}) {
 
   const width = canvas.width / dpr;
   const height = canvas.height / dpr;
-  const availablePlotWidth = width - 56 - 28;
+  const availablePlotWidth = width - PLOT_LEFT_MARGIN - PLOT_RIGHT_MARGIN;
   const plotWidth = Math.min(availablePlotWidth, MAX_DESKTOP_PLOT_WIDTH);
-  const centeredMargin = (width - plotWidth) / 2;
-  const margin = plotWidth >= MAX_DESKTOP_PLOT_WIDTH
-    ? { top: 52, right: centeredMargin, bottom: 68, left: centeredMargin }
-    : { top: 52, right: 28, bottom: 68, left: 56 };
+  const margin = { top: 52, right: PLOT_RIGHT_MARGIN, bottom: 68, left: PLOT_LEFT_MARGIN };
   let plotHeight = height - margin.top - margin.bottom;
 
   ctx.clearRect(0, 0, width, height);
@@ -548,7 +547,7 @@ function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, optio
 
   if (options.yLabel) {
     ctx.save();
-    ctx.translate(16, height / 2);
+    ctx.translate(12, height / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = "center";
     ctx.fillText(options.yLabel, 0, 0);
@@ -574,8 +573,10 @@ function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPosit
   ctx.fillStyle = "#1f2933";
   ctx.font = "12px system-ui, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText("Baseline", Math.max(margin.left + 48, lineX - 92), margin.top - 14);
-  ctx.fillText(phaseBoundary.label || "Treatment", Math.min(margin.left + plotWidth - 72, lineX + 92), margin.top - 14);
+  const plotLeft = margin.left;
+  const plotRight = margin.left + plotWidth;
+  ctx.fillText("Baseline", plotLeft + (lineX - plotLeft) / 2, margin.top - 14);
+  ctx.fillText(phaseBoundary.label || "Treatment", lineX + (plotRight - lineX) / 2, margin.top - 14);
   ctx.restore();
 
   return lineX;
