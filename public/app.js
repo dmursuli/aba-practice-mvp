@@ -1,5 +1,5 @@
 import { cancelAppointment, createAppointment, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
-import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
+import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
@@ -10221,21 +10221,22 @@ function renderGraphDataManagerRowsMarkup(rows) {
 function handleGraphAnalysisControlChange(event) {
   const toggle = event.target.closest("[data-graph-trend-toggle]");
   if (!toggle) return;
-  event.preventDefault();
   const graphKey = toggle.dataset.graphTrendToggle;
-  const previousPanel = toggle.closest(".chart-panel");
-  const previousTop = previousPanel?.getBoundingClientRect().top ?? null;
   state.graphTrendVisibility[graphKey] = toggle.checked;
-  renderCharts();
-  if (reportPreview.innerHTML) renderFunderReportPreview();
-  requestAnimationFrame(() => {
-    if (!graphKey || previousTop === null) return;
-    const nextToggle = [...document.querySelectorAll("[data-graph-trend-toggle]")].find((input) => input.dataset.graphTrendToggle === graphKey);
-    const nextPanel = nextToggle?.closest(".chart-panel");
-    if (!nextPanel) return;
-    const delta = nextPanel.getBoundingClientRect().top - previousTop;
-    window.scrollTo({ top: Math.max(window.scrollY + delta, 0), behavior: "auto" });
+  const graphContainer = toggle.closest(".chart-panel") || toggle.closest(".modal-shell");
+  const canvas = graphContainer?.querySelector("canvas");
+  const renderState = canvas?.__clinicalGraphRenderState;
+  if (!redrawLineChartTrend(canvas, toggle.checked) || !renderState) return;
+
+  const legendMarkup = renderGraphLegendMarkup(renderState.series, {
+    showTrendLine: toggle.checked
   });
+  if (graphContainer === programGraphModal) {
+    programGraphModalLegend.innerHTML = legendMarkup;
+    return;
+  }
+  const legend = graphContainer.querySelector(".graph-legend");
+  if (legend) legend.outerHTML = legendMarkup;
 }
 
 function handleGraphAnalysisClick(event) {

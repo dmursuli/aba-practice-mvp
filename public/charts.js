@@ -9,6 +9,7 @@ const TREND_SLOPE_TOLERANCE = 0.01;
 
 export function drawLineChart(canvas, series, options = {}) {
   if (!canvas) return;
+  canvas.__clinicalGraphRenderState = { series, options: { ...options } };
   const ctx = canvas.getContext("2d");
   const allPoints = series.flatMap((item) => item.points);
   const dateCount = new Set(allPoints.map((point) => point.x)).size;
@@ -151,6 +152,16 @@ export function drawLineChart(canvas, series, options = {}) {
   });
 
   bindCanvasTooltip(canvas, interactivePoints);
+}
+
+export function redrawLineChartTrend(canvas, showTrendLine) {
+  const renderState = canvas?.__clinicalGraphRenderState;
+  if (!renderState) return false;
+  drawLineChart(canvas, renderState.series, {
+    ...renderState.options,
+    showTrendLine: Boolean(showTrendLine)
+  });
+  return true;
 }
 
 export function buildClinicalGraphModel(series, options = {}) {
@@ -505,7 +516,9 @@ export function classifySeriesPointPhase(point, pointIndex, phaseBoundary = null
 }
 
 function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options) {
-  const tickValues = axisTicks(yTop, options.yStep, options.graphType === "behavior");
+  const tickValues = options.maxY === 100
+    ? [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+    : axisTicks(yTop, options.yStep, options.graphType === "behavior");
   ctx.strokeStyle = "#d6dde3";
   ctx.lineWidth = 1;
   ctx.beginPath();

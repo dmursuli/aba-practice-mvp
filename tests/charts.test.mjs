@@ -10,6 +10,7 @@ import {
   buildMovingAverageSeriesSet,
   buildSeriesStyles,
   drawLineChart,
+  redrawLineChartTrend,
   derivedPointPhase,
   filterSeriesPointsByDateRange,
   formatGraphDate
@@ -936,6 +937,57 @@ test('trend-line rendering responds immediately to the showTrendLine option', ()
   } finally {
     globalThis.window = previousWindow;
   }
+});
+
+test('percentage graphs use fixed 10-point y-axis ticks', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  try {
+    const recorder = makeCanvasRecorder();
+    drawLineChart(recorder.canvas, [{ name: 'Percentage target', points: [
+      { x: '2026-09-01', y: 17 }, { x: '2026-09-02', y: 85 }
+    ] }], { maxY: 100, yStep: 10, yLabel: '% independence' });
+
+    const axisLabels = recorder.calls.text.filter((value) => /^\d+$/.test(value));
+    assert.deepEqual(axisLabels, ['0', '10', '20', '30', '40', '50', '60', '70', '80', '90', '100']);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test('targeted trend redraw preserves viewport and does not affect another graph', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1, scrollY: 713 };
+  const series = [{ name: 'Toggle target', points: [
+    { x: '2026-09-01', y: 10 }, { x: '2026-09-02', y: 20 }, { x: '2026-09-03', y: 30 }
+  ] }];
+  try {
+    const first = makeCanvasRecorder();
+    const second = makeCanvasRecorder();
+    drawLineChart(first.canvas, series, { showTrendLine: false });
+    drawLineChart(second.canvas, series, { showTrendLine: false });
+    const secondDashCount = second.calls.dashed;
+
+    for (const showTrendLine of [true, false, true, false, true]) {
+      assert.equal(redrawLineChartTrend(first.canvas, showTrendLine), true);
+      assert.equal(globalThis.window.scrollY, 713);
+    }
+
+    assert.equal(second.calls.dashed, secondDashCount);
+    assert.equal(second.canvas.__clinicalGraphRenderState.options.showTrendLine, false);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test('trend toggle redraws only its graph without full-view rendering or corrective scrolling', () => {
+  const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const handler = appSource.match(/function handleGraphAnalysisControlChange\(event\) \{[\s\S]*?\n\}/)?.[0] || '';
+
+  assert.match(handler, /redrawLineChartTrend\(canvas, toggle\.checked\)/);
+  assert.doesNotMatch(handler, /renderCharts\(/);
+  assert.doesNotMatch(handler, /renderFunderReportPreview\(/);
+  assert.doesNotMatch(handler, /scrollTo\(/);
 });
 
 test('blank custom phase labels draw a line without placeholder text while named labels remain visible', () => {
