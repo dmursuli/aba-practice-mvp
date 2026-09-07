@@ -144,6 +144,22 @@ test("custom environmental phase lines are normalized with stable style and type
   });
 });
 
+test("custom environmental phase lines preserve an intentionally blank optional label", () => {
+  const lines = sanitizeCustomPhaseLines({
+    "behavior:aggression": [{
+      id: "phase-without-label",
+      date: "2026-05-22",
+      label: "",
+      lineStyle: "dashed",
+      note: "Clinically meaningful boundary"
+    }]
+  });
+
+  assert.equal(lines["behavior:aggression"].length, 1);
+  assert.equal(lines["behavior:aggression"][0].label, "");
+  assert.equal(lines["behavior:aggression"][0].date, "2026-05-22");
+});
+
 test("treatment phase line normalization keeps the latest saved override only", () => {
   const lines = sanitizeCustomPhaseLines({
     "behavior:aggression": [

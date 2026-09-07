@@ -5385,7 +5385,7 @@ function sanitizeGraphPhaseLines(source) {
       const deleted = Boolean(line?.deleted);
       const label = text(line?.label) || (phaseType === "treatment" ? "Treatment" : "");
       if (
-        (phaseType === "environmental" && !deleted && (!date || !label))
+        (phaseType === "environmental" && !deleted && !date)
         || (phaseType === "treatment" && !hidden && !deleted && !date)
       ) {
         return entries;

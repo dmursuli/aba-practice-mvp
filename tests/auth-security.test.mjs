@@ -356,25 +356,46 @@ test('graph phase line updates persist server-side and survive a fresh data load
   const clientId = createClientResult.json.id;
 
   const graphPhaseLines = {
-    'behavior:aggression': [{
-      id: 'behavior:aggression:treatment',
-      graphId: 'behavior:aggression',
-      graphType: 'behavior',
-      targetId: '',
-      behaviorId: 'aggression',
-      caregiverTargetId: '',
-      date: '2026-04-15',
-      label: 'Treatment',
-      lineStyle: 'solid',
-      note: 'Introduced treatment package',
-      phaseType: 'treatment',
-      source: 'auto',
-      editable: true,
-      hidden: false,
-      deleted: false,
-      createdAt: '2026-06-29T10:00:00.000Z',
-      updatedAt: '2026-06-29T10:00:00.000Z'
-    }]
+    'behavior:aggression': [
+      {
+        id: 'behavior:aggression:treatment',
+        graphId: 'behavior:aggression',
+        graphType: 'behavior',
+        targetId: '',
+        behaviorId: 'aggression',
+        caregiverTargetId: '',
+        date: '2026-04-15',
+        label: 'Treatment',
+        lineStyle: 'solid',
+        note: 'Introduced treatment package',
+        phaseType: 'treatment',
+        source: 'auto',
+        editable: true,
+        hidden: false,
+        deleted: false,
+        createdAt: '2026-06-29T10:00:00.000Z',
+        updatedAt: '2026-06-29T10:00:00.000Z'
+      },
+      {
+        id: 'behavior:aggression:unlabeled',
+        graphId: 'behavior:aggression',
+        graphType: 'behavior',
+        targetId: '',
+        behaviorId: 'aggression',
+        caregiverTargetId: '',
+        date: '2026-05-01',
+        label: '',
+        lineStyle: 'dashed',
+        note: 'Clinically meaningful boundary',
+        phaseType: 'environmental',
+        source: 'user',
+        editable: true,
+        hidden: false,
+        deleted: false,
+        createdAt: '2026-06-29T10:00:00.000Z',
+        updatedAt: '2026-06-29T10:00:00.000Z'
+      }
+    ]
   };
 
   const updateResult = await request(`/api/clients/${clientId}/graph-phase-lines`, {
@@ -383,12 +404,13 @@ test('graph phase line updates persist server-side and survive a fresh data load
     body: { graphPhaseLines }
   });
   assert.equal(updateResult.response.status, 200);
-  assert.deepEqual(updateResult.json.profile.graphPhaseLines, graphPhaseLines);
+  const expectedPersistedLines = [graphPhaseLines['behavior:aggression'][1], graphPhaseLines['behavior:aggression'][0]];
+  assert.deepEqual(updateResult.json.profile.graphPhaseLines['behavior:aggression'], expectedPersistedLines);
 
   const reloadResult = await request('/api/data', { cookie });
   assert.equal(reloadResult.response.status, 200);
   const reloadedClient = reloadResult.json.clients.find((client) => client.id === clientId);
-  assert.deepEqual(reloadedClient.profile.graphPhaseLines, graphPhaseLines);
+  assert.deepEqual(reloadedClient.profile.graphPhaseLines['behavior:aggression'], expectedPersistedLines);
 });
 
 test('graph phase line update deduplicates stale treatment records server-side', async () => {

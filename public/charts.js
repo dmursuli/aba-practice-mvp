@@ -6,7 +6,6 @@ const palette = [
 ];
 const MOVING_AVERAGE_WINDOW = 5;
 const TREND_SLOPE_TOLERANCE = 0.01;
-const assignedColorIndexes = new Map();
 
 export function drawLineChart(canvas, series, options = {}) {
   if (!canvas) return;
@@ -108,7 +107,7 @@ export function drawLineChart(canvas, series, options = {}) {
         };
       });
     ctx.save();
-    ctx.strokeStyle = `${color}99`;
+    ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.setLineDash([8, 6]);
     drawPhaseSegments(ctx, points.map((point) => ({ ...point, phase: "rolling" })), null, phaseMarkerXs);
@@ -176,33 +175,11 @@ export function buildLegendItems(series) {
 }
 
 export function buildSeriesStyles(series = []) {
-  return series.map((item) => {
-    const key = stableSeriesIdentifier(item);
-    if (!assignedColorIndexes.has(key)) {
-      const claimed = new Set([...assignedColorIndexes.values()].map((assignment) => assignment.colorIndex));
-      const preferred = stableHash(key) % palette.length;
-      let selected = preferred;
-      let patternIndex = 0;
-      if (assignedColorIndexes.size < palette.length) {
-        for (let offset = 0; offset < palette.length; offset += 1) {
-          const candidate = (preferred + offset) % palette.length;
-          if (!claimed.has(candidate)) {
-            selected = candidate;
-            break;
-          }
-        }
-      } else {
-        patternIndex = 1 + (Math.floor((assignedColorIndexes.size - palette.length) / palette.length) % 3);
-      }
-      assignedColorIndexes.set(key, { colorIndex: selected, patternIndex });
-    }
-    const assignment = assignedColorIndexes.get(key);
-    return {
-      key,
-      color: palette[assignment.colorIndex],
-      dashPattern: linePatternForIndex(assignment.patternIndex)
-    };
-  });
+  return series.map((item, index) => ({
+    key: String(index),
+    color: palette[index % palette.length],
+    dashPattern: linePatternForIndex(Math.floor(index / palette.length))
+  }));
 }
 
 export function buildGraphAnalysis(series, options = {}) {
@@ -484,7 +461,9 @@ function normalizePhaseMarker(marker = {}) {
   const lineStyle = marker.lineStyle || (phaseType === "baselineToTreatment" ? "solid" : "dashed");
   return {
     ...marker,
-    label: marker.label || "Marker",
+    label: Object.prototype.hasOwnProperty.call(marker, "label")
+      ? String(marker.label ?? "").trim()
+      : "Marker",
     phaseType,
     lineStyle,
     dashed: lineStyle !== "solid",
@@ -573,12 +552,6 @@ function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPosit
   ctx.textAlign = "center";
   ctx.fillText("Baseline", Math.max(margin.left + 48, lineX - 92), margin.top - 14);
   ctx.fillText(phaseBoundary.label || "Treatment", Math.min(margin.left + plotWidth - 72, lineX + 92), margin.top - 14);
-
-  ctx.save();
-  ctx.translate(lineX - 12, margin.top + plotHeight / 2);
-  ctx.rotate(-Math.PI / 2);
-  ctx.fillText(phaseBoundary.label || "Treatment", 0, 0);
-  ctx.restore();
   ctx.restore();
 
   return lineX;
@@ -602,7 +575,7 @@ function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions, m
     ctx.fillStyle = "#7a4f00";
     ctx.font = "12px system-ui, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(marker.label || "Marker", lineX, margin.top - 30);
+    if (marker.label) ctx.fillText(marker.label, lineX, margin.top - 30);
     ctx.restore();
   });
 }
@@ -943,28 +916,6 @@ function linearRegressionSlope(values) {
     denominator += (index - xMean) ** 2;
   });
   return denominator ? numerator / denominator : 0;
-}
-
-function stableSeriesIdentifier(series = {}) {
-  return String(
-    series.meta?.targetId
-    || series.meta?.behaviorId
-    || series.meta?.caregiverTargetId
-    || series.meta?.goalKey
-    || series.meta?.goalName
-    || series.id
-    || series.name
-    || "series"
-  );
-}
-
-function stableHash(value) {
-  let hash = 2166136261;
-  for (const character of String(value)) {
-    hash ^= character.codePointAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
 }
 
 function linePatternForIndex(index) {

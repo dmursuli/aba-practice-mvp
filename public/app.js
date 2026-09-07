@@ -7376,7 +7376,7 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
         ${lines.map((line) => `
           <div class="graph-phase-line-item">
             <div>
-              <strong>${escapeHtml(line.label)}</strong>
+              ${line.label ? `<strong>${escapeHtml(line.label)}</strong>` : ""}
               <span>${escapeHtml(formatGraphDate(line.date))} - ${escapeHtml(line.lineStyle)}</span>
               ${line.note ? `<p class="graph-phase-line-note">${escapeHtml(line.note)}</p>` : ""}
             </div>
@@ -7509,8 +7509,8 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
           <input type="date" name="phaseLineDate" value="${escapeHtml(editingLine?.date || "")}" ${range.startDate ? `min="${escapeHtml(range.startDate)}"` : ""} ${range.endDate ? `max="${escapeHtml(range.endDate)}"` : ""} required>
         </label>
         <label>
-          Label
-          <input type="text" name="phaseLineLabel" value="${escapeHtml(editingLine?.label || "")}" placeholder="Medication change, new RBT" required>
+          Label (optional)
+          <input type="text" name="phaseLineLabel" value="${escapeHtml(editingLine?.label || "")}" placeholder="Medication change, new RBT">
         </label>
         <label>
           Line style
@@ -10407,11 +10407,12 @@ async function handleGraphPhaseLineClick(event) {
   const phaseLineId = remove.dataset.phaseLineId;
   const line = customPhaseLinesForGraph(graphKey).find((item) => item.id === phaseLineId);
   if (!line) return;
-  if (!window.confirm(`Delete the "${line.label}" phase line from this graph?`)) return;
+  const phaseLineName = line.label ? `"${line.label}"` : "unlabeled";
+  if (!window.confirm(`Delete the ${phaseLineName} phase line from this graph?`)) return;
   setCustomPhaseLinesForGraph(graphKey, customPhaseLinesForGraph(graphKey).filter((item) => item.id !== phaseLineId));
   markReportDraftDirty();
   await persistGraphPhaseLineUiChange({
-    successMessage: `Removed phase line "${line.label}".`,
+    successMessage: line.label ? `Removed phase line "${line.label}".` : "Removed unlabeled phase line.",
     failureMessage: "Could not save phase line changes",
     control: remove
   });
@@ -10431,8 +10432,10 @@ async function handleGraphPhaseLineSubmit(event) {
   const existingId = String(values.get("phaseLineId") || "").trim();
   const startDate = form.dataset.startDate || "";
   const endDate = form.dataset.endDate || "";
-  if (!date || !label) {
-    graphsMessage.textContent = "Phase line date and label are required.";
+  if (!date || (formKind === "treatment" && !label)) {
+    graphsMessage.textContent = formKind === "treatment"
+      ? "Treatment phase line date and label are required."
+      : "Phase line date is required.";
     return;
   }
   if ((startDate && date < startDate) || (endDate && date > endDate)) {
@@ -10489,8 +10492,8 @@ async function handleGraphPhaseLineSubmit(event) {
   markReportDraftDirty();
   await persistGraphPhaseLineUiChange({
     successMessage: existingId
-    ? `Updated phase line "${label}".`
-    : `Added phase line "${label}".`,
+      ? (label ? `Updated phase line "${label}".` : "Updated unlabeled phase line.")
+      : (label ? `Added phase line "${label}".` : "Added unlabeled phase line."),
     failureMessage: "Could not save phase line changes",
     control: form.querySelector('button[type="submit"]')
   });

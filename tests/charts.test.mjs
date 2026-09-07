@@ -651,6 +651,18 @@ test('graph UI exposes a trend-line toggle and report insertion action', () => {
   assert.doesNotMatch(appSource, /Behavior reduction graph analysis:/);
 });
 
+test('environmental phase-line form accepts an optional blank label while keeping date required', () => {
+  const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const environmentalForm = appSource.match(/data-phase-line-kind="environmental"[\s\S]*?<\/form>/)?.[0] || '';
+  const labelInput = environmentalForm.match(/<input type="text" name="phaseLineLabel"[^>]*>/)?.[0] || '';
+  const dateInput = environmentalForm.match(/<input type="date" name="phaseLineDate"[^>]*>/)?.[0] || '';
+
+  assert.match(environmentalForm, /Label \(optional\)/);
+  assert.doesNotMatch(labelInput, /\srequired(?:\s|>)/);
+  assert.match(dateInput, /\srequired(?:\s|>)/);
+  assert.match(appSource, /if \(!date \|\| \(formKind === "treatment" && !label\)\)/);
+});
+
 test('app bootstrap lazy-loads session-backed graph data instead of rendering charts during the base render pass', () => {
   const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(appSource, /await switchView\(requested\.view \|\| currentView\(\)\);/);
@@ -831,7 +843,7 @@ test('sparse targets retain their own first observation and never receive fabric
   assert.equal(analysis.analyses[1].treatmentLevel, 60);
 });
 
-test('stable target colors are distinct for ten targets and do not shift when one is added', () => {
+test('target colors use stable graph-local series order and reset for unrelated graphs', () => {
   const initial = Array.from({ length: 10 }, (_, index) => ({
     name: `Target ${index + 1}`,
     meta: { targetId: `palette-regression-${index + 1}` },
@@ -844,16 +856,37 @@ test('stable target colors are distinct for ten targets and do not shift when on
   ]).map((style) => style.color);
 
   assert.equal(new Set(before).size, 10);
+  assert.deepEqual(before.slice(0, 3), ['#167c80', '#d1495b', '#edae49']);
   assert.deepEqual(after.slice(0, 10), before);
+  assert.deepEqual(buildSeriesStyles(initial.slice(0, 3)).map((style) => style.color), before.slice(0, 3));
+  assert.equal(buildSeriesStyles([{ name: 'Unrelated target', points: [] }])[0].color, before[0]);
+  assert.equal(buildSeriesStyles([{ name: 'Another unrelated target', points: [] }])[0].color, before[0]);
+});
+
+test('graph-local line patterns differentiate series after the full palette is exhausted', () => {
+  const styles = buildSeriesStyles(Array.from({ length: 25 }, (_, index) => ({
+    name: `Target ${index + 1}`,
+    points: []
+  })));
+
+  assert.ok(styles.slice(0, 24).every((style) => style.dashPattern.length === 0));
+  assert.equal(styles[24].color, styles[0].color);
+  assert.ok(styles[24].dashPattern.length > 0);
 });
 
 function makeCanvasRecorder() {
-  const calls = { arcs: 0, dashed: 0 };
+  const calls = { arcs: 0, dashed: 0, text: [], strokes: [] };
+  let currentDash = [];
   const context = {
     scale() {}, clearRect() {}, fillRect() {}, save() {}, restore() {}, translate() {},
-    rotate() {}, fillText() {}, stroke() {}, beginPath() {}, moveTo() {}, lineTo() {}, fill() {},
+    rotate() {}, fillText(value) { calls.text.push(String(value)); },
+    stroke() { calls.strokes.push({ color: this.strokeStyle, dash: currentDash.slice() }); },
+    beginPath() {}, moveTo() {}, lineTo() {}, fill() {},
     arc() { calls.arcs += 1; },
-    setLineDash(pattern) { if (pattern.length) calls.dashed += 1; }
+    setLineDash(pattern) {
+      currentDash = pattern.slice();
+      if (pattern.length) calls.dashed += 1;
+    }
   };
   return {
     calls,
@@ -900,6 +933,60 @@ test('trend-line rendering responds immediately to the showTrendLine option', ()
     drawLineChart(on.canvas, series, { showTrendLine: true });
     assert.equal(off.calls.dashed, 0);
     assert.ok(on.calls.dashed > 0);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test('blank custom phase labels draw a line without placeholder text while named labels remain visible', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  const series = [{ name: 'Phase target', points: [
+    { x: '2026-09-01', y: 10 }, { x: '2026-09-02', y: 20 }, { x: '2026-09-03', y: 30 }
+  ] }];
+  try {
+    const blank = makeCanvasRecorder();
+    drawLineChart(blank.canvas, series, {
+      phaseMarkers: [{ date: '2026-09-02', label: '', phaseType: 'environmentalChange' }]
+    });
+    assert.doesNotMatch(blank.calls.text.join(' '), /Marker|undefined|null/);
+
+    const named = makeCanvasRecorder();
+    drawLineChart(named.canvas, series, {
+      phaseMarkers: [{ date: '2026-09-02', label: 'Medication change', phaseType: 'environmentalChange' }]
+    });
+    assert.ok(named.calls.text.includes('Medication change'));
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test('treatment heading remains once without a duplicate rotated boundary label', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  try {
+    const recorder = makeCanvasRecorder();
+    drawLineChart(recorder.canvas, [{ name: 'Boundary target', points: [
+      { x: '2026-09-01', y: 10 }, { x: '2026-09-02', y: 20 }
+    ] }]);
+    assert.equal(recorder.calls.text.filter((value) => value === 'Baseline').length, 1);
+    assert.equal(recorder.calls.text.filter((value) => value === 'Treatment').length, 1);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test('moving-average and raw series use the same graph-local target color', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  try {
+    const recorder = makeCanvasRecorder();
+    drawLineChart(recorder.canvas, [{ name: 'Color target', points: [
+      { x: '2026-09-01', y: 10 }, { x: '2026-09-02', y: 20 }, { x: '2026-09-03', y: 30 }
+    ] }], { showTrendLine: true });
+    const targetColor = buildSeriesStyles([{ name: 'Color target', points: [] }])[0].color;
+    assert.ok(recorder.calls.strokes.some((stroke) => stroke.color === targetColor && stroke.dash.length));
+    assert.ok(recorder.calls.strokes.some((stroke) => stroke.color === targetColor && !stroke.dash.length));
   } finally {
     globalThis.window = previousWindow;
   }

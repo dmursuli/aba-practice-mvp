@@ -144,7 +144,7 @@ export function sanitizeCustomPhaseLines(source = {}) {
           ? "user"
           : "user";
       if (
-        (normalizedPhaseType === "environmental" && !deleted && (!date || !label))
+        (normalizedPhaseType === "environmental" && !deleted && !date)
         || (normalizedPhaseType === "treatment" && !hidden && !deleted && !date)
       ) {
         return entries;
