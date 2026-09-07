@@ -280,6 +280,16 @@ test('all date labels can be preserved when the graph explicitly opts into full 
   assert.deepEqual(ticks.map((tick) => tick.date), ['2026-03-15', '2026-04-09', '2026-04-10']);
 });
 
+test('sparse date labels adapt to available graph width', () => {
+  const series = behaviorLikeSeries(Array.from({ length: 8 }, (_, index) => ({
+    x: `2026-03-${String(index + 1).padStart(2, '0')}`,
+    y: index
+  })));
+
+  assert.equal(buildDateTicks(series, { availableWidth: 720 }).length, 8);
+  assert.ok(buildDateTicks(series, { availableWidth: 320 }).length < 8);
+});
+
 test('25 sessions render a readable reduced set of x-axis labels while keeping first and last dates', () => {
   const series = behaviorLikeSeries(Array.from({ length: 25 }, (_, index) => ({
     x: `2026-03-${String(index + 1).padStart(2, '0')}`,
@@ -358,6 +368,18 @@ test('phase dates remain visible when labels are thinned', () => {
   assert.ok(ticks.some((tick) => tick.date === '2026-02-15'));
 });
 
+test('dense date tick count stays within the width-based label budget', () => {
+  const series = behaviorLikeSeries(Array.from({ length: 90 }, (_, index) => ({
+    x: new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10),
+    y: index % 5
+  })));
+  const ticks = buildDateTicks(series, { availableWidth: 576 });
+
+  assert.ok(ticks.length <= 8);
+  assert.equal(ticks[0].date, '2026-01-01');
+  assert.equal(ticks.at(-1).date, '2026-03-31');
+});
+
 test('date range filtering keeps raw points intact while changing the visible data', () => {
   const series = [{
     name: 'Aggression',
@@ -410,7 +432,9 @@ test('graph layout uses responsive width without data-length based canvas sizing
   assert.match(appSource, /<div class="graph-canvas-scroll">/);
   assert.doesNotMatch(appSource, /showAllDateLabels: true/);
   assert.match(chartSource, /canvas\.style\.width = "100%"/);
-  assert.match(chartSource, /canvas\.style\.maxWidth = "100%"/);
+  assert.match(chartSource, /canvas\.style\.maxWidth = `\$\{MAX_DESKTOP_CANVAS_WIDTH\}px`/);
+  assert.match(chartSource, /canvas\.style\.height = "auto"/);
+  assert.match(chartSource, /canvas\.style\.marginInline = "auto"/);
   assert.doesNotMatch(chartSource, /dateCount \* DENSE_SCROLL_PIXELS_PER_DATE/);
   assert.doesNotMatch(chartSource, /canvas\.style\.width = `\$\{denseWidth\}px`/);
   assert.match(htmlSource, /id="parent-training-charts"/);
@@ -875,30 +899,71 @@ test('graph-local line patterns differentiate series after the full palette is e
   assert.ok(styles[24].dashPattern.length > 0);
 });
 
-function makeCanvasRecorder() {
-  const calls = { arcs: 0, dashed: 0, text: [], strokes: [] };
+function makeCanvasRecorder(width = 760) {
+  const calls = { arcs: 0, dashed: 0, lines: [], moves: [], rotations: [], text: [], strokes: [] };
   let currentDash = [];
   const context = {
     scale() {}, clearRect() {}, fillRect() {}, save() {}, restore() {}, translate() {},
-    rotate() {}, fillText(value) { calls.text.push(String(value)); },
+    rotate(value) { calls.rotations.push(value); }, fillText(value) { calls.text.push(String(value)); },
     stroke() { calls.strokes.push({ color: this.strokeStyle, dash: currentDash.slice() }); },
-    beginPath() {}, moveTo() {}, lineTo() {}, fill() {},
+    beginPath() {}, moveTo(x, y) { calls.moves.push({ x, y }); }, lineTo(x, y) { calls.lines.push({ x, y }); }, fill() {},
     arc() { calls.arcs += 1; },
     setLineDash(pattern) {
       currentDash = pattern.slice();
       if (pattern.length) calls.dashed += 1;
     }
   };
-  return {
-    calls,
-    canvas: {
-      style: {},
-      title: '',
-      getContext: () => context,
-      getBoundingClientRect: () => ({ width: 760, left: 0, top: 0 })
-    }
+  const canvas = {
+    style: {},
+    title: '',
+    getContext: () => context,
+    getBoundingClientRect: () => ({
+      width: Math.min(width, Number.parseFloat(canvas.style.maxWidth) || width),
+      left: 0,
+      top: 0
+    })
   };
+  return { calls, canvas };
 }
+
+test('clinical plot height and desktop width cap keep the plotting region balanced and centered', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  try {
+    const desktop = makeCanvasRecorder(1400);
+    drawLineChart(desktop.canvas, [{ name: 'Desktop target', points: [
+      { x: '2026-01-01', y: 10 }, { x: '2026-01-08', y: 20 }
+    ] }]);
+
+    assert.equal(desktop.canvas.style.maxWidth, '804px');
+    assert.equal(desktop.canvas.style.height, 'auto');
+    assert.equal(desktop.canvas.style.marginInline, 'auto');
+    assert.equal(desktop.canvas.width, 804);
+    assert.equal(desktop.canvas.height, 440);
+    assert.deepEqual(desktop.calls.moves[0], { x: 42, y: 52 });
+    assert.deepEqual(desktop.calls.lines.slice(0, 2), [
+      { x: 42, y: 372 },
+      { x: 762, y: 372 }
+    ]);
+
+    const rotated = makeCanvasRecorder(1400);
+    drawLineChart(rotated.canvas, [{ name: 'Rotated target', points: Array.from({ length: 5 }, (_, index) => ({
+      x: `2026-01-${String(index + 1).padStart(2, '0')}`,
+      y: index * 10
+    })) }]);
+    assert.equal(rotated.calls.lines[0].y, 348);
+    assert.equal(rotated.canvas.height - rotated.calls.lines[0].y, 92);
+
+    const responsive = makeCanvasRecorder(760);
+    drawLineChart(responsive.canvas, [{ name: 'Responsive target', points: [
+      { x: '2026-01-01', y: 10 }, { x: '2026-01-08', y: 20 }
+    ] }]);
+    assert.deepEqual(responsive.calls.moves[0], { x: 56, y: 52 });
+    assert.deepEqual(responsive.calls.lines[1], { x: 732, y: 372 });
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
 
 test('raw point markers render for every observation in single and multi-target charts', () => {
   const previousWindow = globalThis.window;
@@ -916,6 +981,47 @@ test('raw point markers render for every observation in single and multi-target 
       { name: 'Two', points: [{ x: '2026-09-02', y: 30 }, { x: '2026-09-04', y: 40 }] }
     ], { showPointMarkers: false });
     assert.equal(multi.calls.arcs, 4);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test('dense graphs thin date labels without dropping points or using severe rotation', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  try {
+    const recorder = makeCanvasRecorder(420);
+    const points = Array.from({ length: 40 }, (_, index) => ({
+      x: new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10),
+      y: index % 10
+    }));
+    drawLineChart(recorder.canvas, [{ name: 'Dense target', points }]);
+
+    const dateLabels = recorder.calls.text.filter((value) => /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(value));
+    assert.ok(dateLabels.length < points.length);
+    assert.equal(dateLabels[0], '1/1/2026');
+    assert.equal(dateLabels.at(-1), '2/9/2026');
+    assert.equal(recorder.calls.arcs, points.length);
+    assert.ok(recorder.calls.rotations.length >= 5);
+    assert.ok(recorder.calls.rotations.every((angle) => angle === -Math.PI / 6));
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test('very sparse graphs keep two to four visible date labels horizontal', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  try {
+    const recorder = makeCanvasRecorder();
+    drawLineChart(recorder.canvas, [{ name: 'Sparse target', points: [
+      { x: '2026-01-01', y: 10 },
+      { x: '2026-01-08', y: 20 },
+      { x: '2026-01-15', y: 30 },
+      { x: '2026-01-22', y: 40 }
+    ] }]);
+
+    assert.equal(recorder.calls.rotations.length, 0);
   } finally {
     globalThis.window = previousWindow;
   }
