@@ -1169,6 +1169,8 @@ function bindEvents() {
   behaviorCharts.addEventListener("click", handleGraphDataDeleteClick);
   behaviorCharts.addEventListener("click", handleGraphPhaseLineClick);
   behaviorCharts.addEventListener("submit", handleGraphPhaseLineSubmit);
+  behaviorChartPanel?.addEventListener("click", handleGraphPhaseLineClick);
+  behaviorChartPanel?.addEventListener("submit", handleGraphPhaseLineSubmit);
   behaviorCharts.addEventListener("change", handleGraphAnalysisControlChange);
   behaviorCharts.addEventListener("toggle", handleGraphDataManagerToggle, true);
   behaviorCharts.addEventListener("click", handleGraphAnalysisClick);
@@ -7134,7 +7136,7 @@ function storedPhaseLinesForGraph(graphKey) {
 
 function selectTreatmentPhaseRecord(lines = []) {
   const records = (Array.isArray(lines) ? lines : [])
-    .filter((line) => line?.phaseType === "treatment" && !line.deleted);
+    .filter((line) => line?.phaseType === "treatment");
   if (!records.length) return null;
   return records.slice().sort((a, b) => {
     const updated = (b.updatedAt || "").localeCompare(a.updatedAt || "");
@@ -7282,7 +7284,19 @@ function graphPhaseConfig(graphKey, series = [], automaticMarkers = []) {
 function graphTreatmentPhaseLine(graphKey, series = []) {
   const override = treatmentPhaseRecordForGraph(graphKey);
   const dates = [...new Set((series || []).flatMap((item) => (item.points || []).map((point) => point.x)).filter(Boolean))].sort();
-  if (override?.deleted) return null;
+  if (override?.deleted) {
+    return {
+      id: override.id,
+      date: override.date || "",
+      label: override.label || "Treatment",
+      lineStyle: override.lineStyle === "dashed" ? "dashed" : "solid",
+      note: override.note || "",
+      hidden: true,
+      deleted: true,
+      sourceType: "userTreatmentOverride",
+      phaseType: "baselineToTreatment"
+    };
+  }
   if (override?.hidden) {
     return {
       id: override.id,
@@ -10297,13 +10311,13 @@ async function handleGraphPhaseLineClick(event) {
     return;
   }
 
-  const edit = event.target.closest("[data-edit-phase-line]");
+  const edit = event.target.closest("[data-edit-phase-line][data-phase-line-id]");
   if (edit) {
     const graphKey = edit.dataset.editPhaseLine;
+    const phaseLineId = edit.dataset.phaseLineId;
     const lines = customPhaseLinesForGraph(graphKey);
-    const line = lines.find((item) => item.id === edit.dataset.phaseLineId);
-    const panel = event.currentTarget;
-    const mount = panel?.querySelector?.(`[data-phase-line-panel="${CSS.escape(graphKey)}"]`);
+    const line = lines.find((item) => item.id === phaseLineId);
+    const mount = edit.closest("[data-phase-line-panel]");
     if (!line || !mount) return;
     const chartPanel = mount.closest(".chart-panel");
     const series = phaseLineSeriesFromPanel(chartPanel);
@@ -10367,15 +10381,7 @@ async function handleGraphPhaseLineClick(event) {
       graphsMessage.textContent = "Not enough graph data are available to reset the treatment phase line.";
       return;
     }
-    setTreatmentPhaseOverrideForGraph(graphKey, buildTreatmentPhaseLineRecord(graphKey, {
-      date: dates[1],
-      label: "Treatment",
-      lineStyle: "solid",
-      note: "",
-      source: "auto",
-      hidden: false,
-      deleted: false
-    }));
+    setTreatmentPhaseOverrideForGraph(graphKey, null);
     markReportDraftDirty();
     await persistGraphPhaseLineUiChange({
       successMessage: "Treatment phase line reset to default.",
@@ -10392,7 +10398,15 @@ async function handleGraphPhaseLineClick(event) {
       || treatmentPhaseRecordForGraph(graphKey);
     if (!currentLine) return;
     if (!window.confirm(`Delete the "${currentLine.label || "Treatment"}" treatment phase line for this graph?`)) return;
-    setTreatmentPhaseOverrideForGraph(graphKey, null);
+    setTreatmentPhaseOverrideForGraph(graphKey, buildTreatmentPhaseLineRecord(graphKey, {
+      date: currentLine.date,
+      label: currentLine.label || "Treatment",
+      lineStyle: currentLine.lineStyle === "dashed" ? "dashed" : "solid",
+      note: currentLine.note || "",
+      source: "user",
+      hidden: false,
+      deleted: true
+    }));
     markReportDraftDirty();
     await persistGraphPhaseLineUiChange({
       successMessage: "Treatment phase line deleted; default rule restored when enough graph data are available.",

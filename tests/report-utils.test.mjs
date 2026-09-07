@@ -200,6 +200,34 @@ test("treatment phase line normalization keeps the latest saved override only", 
   assert.equal(lines["behavior:aggression"][0].source, "user");
 });
 
+test("treatment phase line normalization preserves the latest deleted state", () => {
+  const lines = sanitizeCustomPhaseLines({
+    "skill:program-1": [
+      {
+        id: "skill:program-1:treatment",
+        date: "2026-04-01",
+        label: "Treatment",
+        phaseType: "treatment",
+        source: "auto",
+        deleted: false,
+        updatedAt: "2026-04-01T10:00:00.000Z"
+      },
+      {
+        id: "skill:program-1:treatment",
+        date: "2026-04-01",
+        label: "Treatment",
+        phaseType: "treatment",
+        source: "user",
+        deleted: true,
+        updatedAt: "2026-04-02T10:00:00.000Z"
+      }
+    ]
+  });
+
+  assert.equal(lines["skill:program-1"].length, 1);
+  assert.equal(lines["skill:program-1"][0].deleted, true);
+});
+
 test("skill acquisition summary groups targets by status and deduplicates mastered goals by program id", () => {
   const model = summarizeSkillAcquisitionReport({
     programs: [

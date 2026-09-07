@@ -91,7 +91,7 @@ export function sanitizeAssessmentDocumentRefs(source = {}) {
 
 function selectLatestTreatmentLine(lines = []) {
   const records = (Array.isArray(lines) ? lines : [])
-    .filter((line) => line?.phaseType === "treatment" && !line.deleted);
+    .filter((line) => line?.phaseType === "treatment");
   if (!records.length) return null;
   return records.slice().sort((a, b) => {
     const updated = (b.updatedAt || "").localeCompare(a.updatedAt || "");

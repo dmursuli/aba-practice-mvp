@@ -15,6 +15,7 @@ import {
   filterSeriesPointsByDateRange,
   formatGraphDate
 } from '../public/charts.js';
+import { updateClientGraphPhaseLines } from '../public/api.js';
 
 function makeSeries(label, points) {
   return [{ name: label, points }];
@@ -237,6 +238,26 @@ for (const [label, make] of [['skill acquisition', skillLikeSeries], ['behavior 
     assert.equal(derivedPointPhase(0, model.phaseBoundary), 'baseline');
     assert.equal(derivedPointPhase(1, model.phaseBoundary), 'baseline');
   });
+
+  test(`${label}: deleted treatment phase override suppresses automatic regeneration`, () => {
+    const model = buildClinicalGraphModel(
+      make([
+        { x: '2026-06-01', y: 5 },
+        { x: '2026-06-03', y: 15 },
+        { x: '2026-06-05', y: 25 }
+      ]),
+      {
+        treatmentPhaseLine: {
+          hidden: true,
+          deleted: true,
+          label: 'Treatment',
+          phaseType: 'userTreatmentOverride'
+        }
+      }
+    );
+
+    assert.equal(model.phaseBoundary, null);
+  });
 }
 
 test('grid configuration stays disabled while axes and phase model remain available', () => {
@@ -419,8 +440,9 @@ test('graph layout uses responsive width without data-length based canvas sizing
   assert.match(appSource, /function graphTreatmentPhaseLine/);
   assert.match(appSource, /function setPhaseLinesForGraph/);
   assert.match(appSource, /selectTreatmentPhaseRecord\(storedPhaseLinesForGraph\(graphKey\)\)/);
-  assert.match(appSource, /setTreatmentPhaseOverrideForGraph\(graphKey, null\)/);
-  assert.doesNotMatch(appSource, /deleted:\s*true\s*\}\)\);\s*markReportDraftDirty\(\);\s*await persistGraphPhaseLineUiChange/);
+  assert.match(appSource, /setTreatmentPhaseOverrideForGraph\(graphKey, buildTreatmentPhaseLineRecord\(graphKey, \{[\s\S]*?deleted:\s*true[\s\S]*?\}\)\)/);
+  assert.match(appSource, /if \(override\?\.deleted\) \{[\s\S]*?hidden: true,[\s\S]*?deleted: true/);
+  assert.match(appSource, /const resetTreatment[\s\S]*?setTreatmentPhaseOverrideForGraph\(graphKey, null\)/);
   assert.match(appSource, /await persistGraphPhaseLineUiChange\(\{[\s\S]*successMessage: `Updated treatment phase line "\$\{label\}"\.`/);
   assert.match(appSource, /data-edit-treatment-phase-line/);
   assert.match(appSource, /data-hide-treatment-phase-line/);
@@ -674,6 +696,66 @@ test('graph UI exposes a trend-line toggle and report insertion action', () => {
   assert.match(appSource, /data-behavior-analysis/);
   assert.doesNotMatch(appSource, /Skill acquisition graph analysis:/);
   assert.doesNotMatch(appSource, /Behavior reduction graph analysis:/);
+});
+
+test('behavior overview delegates every treatment and environmental phase-line action', () => {
+  const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  assert.match(appSource, /behaviorChartPanel\?\.addEventListener\("click", handleGraphPhaseLineClick\)/);
+  assert.match(appSource, /behaviorChartPanel\?\.addEventListener\("submit", handleGraphPhaseLineSubmit\)/);
+  assert.match(appSource, /event\.target\.closest\("\[data-edit-treatment-phase-line\]"\)/);
+  assert.match(appSource, /event\.target\.closest\("\[data-hide-treatment-phase-line\]"\)/);
+  assert.match(appSource, /event\.target\.closest\("\[data-delete-treatment-phase-line\]"\)/);
+  assert.match(appSource, /event\.target\.closest\("\[data-reset-treatment-phase-line\]"\)/);
+  assert.match(appSource, /event\.target\.closest\("\[data-edit-phase-line\]\[data-phase-line-id\]"\)/);
+  assert.match(appSource, /const mount = edit\.closest\("\[data-phase-line-panel\]"\)/);
+  assert.match(appSource, /renderCustomPhaseLineManager\(graphKey, series, \{ editingId: line\.id \}\)/);
+  assert.match(appSource, /setTreatmentPhaseOverrideForGraph\(graphKey, buildTreatmentPhaseLineRecord\(graphKey, \{[\s\S]*?deleted: true[\s\S]*?persistGraphPhaseLineUiChange/);
+  assert.match(appSource, /setCustomPhaseLinesForGraph\(graphKey, nextLines\)/);
+  assert.match(appSource, /await persistGraphPhaseLineUiChange\(\{/);
+});
+
+test('successful environmental phase-line API save does not emit an authentication failure', async () => {
+  const previousFetch = globalThis.fetch;
+  const previousWindow = globalThis.window;
+  const requests = [];
+  let authFailureEvents = 0;
+  globalThis.window = {
+    dispatchEvent() {
+      authFailureEvents += 1;
+    }
+  };
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, options });
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({ id: 'client-1', profile: { graphPhaseLines: options.body } });
+      }
+    };
+  };
+
+  try {
+    await updateClientGraphPhaseLines('client-1', {
+      'behavior:overview': [{
+        id: 'phase-1',
+        date: '2026-06-01',
+        label: '',
+        lineStyle: 'dashed',
+        note: 'Schedule change',
+        phaseType: 'environmental'
+      }]
+    });
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, '/api/clients/client-1/graph-phase-lines');
+    assert.equal(requests[0].options.method, 'PUT');
+    assert.equal(authFailureEvents, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+    globalThis.window = previousWindow;
+  }
 });
 
 test('environmental phase-line form accepts an optional blank label while keeping date required', () => {

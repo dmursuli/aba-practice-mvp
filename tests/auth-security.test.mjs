@@ -473,6 +473,61 @@ test('graph phase line update deduplicates stale treatment records server-side',
   assert.equal(persistedLines[0].source, 'user');
 });
 
+test('deleted treatment phase state persists without removing environmental lines', async () => {
+  resetRuntimeState();
+  await resetDb();
+  const { cookie } = await loginPasswordOnly();
+  const createClientResult = await request('/api/clients', {
+    method: 'POST',
+    cookie,
+    body: { name: 'Deleted Treatment Phase Client', agency: 'Triumph ABA' }
+  });
+  const clientId = createClientResult.json.id;
+  const graphPhaseLines = {
+    'skill:program-1': [
+      {
+        id: 'skill:program-1:treatment',
+        graphId: 'skill:program-1',
+        graphType: 'skill',
+        targetId: 'program-1',
+        date: '2026-04-15',
+        label: 'Treatment',
+        lineStyle: 'solid',
+        phaseType: 'treatment',
+        source: 'user',
+        hidden: false,
+        deleted: true,
+        updatedAt: '2026-06-30T10:00:00.000Z'
+      },
+      {
+        id: 'skill:program-1:environmental',
+        graphId: 'skill:program-1',
+        graphType: 'skill',
+        targetId: 'program-1',
+        date: '2026-05-01',
+        label: 'Schedule change',
+        lineStyle: 'dashed',
+        phaseType: 'environmental',
+        source: 'user',
+        hidden: false,
+        deleted: false,
+        updatedAt: '2026-06-30T10:00:00.000Z'
+      }
+    ]
+  };
+
+  const updateResult = await request(`/api/clients/${clientId}/graph-phase-lines`, {
+    method: 'PUT',
+    cookie,
+    body: { graphPhaseLines }
+  });
+  assert.equal(updateResult.response.status, 200);
+  const persistedLines = updateResult.json.profile.graphPhaseLines['skill:program-1'];
+  assert.equal(persistedLines.length, 2);
+  assert.equal(persistedLines.find((line) => line.phaseType === 'treatment').deleted, true);
+  assert.equal(persistedLines.find((line) => line.phaseType === 'environmental').label, 'Schedule change');
+});
+
 test('absolute session expiration requires re-login even with activity', async () => {
   resetRuntimeState();
   await resetDb();
