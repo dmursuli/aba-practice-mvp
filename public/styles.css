@@ -101,6 +101,11 @@ textarea {
 .chart-panel h3,
 .chart-panel h4 {
   text-align: center;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  max-width: 64rem;
+  margin-inline: auto;
+  margin-bottom: 10px;
 }
 
 .topbar h1 {
@@ -1672,8 +1677,8 @@ button:focus-visible {
 .graph-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 14px;
-  margin-top: 10px;
+  gap: 6px 12px;
+  margin-top: 8px;
   max-height: 108px;
   overflow: auto;
   padding-right: 4px;
@@ -1686,10 +1691,13 @@ button:focus-visible {
   min-width: 0;
   font-size: 0.92rem;
   color: var(--ink);
+  max-width: min(280px, 100%);
+  line-height: 1.25;
 }
 
 .graph-legend-item span:last-child {
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .graph-legend-swatch {

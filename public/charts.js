@@ -9,10 +9,9 @@ const TREND_SLOPE_TOLERANCE = 0.01;
 
 export function drawLineChart(canvas, series, options = {}) {
   if (!canvas) return;
+  canvas.__clinicalGraphRenderState = { series, options: { ...options } };
   const ctx = canvas.getContext("2d");
   const allPoints = series.flatMap((item) => item.points);
-  const dateCount = new Set(allPoints.map((point) => point.x)).size;
-  const useAngledDates = dateCount > 8;
   const seriesStyles = buildSeriesStyles(series);
   canvas.style.width = "100%";
   canvas.style.maxWidth = "100%";
@@ -24,9 +23,9 @@ export function drawLineChart(canvas, series, options = {}) {
 
   const width = canvas.width / dpr;
   const height = canvas.height / dpr;
-  const margin = { top: 52, right: 28, bottom: useAngledDates ? 92 : 68, left: 56 };
+  const margin = { top: 58, right: 28, bottom: 62, left: 56 };
   const plotWidth = width - margin.left - margin.right;
-  const plotHeight = height - margin.top - margin.bottom;
+  let plotHeight = height - margin.top - margin.bottom;
 
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#ffffff";
@@ -43,11 +42,17 @@ export function drawLineChart(canvas, series, options = {}) {
   const dateTicks = buildDateTicks(series, {
     ...options,
     dates,
+    availableWidth: plotWidth,
     phaseDates: [
       ...(phaseBoundary?.date ? [phaseBoundary.date] : []),
       ...phaseMarkers.map((marker) => marker.date).filter(Boolean)
     ]
   });
+  const useAngledDates = dateTicks.length > 1 && plotWidth / dateTicks.length < 76;
+  if (useAngledDates) {
+    margin.bottom = 74;
+    plotHeight = height - margin.top - margin.bottom;
+  }
   const maxY = Math.max(options.maxY || 0, ...allPoints.map((point) => point.y), 1);
   const yTop = options.maxY || Math.max(options.yStep || 1, Math.ceil(maxY * 1.15));
   const layout = buildChartLayout(dates, margin.left, plotWidth, phaseBoundary, phaseMarkers);
@@ -66,12 +71,12 @@ export function drawLineChart(canvas, series, options = {}) {
   dateTicks.forEach(({ date, index }) => {
     const x = xPositions[index];
     ctx.fillStyle = "#59656f";
-    ctx.font = "10px system-ui, sans-serif";
+    ctx.font = "11px system-ui, sans-serif";
     ctx.textAlign = useAngledDates ? "right" : "center";
     ctx.save();
     if (useAngledDates) {
-      ctx.translate(x - 4, margin.top + plotHeight + 52);
-      ctx.rotate(-Math.PI / 4);
+      ctx.translate(x - 2, margin.top + plotHeight + 38);
+      ctx.rotate(-Math.PI / 12);
       ctx.fillText(formatGraphDate(date), 0, 0);
     } else {
       ctx.fillText(formatGraphDate(date), x, margin.top + plotHeight + 30);
@@ -108,7 +113,7 @@ export function drawLineChart(canvas, series, options = {}) {
       });
     ctx.save();
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 1.5;
     ctx.setLineDash([8, 6]);
     drawPhaseSegments(ctx, points.map((point) => ({ ...point, phase: "rolling" })), null, phaseMarkerXs);
     ctx.restore();
@@ -136,7 +141,7 @@ export function drawLineChart(canvas, series, options = {}) {
 
     ctx.save();
     ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 2;
     ctx.setLineDash(style.dashPattern);
     drawPhaseSegments(ctx, points, phaseBoundary, breakLines);
     ctx.restore();
@@ -151,6 +156,16 @@ export function drawLineChart(canvas, series, options = {}) {
   });
 
   bindCanvasTooltip(canvas, interactivePoints);
+}
+
+export function redrawLineChartTrend(canvas, showTrendLine) {
+  const renderState = canvas?.__clinicalGraphRenderState;
+  if (!renderState) return false;
+  drawLineChart(canvas, renderState.series, {
+    ...renderState.options,
+    showTrendLine: Boolean(showTrendLine)
+  });
+  return true;
 }
 
 export function buildClinicalGraphModel(series, options = {}) {
@@ -240,13 +255,10 @@ export function filterSeriesPointsByDateRange(series, range = {}, options = {}) 
 export function buildDateTicks(series, options = {}) {
   const dates = options.dates || [...new Set((series || []).flatMap((item) => (item.points || []).map((point) => point.x)))].sort();
   if (options.showAllDateLabels) return dates.map((date, index) => ({ date, index }));
-  if (dates.length < 20) return dates.map((date, index) => ({ date, index }));
+  const availableWidth = Math.max(160, Number(options.availableWidth) || 720);
+  const desiredVisibleLabels = Math.max(2, Math.floor(availableWidth / 72));
+  if (dates.length <= desiredVisibleLabels) return dates.map((date, index) => ({ date, index }));
 
-  const desiredVisibleLabels = dates.length <= 50
-    ? Math.min(18, Math.ceil(dates.length / 2))
-    : dates.length <= 100
-      ? 10
-      : 12;
   const interval = Math.max(1, Math.ceil(dates.length / desiredVisibleLabels));
   const tickIndexes = new Set([0, dates.length - 1]);
 
@@ -505,7 +517,21 @@ export function classifySeriesPointPhase(point, pointIndex, phaseBoundary = null
 }
 
 function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options) {
-  const tickValues = axisTicks(yTop, options.yStep, options.graphType === "behavior");
+  const tickValues = options.maxY === 100
+    ? [0, 20, 40, 60, 80, 100]
+    : axisTicks(yTop, options.yStep, options.graphType === "behavior");
+  ctx.save();
+  ctx.strokeStyle = "#edf2f6";
+  ctx.lineWidth = 1;
+  tickValues.forEach((value) => {
+    const y = margin.top + plotHeight - (value / yTop) * plotHeight;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, y);
+    ctx.lineTo(margin.left + plotWidth, y);
+    ctx.stroke();
+  });
+  ctx.restore();
+
   ctx.strokeStyle = "#d6dde3";
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -514,8 +540,8 @@ function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, optio
   ctx.lineTo(width - margin.right, margin.top + plotHeight);
   ctx.stroke();
 
-  ctx.fillStyle = "#59656f";
-  ctx.font = "12px system-ui, sans-serif";
+  ctx.fillStyle = "#667482";
+  ctx.font = "11px system-ui, sans-serif";
   ctx.textAlign = "right";
   tickValues.forEach((value) => {
     const y = margin.top + plotHeight - (value / yTop) * plotHeight;
@@ -558,13 +584,15 @@ function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPosit
 }
 
 function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions, markerXByDate = new Map()) {
+  const labelRows = [];
   markers.forEach((marker) => {
     const lineX = xPositionForMarkerDateWithMode(marker, dates, xPositions, markerXByDate);
     if (!Number.isFinite(lineX)) return;
+    const isMastery = marker.phaseType === "targetMastered" || marker.phaseType === "mastered";
 
     ctx.save();
-    ctx.strokeStyle = "#7a4f00";
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = isMastery ? "#8b98a5" : "#9a731d";
+    ctx.lineWidth = 1;
     if (marker.lineStyle === "dashed") ctx.setLineDash([6, 6]);
     ctx.beginPath();
     ctx.moveTo(lineX, margin.top - 2);
@@ -572,10 +600,18 @@ function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions, m
     ctx.stroke();
     ctx.setLineDash([]);
 
-    ctx.fillStyle = "#7a4f00";
-    ctx.font = "12px system-ui, sans-serif";
+    ctx.fillStyle = isMastery ? "#73808d" : "#806018";
+    ctx.font = `${isMastery ? "10px" : "11px"} system-ui, sans-serif`;
     ctx.textAlign = "center";
-    if (marker.label) ctx.fillText(marker.label, lineX, margin.top - 30);
+    if (marker.label) {
+      const displayLabel = isMastery ? "Mastered" : marker.label;
+      let row = labelRows.findIndex((lastX) => !Number.isFinite(lastX) || Math.abs(lineX - lastX) >= 72);
+      if (row < 0 && labelRows.length < 3) row = labelRows.length;
+      if (row >= 0) {
+        labelRows[row] = lineX;
+        ctx.fillText(displayLabel, lineX, margin.top - 28 - row * 13);
+      }
+    }
     ctx.restore();
   });
 }
