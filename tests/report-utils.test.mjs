@@ -828,8 +828,7 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /dischargeMaladaptiveBehaviors/);
   assert.match(appSource, /report-graph-analysis-line/);
   assert.match(appSource, /estimateJsonBytes/);
-  assert.match(appSource, /redrawLineChartTrend\(canvas, toggle\.checked\)/);
-  assert.doesNotMatch(appSource, /window\.scrollTo\(\{ top: Math\.max\(window\.scrollY \+ delta, 0\), behavior: "auto" \}\)/);
+  assert.match(appSource, /window\.scrollTo\(\{ top: Math\.max\(window\.scrollY \+ delta, 0\), behavior: "auto" \}\)/);
   assert.match(htmlSource, /id="resume-funder-report"/);
   assert.match(htmlSource, />Export PDF</);
   assert.match(htmlSource, /name="dischargeMaladaptiveBehaviors"/);

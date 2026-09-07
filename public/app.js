@@ -1,5 +1,5 @@
 import { cancelAppointment, createAppointment, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
-import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
+import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
@@ -10223,17 +10223,19 @@ function handleGraphAnalysisControlChange(event) {
   if (!toggle) return;
   event.preventDefault();
   const graphKey = toggle.dataset.graphTrendToggle;
-  const chartPanel = toggle.closest(".chart-panel");
-  const canvas = chartPanel?.querySelector("canvas");
-  const renderState = canvas?.__clinicalGraphRenderState;
+  const previousPanel = toggle.closest(".chart-panel");
+  const previousTop = previousPanel?.getBoundingClientRect().top ?? null;
   state.graphTrendVisibility[graphKey] = toggle.checked;
-  if (!redrawLineChartTrend(canvas, toggle.checked) || !renderState) return;
-  const legendMarkup = renderGraphLegendMarkup(renderState.series, { showTrendLine: toggle.checked });
-  if (programGraphModal?.contains(toggle) && programGraphModalLegend) {
-    programGraphModalLegend.innerHTML = legendMarkup;
-    return;
-  }
-  renderGraphLegend(chartPanel, renderState.series, { showTrendLine: toggle.checked });
+  renderCharts();
+  if (reportPreview.innerHTML) renderFunderReportPreview();
+  requestAnimationFrame(() => {
+    if (!graphKey || previousTop === null) return;
+    const nextToggle = [...document.querySelectorAll("[data-graph-trend-toggle]")].find((input) => input.dataset.graphTrendToggle === graphKey);
+    const nextPanel = nextToggle?.closest(".chart-panel");
+    if (!nextPanel) return;
+    const delta = nextPanel.getBoundingClientRect().top - previousTop;
+    window.scrollTo({ top: Math.max(window.scrollY + delta, 0), behavior: "auto" });
+  });
 }
 
 function handleGraphAnalysisClick(event) {
@@ -11480,7 +11482,7 @@ function masteryMarkersForProgram(programId) {
 }
 
 function renderGraphLegendMarkup(series, options = {}) {
-  const items = (series || []).length > 1 ? buildLegendItems(series) : [];
+  const items = buildLegendItems(series || []);
   const showTrendLine = Boolean(options.showTrendLine);
   if (!items.length && !showTrendLine) return "";
   return `
@@ -11505,15 +11507,8 @@ function renderGraphLegend(container, series, options = {}) {
   if (!container) return;
   const existing = container.querySelector(".graph-legend");
   const markup = renderGraphLegendMarkup(series, options);
-  if (existing) {
-    if (markup) existing.outerHTML = markup;
-    else existing.remove();
-    return;
-  }
-  if (!markup) return;
-  const canvas = container.querySelector("canvas");
-  const anchor = canvas?.closest(".graph-canvas-scroll") || canvas;
-  if (anchor) anchor.insertAdjacentHTML("afterend", markup);
+  if (existing) existing.remove();
+  if (markup) container.insertAdjacentHTML("beforeend", markup);
 }
 
 function graphTrendKey(prefix, id) {

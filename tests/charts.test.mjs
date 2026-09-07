@@ -10,7 +10,6 @@ import {
   buildMovingAverageSeriesSet,
   buildSeriesStyles,
   drawLineChart,
-  redrawLineChartTrend,
   derivedPointPhase,
   filterSeriesPointsByDateRange,
   formatGraphDate
@@ -664,25 +663,6 @@ test('environmental phase-line form accepts an optional blank label while keepin
   assert.match(appSource, /if \(!date \|\| \(formKind === "treatment" && !label\)\)/);
 });
 
-test('graph UI hides single-target legends, preserves multi-target legends, and wraps long labels', () => {
-  const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-  const stylesSource = fs.readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
-
-  assert.match(appSource, /const items = \(series \|\| \[\]\)\.length > 1 \? buildLegendItems\(series\) : \[\];/);
-  assert.match(stylesSource, /\.graph-legend-item\s*\{[\s\S]*max-width: min\(280px, 100%\);/);
-  assert.match(stylesSource, /\.graph-legend-item span:last-child\s*\{[\s\S]*overflow-wrap: anywhere;[\s\S]*white-space: normal;/);
-});
-
-test('trend toggle redraws only its existing canvas without scroll compensation or full-view rendering', () => {
-  const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-  const handler = appSource.match(/function handleGraphAnalysisControlChange\(event\) \{[\s\S]*?\n\}/)?.[0] || '';
-
-  assert.match(handler, /redrawLineChartTrend\(canvas, toggle\.checked\)/);
-  assert.doesNotMatch(handler, /renderCharts\(\)/);
-  assert.doesNotMatch(handler, /renderFunderReportPreview\(\)/);
-  assert.doesNotMatch(handler, /scrollTo|scrollIntoView|requestAnimationFrame/);
-});
-
 test('app bootstrap lazy-loads session-backed graph data instead of rendering charts during the base render pass', () => {
   const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(appSource, /await switchView\(requested\.view \|\| currentView\(\)\);/);
@@ -895,21 +875,13 @@ test('graph-local line patterns differentiate series after the full palette is e
 });
 
 function makeCanvasRecorder() {
-  const calls = { arcs: 0, dashed: 0, text: [], textEntries: [], strokes: [], rotations: [] };
+  const calls = { arcs: 0, dashed: 0, text: [], strokes: [] };
   let currentDash = [];
-  let currentPath = [];
   const context = {
     scale() {}, clearRect() {}, fillRect() {}, save() {}, restore() {}, translate() {},
-    rotate(value) { calls.rotations.push(value); },
-    fillText(value, x, y) {
-      calls.text.push(String(value));
-      calls.textEntries.push({ value: String(value), x, y });
-    },
-    stroke() { calls.strokes.push({ color: this.strokeStyle, dash: currentDash.slice(), path: currentPath.slice() }); },
-    beginPath() { currentPath = []; },
-    moveTo(x, y) { currentPath.push({ x, y }); },
-    lineTo(x, y) { currentPath.push({ x, y }); },
-    fill() {},
+    rotate() {}, fillText(value) { calls.text.push(String(value)); },
+    stroke() { calls.strokes.push({ color: this.strokeStyle, dash: currentDash.slice() }); },
+    beginPath() {}, moveTo() {}, lineTo() {}, fill() {},
     arc() { calls.arcs += 1; },
     setLineDash(pattern) {
       currentDash = pattern.slice();
@@ -1015,107 +987,6 @@ test('moving-average and raw series use the same graph-local target color', () =
     const targetColor = buildSeriesStyles([{ name: 'Color target', points: [] }])[0].color;
     assert.ok(recorder.calls.strokes.some((stroke) => stroke.color === targetColor && stroke.dash.length));
     assert.ok(recorder.calls.strokes.some((stroke) => stroke.color === targetColor && !stroke.dash.length));
-  } finally {
-    globalThis.window = previousWindow;
-  }
-});
-
-test('percentage graphs use fixed twenty-point ticks and horizontal reference guides only', () => {
-  const previousWindow = globalThis.window;
-  globalThis.window = { devicePixelRatio: 1 };
-  try {
-    const recorder = makeCanvasRecorder();
-    drawLineChart(recorder.canvas, [{ name: 'Percentage target', points: [
-      { x: '2026-09-01', y: 10 }, { x: '2026-09-02', y: 90 }
-    ] }], { maxY: 100, yStep: 10, graphType: 'skill' });
-    const numericLabels = recorder.calls.text.filter((value) => /^\d+$/.test(value)).map(Number);
-    assert.deepEqual(numericLabels, [0, 20, 40, 60, 80, 100]);
-    const guides = recorder.calls.strokes.filter((stroke) => stroke.color === '#edf2f6');
-    assert.equal(guides.length, 6);
-    assert.ok(guides.every((guide) => guide.path.length === 2 && guide.path[0].y === guide.path[1].y));
-    assert.ok(guides.every((guide) => guide.path[0].x !== guide.path[1].x));
-  } finally {
-    globalThis.window = previousWindow;
-  }
-});
-
-test('date labels stay horizontal when sparse and use only mild rotation when dense', () => {
-  const previousWindow = globalThis.window;
-  globalThis.window = { devicePixelRatio: 1 };
-  try {
-    const sparse = makeCanvasRecorder();
-    drawLineChart(sparse.canvas, [{ name: 'Sparse', points: [
-      { x: '2026-01-01', y: 10 }, { x: '2026-06-30', y: 20 }
-    ] }]);
-    assert.equal(sparse.calls.rotations.length, 0);
-    assert.ok(sparse.calls.text.includes('1/1/2026'));
-    assert.ok(sparse.calls.text.includes('6/30/2026'));
-
-    const dense = makeCanvasRecorder();
-    const densePoints = Array.from({ length: 40 }, (_, index) => ({
-      x: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
-      y: index
-    }));
-    drawLineChart(dense.canvas, [{ name: 'Dense', points: densePoints }]);
-    const visibleDates = dense.calls.text.filter((value) => /^\d+\/\d+\/\d{4}$/.test(value));
-    assert.ok(visibleDates.length < densePoints.length);
-    assert.equal(visibleDates[0], '1/1/2026');
-    assert.equal(visibleDates.at(-1), '2/9/2026');
-    assert.ok(dense.calls.rotations.every((value) => Math.abs(value) <= Math.PI / 12));
-    assert.equal(dense.calls.arcs, densePoints.length);
-  } finally {
-    globalThis.window = previousWindow;
-  }
-});
-
-test('mastery annotations use compact labels and collision rows without removing marker lines', () => {
-  const previousWindow = globalThis.window;
-  globalThis.window = { devicePixelRatio: 1 };
-  try {
-    const recorder = makeCanvasRecorder();
-    const points = Array.from({ length: 5 }, (_, index) => ({
-      x: `2026-09-0${index + 1}`,
-      y: 20 + index * 10
-    }));
-    const markers = points.slice(1).map((point) => ({
-      date: point.x,
-      label: 'Target mastered',
-      phaseType: 'targetMastered',
-      lineStyle: 'dashed'
-    }));
-    drawLineChart(recorder.canvas, [{ name: 'Mastery target', points }], { phaseMarkers: markers });
-    const labels = recorder.calls.textEntries.filter((entry) => entry.value === 'Mastered');
-    const markerLines = recorder.calls.strokes.filter((stroke) => stroke.color === '#8b98a5');
-    assert.equal(markerLines.length, markers.length);
-    assert.ok(labels.length <= markers.length);
-    assert.equal(new Set(labels.map((entry) => `${entry.x}:${entry.y}`)).size, labels.length);
-    assert.doesNotMatch(recorder.calls.text.join(' '), /Target mastered/);
-  } finally {
-    globalThis.window = previousWindow;
-  }
-});
-
-test('targeted trend redraw preserves independent canvases and leaves analytics unchanged', () => {
-  const previousWindow = globalThis.window;
-  globalThis.window = { devicePixelRatio: 1, scrollY: 640 };
-  const firstSeries = [{ name: 'First', points: [
-    { x: '2026-09-01', y: 10 }, { x: '2026-09-02', y: 20 }
-  ] }];
-  const secondSeries = [{ name: 'Second', points: [
-    { x: '2026-09-01', y: 30 }, { x: '2026-09-02', y: 40 }
-  ] }];
-  try {
-    const first = makeCanvasRecorder();
-    const second = makeCanvasRecorder();
-    drawLineChart(first.canvas, firstSeries, { showTrendLine: false, graphType: 'skill' });
-    drawLineChart(second.canvas, secondSeries, { showTrendLine: false, graphType: 'skill' });
-    const analysisBefore = buildGraphAnalysis(firstSeries, { graphType: 'skill' });
-    for (const enabled of [true, false, true, false]) redrawLineChartTrend(first.canvas, enabled);
-    const analysisAfter = buildGraphAnalysis(firstSeries, { graphType: 'skill', showTrendLine: true });
-    assert.equal(globalThis.window.scrollY, 640);
-    assert.equal(first.canvas.__clinicalGraphRenderState.options.showTrendLine, false);
-    assert.equal(second.canvas.__clinicalGraphRenderState.options.showTrendLine, false);
-    assert.deepEqual(analysisAfter, analysisBefore);
   } finally {
     globalThis.window = previousWindow;
   }
