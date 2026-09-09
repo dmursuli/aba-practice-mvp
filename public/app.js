@@ -1964,7 +1964,7 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
   });
   row.responseHistory = [];
   row.querySelectorAll("[data-record-response]").forEach((button) => {
-    button.addEventListener("click", () => recordSkillResponse(row, button.dataset.recordResponse));
+    button.addEventListener("click", () => recordSkillResponse(row, button.dataset.recordResponse, Number(button.dataset.responseStep || 1)));
   });
   row.querySelector("[data-undo-response]").addEventListener("click", () => undoSkillResponse(row));
   row.querySelectorAll("[data-frequency-step]").forEach((button) => {
@@ -2027,10 +2027,17 @@ function addBehaviorRow(behaviorId = "", values = {}) {
     refreshBehaviorAvailability();
     saveSessionDraft();
   });
+  row.querySelectorAll("[data-behavior-frequency-step]").forEach((button) => {
+    button.addEventListener("click", () => changeBehaviorFrequency(row, Number(button.dataset.behaviorFrequencyStep || 0)));
+  });
   row.querySelectorAll("input, select").forEach((input) => {
-    input.addEventListener("input", saveSessionDraft);
+    input.addEventListener("input", () => {
+      if (input.dataset.field === "frequency") updateBehaviorFrequencyDisplay(row);
+      saveSessionDraft();
+    });
   });
   behaviorList.append(row);
+  updateBehaviorFrequencyDisplay(row);
   refreshBehaviorAvailability();
   saveSessionDraft();
   return row;
@@ -2206,6 +2213,12 @@ function updateProgramIndependence(row) {
   row.querySelector("[data-correct-summary]").textContent = String(correct);
   row.querySelector("[data-incorrect-summary]").textContent = String(incorrect);
   row.querySelector("[data-trials-summary]").textContent = String(denominator);
+  row.querySelectorAll('[data-record-response="correct"][data-response-step="-1"]').forEach((button) => {
+    button.disabled = correct <= 0;
+  });
+  row.querySelectorAll('[data-record-response="incorrect"][data-response-step="-1"]').forEach((button) => {
+    button.disabled = incorrect <= 0;
+  });
 }
 
 function syncSkillCollectionMode(row, savedType = "") {
@@ -2215,20 +2228,30 @@ function syncSkillCollectionMode(row, savedType = "") {
   row.querySelector('[data-field="dataCollectionType"]').value = dataCollectionType;
   row.querySelector("[data-percent-collection]").classList.toggle("hidden", dataCollectionType !== "percent_correct");
   row.querySelector("[data-frequency-collection]").classList.toggle("hidden", dataCollectionType !== "frequency");
-  row.querySelector("[data-frequency-summary]").textContent = String(Math.max(0, Number(row.querySelector('[data-field="frequency"]').value || 0)));
+  const frequency = Math.max(0, Number(row.querySelector('[data-field="frequency"]').value || 0));
+  row.querySelector("[data-frequency-summary]").textContent = String(frequency);
+  row.querySelector('[data-frequency-step="-1"]').disabled = frequency <= 0;
   row.responseHistory = [];
   row.querySelector("[data-undo-response]").disabled = true;
   updateProgramIndependence(row);
 }
 
-function recordSkillResponse(row, response) {
+function recordSkillResponse(row, response, step = 1) {
   if (!['correct', 'incorrect'].includes(response)) return;
   const field = row.querySelector(`[data-field="${response}"]`);
-  field.value = String(Math.max(0, Number(field.value || 0)) + 1);
+  const current = Math.max(0, Number(field.value || 0));
+  if (step < 0 && current <= 0) return;
+  const change = step < 0 ? -1 : 1;
+  field.value = String(Math.max(0, current + change));
   const trialsField = row.querySelector('[data-field="trials"]');
-  trialsField.value = String(Math.max(0, Number(trialsField.value || 0)) + 1);
-  row.responseHistory.push(response);
-  row.querySelector("[data-undo-response]").disabled = false;
+  trialsField.value = String(Math.max(0, Number(trialsField.value || 0) + change));
+  if (change > 0) {
+    row.responseHistory.push(response);
+  } else {
+    const historyIndex = row.responseHistory.lastIndexOf(response);
+    if (historyIndex >= 0) row.responseHistory.splice(historyIndex, 1);
+  }
+  row.querySelector("[data-undo-response]").disabled = row.responseHistory.length === 0;
   updateProgramIndependence(row);
   saveSessionDraft();
 }
@@ -2250,6 +2273,22 @@ function changeSkillFrequency(row, step) {
   const frequency = Math.max(0, Math.floor(Number(field.value || 0) + step));
   field.value = String(frequency);
   row.querySelector("[data-frequency-summary]").textContent = String(frequency);
+  row.querySelector('[data-frequency-step="-1"]').disabled = frequency <= 0;
+  saveSessionDraft();
+}
+
+function updateBehaviorFrequencyDisplay(row) {
+  const field = row.querySelector('[data-field="frequency"]');
+  const frequency = Math.max(0, Number(field.value || 0));
+  row.querySelector("[data-behavior-frequency-summary]").textContent = String(frequency);
+  row.querySelector('[data-behavior-frequency-step="-1"]').disabled = frequency <= 0;
+}
+
+function changeBehaviorFrequency(row, step) {
+  const field = row.querySelector('[data-field="frequency"]');
+  const frequency = Math.max(0, Number(field.value || 0) + (step < 0 ? -1 : 1));
+  field.value = String(frequency);
+  updateBehaviorFrequencyDisplay(row);
   saveSessionDraft();
 }
 

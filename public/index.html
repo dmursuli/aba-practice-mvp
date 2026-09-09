@@ -1954,18 +1954,59 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
     </main>
 
     <style>
-      .skill-collection { grid-column: span 3; display: grid; gap: 10px; align-self: stretch; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+      .program-row { grid-template-columns: minmax(145px, 1.25fr) minmax(315px, 2.3fr) minmax(105px, .9fr) minmax(90px, .8fr) 38px; align-items: end; gap: 7px 9px; padding: 10px 12px; }
+      .program-row .program-display-card { grid-column: 1 / -1; padding: 7px 9px; }
+      .program-target-selector { grid-column: 1; grid-row: 2; }
+      .program-prompt-selector { grid-column: 3; grid-row: 2; }
+      .program-phase-selector { grid-column: 4; grid-row: 2; }
+      .program-row > .icon-button { grid-column: 5; grid-row: 2; align-self: end; min-height: 38px; }
+      .skill-collection { display: contents; }
       .skill-collection.hidden { display: none; }
-      .skill-response-buttons, .frequency-counter, .skill-running-summary { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-      .skill-response-button { min-height: 58px; flex: 1 1 130px; border: 0; border-radius: 8px; color: #fff; font-size: 1rem; font-weight: 800; cursor: pointer; }
-      .skill-response-button.correct { background: var(--teal); }
-      .skill-response-button.incorrect { background: #a63d40; }
-      .skill-running-summary { justify-content: space-between; }
-      .frequency-counter { justify-content: center; }
-      .frequency-counter strong { min-width: 70px; text-align: center; font-size: 2rem; }
-      .skill-counter-button { width: 58px; min-height: 58px; border: 1px solid var(--line); border-radius: 8px; background: var(--brand-soft); color: var(--teal); font-size: 1.8rem; font-weight: 800; cursor: pointer; }
+      .skill-response-row, .skill-collection-line { grid-column: 2; grid-row: 2; }
+      .skill-running-summary { grid-column: 2; grid-row: 3; }
+      .legacy-trial-editor { grid-column: 2; grid-row: 4; }
+      .skill-response-row, .skill-collection-line, .skill-count-control, .skill-running-summary, .frequency-counter { display: flex; align-items: center; gap: 4px; }
+      .skill-response-row { flex-wrap: nowrap; gap: 12px; }
+      .skill-count-control, .frequency-counter { flex-wrap: nowrap; font-weight: 500; }
+      .skill-count-control > span:first-child, .frequency-counter > span:first-child { margin-right: 1px; color: var(--muted); font-size: .84rem; font-weight: 600; }
+      .skill-count-control strong, .frequency-counter strong { min-width: 26px; text-align: center; color: var(--ink); font-size: 1.06rem; line-height: 1; font-weight: 700; }
+      .skill-counter-button { position: relative; display: inline-grid; place-items: center; width: 38px; min-width: 38px; min-height: 38px; padding: 0; border: 0; background: transparent; color: #285f87; font-size: 1rem; font-weight: 800; cursor: pointer; isolation: isolate; }
+      .skill-counter-button::before { content: ""; position: absolute; inset: 5px; z-index: -1; border: 1px solid #a9c5df; border-radius: 7px; background: #dceaf6; }
+      .skill-counter-button:hover::before { background: #cfe2f2; border-color: #8fb2d1; }
+      .skill-counter-button:focus-visible, .undo-response:focus-visible { outline: 2px solid #5d91bb; outline-offset: 1px; border-radius: 8px; }
+      .skill-counter-button:disabled { cursor: default; color: #9aa6af; }
+      .skill-counter-button:disabled::before { background: #f2f4f6; border-color: #dce1e5; }
+      .skill-running-summary { justify-content: flex-start; min-height: 30px; color: var(--muted); font-size: .82rem; font-weight: 600; }
+      .skill-running-summary > span { white-space: nowrap; }
+      .skill-running-summary [data-trials-summary] { color: var(--ink); font-size: .92rem; font-weight: 700; }
+      .skill-percentage { min-width: auto; color: #446f86; font-size: .92rem; font-weight: 700; }
+      .skill-percentage::before { content: "·"; margin: 0 8px 0 4px; color: #97a3ac; font-weight: 600; }
+      .undo-response { width: auto; min-width: 38px; min-height: 38px; padding: 0 7px; border: 0; border-radius: 7px; background: transparent; color: #426981; font: inherit; font-weight: 650; cursor: pointer; }
+      .undo-response:disabled { cursor: default; color: #a3adb4; }
+      .legacy-trial-editor summary, .behavior-frequency-editor summary, .behavior-duration-editor summary { color: var(--muted); font-size: .78rem; font-weight: 600; cursor: pointer; }
       .legacy-trial-editor > div { display: grid; grid-template-columns: repeat(3, minmax(80px, 1fr)); gap: 8px; margin-top: 8px; }
-      @media (max-width: 760px) { .skill-collection { grid-column: 1 / -1; } .legacy-trial-editor > div { grid-template-columns: 1fr; } }
+      .behavior-row { grid-template-columns: minmax(145px, 1.25fr) minmax(220px, 1.6fr) minmax(105px, 1fr) minmax(90px, .9fr) 38px; align-items: end; gap: 7px 9px; padding: 10px 12px; }
+      .behavior-name-selector { grid-column: 1; grid-row: 1; }
+      .behavior-frequency-collection { display: contents; }
+      .behavior-frequency-collection .frequency-counter { grid-column: 2; grid-row: 1; }
+      .behavior-frequency-editor { grid-column: 2; grid-row: 2; }
+      .behavior-duration-editor { grid-column: 2; grid-row: 3; }
+      .behavior-duration-editor summary { min-height: 30px; padding: 6px 0; box-sizing: border-box; }
+      .behavior-duration-editor[open] summary { margin-bottom: 5px; }
+      .behavior-intensity-selector { grid-column: 3; grid-row: 1; }
+      .behavior-phase-selector { grid-column: 4; grid-row: 1; }
+      .behavior-row > .icon-button { grid-column: 5; grid-row: 1; align-self: end; min-height: 38px; }
+      @media (max-width: 900px) {
+        .program-row, .behavior-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .program-row .program-display-card { grid-column: 1 / -1; grid-row: auto; }
+        .program-target-selector, .skill-response-row, .skill-collection-line, .skill-running-summary, .legacy-trial-editor, .program-prompt-selector, .program-phase-selector, .program-row > .icon-button,
+        .behavior-name-selector, .behavior-frequency-collection .frequency-counter, .behavior-frequency-editor, .behavior-duration-editor, .behavior-intensity-selector, .behavior-phase-selector, .behavior-row > .icon-button { grid-row: auto; }
+        .program-target-selector, .skill-response-row, .skill-collection-line, .skill-running-summary, .legacy-trial-editor, .behavior-name-selector, .behavior-frequency-collection .frequency-counter, .behavior-frequency-editor, .behavior-duration-editor { grid-column: 1 / -1; }
+        .program-prompt-selector, .behavior-intensity-selector { grid-column: 1; }
+        .program-phase-selector, .behavior-phase-selector { grid-column: 2; }
+        .program-row > .icon-button, .behavior-row > .icon-button { grid-column: 1 / -1; }
+      }
+      @media (max-width: 520px) { .skill-response-row { flex-wrap: wrap; gap: 5px 10px; } .legacy-trial-editor > div { grid-template-columns: 1fr; } }
     </style>
 
     <template id="program-template">
@@ -1976,23 +2017,31 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
           <select data-field="programId" class="visually-hidden-control" tabindex="-1" aria-hidden="true" required></select>
           <input type="hidden" data-field="entryMode" value="active">
         </div>
-        <label>
+        <label class="program-target-selector">
           Target
           <select data-field="targetId" required></select>
         </label>
         <input type="hidden" data-field="dataCollectionType" value="percent_correct">
         <div class="skill-collection skill-percent-collection" data-percent-collection>
-          <div class="skill-response-buttons">
-            <button type="button" class="skill-response-button correct" data-record-response="correct">Correct</button>
-            <button type="button" class="skill-response-button incorrect" data-record-response="incorrect">Incorrect</button>
+          <div class="skill-response-row">
+            <div class="skill-count-control">
+              <span>Correct</span>
+              <button type="button" class="skill-counter-button" data-record-response="correct" data-response-step="-1" aria-label="Decrease correct">−</button>
+              <strong data-correct-summary aria-live="polite">0</strong>
+              <button type="button" class="skill-counter-button" data-record-response="correct" data-response-step="1" aria-label="Increase correct">+</button>
+            </div>
+            <div class="skill-count-control">
+              <span>Incorrect</span>
+              <button type="button" class="skill-counter-button" data-record-response="incorrect" data-response-step="-1" aria-label="Decrease incorrect">−</button>
+              <strong data-incorrect-summary aria-live="polite">0</strong>
+              <button type="button" class="skill-counter-button" data-record-response="incorrect" data-response-step="1" aria-label="Increase incorrect">+</button>
+            </div>
           </div>
           <div class="skill-running-summary" aria-live="polite">
-            <span>Correct: <strong data-correct-summary>0</strong></span>
-            <span>Incorrect: <strong data-incorrect-summary>0</strong></span>
             <span>Trials: <strong data-trials-summary>0</strong></span>
-            <strong data-independence>0%</strong>
+            <strong class="skill-percentage" data-independence>0%</strong>
+            <button type="button" class="undo-response" data-undo-response disabled aria-label="Undo last response" title="Undo last response">← Undo</button>
           </div>
-          <button type="button" class="secondary-button undo-response" data-undo-response disabled>Undo Last Response</button>
           <details class="legacy-trial-editor">
             <summary>Edit totals</summary>
             <div>
@@ -2003,15 +2052,17 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
           </details>
         </div>
         <div class="skill-collection skill-frequency-collection hidden" data-frequency-collection>
-          <span class="skill-collection-label">Frequency</span>
-          <div class="frequency-counter">
-            <button type="button" class="skill-counter-button" data-frequency-step="-1" aria-label="Decrease frequency">−</button>
-            <strong data-frequency-summary aria-live="polite">0</strong>
-            <button type="button" class="skill-counter-button" data-frequency-step="1" aria-label="Increase frequency">+</button>
+          <div class="skill-collection-line">
+            <div class="frequency-counter">
+              <span class="skill-collection-label">Frequency</span>
+              <button type="button" class="skill-counter-button" data-frequency-step="-1" aria-label="Decrease frequency">−</button>
+              <strong data-frequency-summary aria-live="polite">0</strong>
+              <button type="button" class="skill-counter-button" data-frequency-step="1" aria-label="Increase frequency">+</button>
+            </div>
           </div>
           <input type="hidden" data-field="frequency" value="0">
         </div>
-        <label>
+        <label class="program-prompt-selector">
           Prompt level
           <select data-field="promptLevel">
             <option value="independent">Independent</option>
@@ -2020,7 +2071,7 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
             <option value="physical">Physical</option>
           </select>
         </label>
-        <label>
+        <label class="program-phase-selector">
           Phase
           <select data-field="phase">
             <option value="intervention">Intervention</option>
@@ -2125,19 +2176,33 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
 
     <template id="behavior-template">
       <div class="data-row behavior-row">
-        <label>
+        <label class="behavior-name-selector">
           Behavior
           <select data-field="behaviorId"></select>
         </label>
-        <label>
-          Frequency
-          <input type="number" data-field="frequency" min="0" value="0">
-        </label>
-        <label>
-          Duration
-          <input type="text" data-field="duration" placeholder="Optional">
-        </label>
-        <label>
+        <div class="behavior-frequency-collection">
+          <div class="frequency-counter">
+            <span>Frequency</span>
+            <button type="button" class="skill-counter-button" data-behavior-frequency-step="-1" aria-label="Decrease behavior frequency">−</button>
+            <strong data-behavior-frequency-summary aria-live="polite">0</strong>
+            <button type="button" class="skill-counter-button" data-behavior-frequency-step="1" aria-label="Increase behavior frequency">+</button>
+          </div>
+          <details class="behavior-frequency-editor">
+            <summary>Enter total manually</summary>
+            <label>
+              Frequency
+              <input type="number" data-field="frequency" min="0" value="0">
+            </label>
+          </details>
+        </div>
+        <details class="behavior-duration-editor">
+          <summary>Duration</summary>
+          <label>
+            Duration
+            <input type="text" data-field="duration" placeholder="Optional">
+          </label>
+        </details>
+        <label class="behavior-intensity-selector">
           Intensity
           <select data-field="intensity">
             <option value="">Not rated</option>
@@ -2146,7 +2211,7 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
             <option value="high">High</option>
           </select>
         </label>
-        <label>
+        <label class="behavior-phase-selector">
           Phase
           <select data-field="phase">
             <option value="intervention">Intervention</option>
