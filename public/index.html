@@ -1953,6 +1953,21 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
       </section>
     </main>
 
+    <style>
+      .skill-collection { grid-column: span 3; display: grid; gap: 10px; align-self: stretch; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+      .skill-collection.hidden { display: none; }
+      .skill-response-buttons, .frequency-counter, .skill-running-summary { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      .skill-response-button { min-height: 58px; flex: 1 1 130px; border: 0; border-radius: 8px; color: #fff; font-size: 1rem; font-weight: 800; cursor: pointer; }
+      .skill-response-button.correct { background: var(--teal); }
+      .skill-response-button.incorrect { background: #a63d40; }
+      .skill-running-summary { justify-content: space-between; }
+      .frequency-counter { justify-content: center; }
+      .frequency-counter strong { min-width: 70px; text-align: center; font-size: 2rem; }
+      .skill-counter-button { width: 58px; min-height: 58px; border: 1px solid var(--line); border-radius: 8px; background: var(--brand-soft); color: var(--teal); font-size: 1.8rem; font-weight: 800; cursor: pointer; }
+      .legacy-trial-editor > div { display: grid; grid-template-columns: repeat(3, minmax(80px, 1fr)); gap: 8px; margin-top: 8px; }
+      @media (max-width: 760px) { .skill-collection { grid-column: 1 / -1; } .legacy-trial-editor > div { grid-template-columns: 1fr; } }
+    </style>
+
     <template id="program-template">
       <div class="data-row program-row">
         <div class="program-display-card">
@@ -1965,18 +1980,37 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
           Target
           <select data-field="targetId" required></select>
         </label>
-        <label>
-          Trials
-          <input type="number" data-field="trials" min="0" value="10" required>
-        </label>
-        <label>
-          Correct
-          <input type="number" data-field="correct" min="0" value="0" required>
-        </label>
-        <label>
-          Incorrect
-          <input type="number" data-field="incorrect" min="0" value="0" required>
-        </label>
+        <input type="hidden" data-field="dataCollectionType" value="percent_correct">
+        <div class="skill-collection skill-percent-collection" data-percent-collection>
+          <div class="skill-response-buttons">
+            <button type="button" class="skill-response-button correct" data-record-response="correct">Correct</button>
+            <button type="button" class="skill-response-button incorrect" data-record-response="incorrect">Incorrect</button>
+          </div>
+          <div class="skill-running-summary" aria-live="polite">
+            <span>Correct: <strong data-correct-summary>0</strong></span>
+            <span>Incorrect: <strong data-incorrect-summary>0</strong></span>
+            <span>Trials: <strong data-trials-summary>0</strong></span>
+            <strong data-independence>0%</strong>
+          </div>
+          <button type="button" class="secondary-button undo-response" data-undo-response disabled>Undo Last Response</button>
+          <details class="legacy-trial-editor">
+            <summary>Edit totals</summary>
+            <div>
+              <label>Trials <input type="number" data-field="trials" min="0" value="0" required></label>
+              <label>Correct <input type="number" data-field="correct" min="0" value="0" required></label>
+              <label>Incorrect <input type="number" data-field="incorrect" min="0" value="0" required></label>
+            </div>
+          </details>
+        </div>
+        <div class="skill-collection skill-frequency-collection hidden" data-frequency-collection>
+          <span class="skill-collection-label">Frequency</span>
+          <div class="frequency-counter">
+            <button type="button" class="skill-counter-button" data-frequency-step="-1" aria-label="Decrease frequency">−</button>
+            <strong data-frequency-summary aria-live="polite">0</strong>
+            <button type="button" class="skill-counter-button" data-frequency-step="1" aria-label="Increase frequency">+</button>
+          </div>
+          <input type="hidden" data-field="frequency" value="0">
+        </div>
         <label>
           Prompt level
           <select data-field="promptLevel">
@@ -1993,7 +2027,6 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
             <option value="baseline">Baseline</option>
           </select>
         </label>
-        <div class="metric-pill" data-independence>0%</div>
         <button type="button" class="icon-button" data-remove aria-label="Remove program">x</button>
       </div>
     </template>

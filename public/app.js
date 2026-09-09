@@ -5,7 +5,7 @@ import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHis
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
 import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, isLegacyGeneratedSkillAcquisitionSummary, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, summarizeSkillAcquisitionReport } from "./report-utils.js";
 import { format97155TargetChangeSummary, generateSoapNote, planChangesFor97155Session, summarize97155TargetChanges } from "./soap.js";
-import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms } from "./session-utils.js";
+import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms, normalizeSkillDataCollectionType, skillObservationValue } from "./session-utils.js";
 
 const state = {
   clients: [],
@@ -1099,6 +1099,7 @@ function bindEvents() {
     if (event.target.matches('[data-field="programId"]')) {
       const row = event.target.closest(".program-row");
       syncTargetOptions(row);
+      syncSkillCollectionMode(row);
       row.dataset.lastTargetId = row.querySelector('[data-field="targetId"]').value || "";
       renderDomainTabs();
       refreshTargetAvailability();
@@ -1112,6 +1113,7 @@ function bindEvents() {
       } else {
         row.dataset.lastTargetId = event.target.value || "";
       }
+      syncSkillCollectionMode(row);
       refreshTargetAvailability();
     }
     if (event.target.matches('[data-field="behaviorId"]')) {
@@ -1948,9 +1950,10 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
   row.querySelector('[data-field="entryMode"]').value = entryMode;
   syncTargetOptions(row, targetId);
   row.dataset.lastTargetId = row.querySelector('[data-field="targetId"]').value || "";
-  row.querySelector('[data-field="trials"]').value = values.trials ?? 10;
+  row.querySelector('[data-field="trials"]').value = values.trials ?? 0;
   row.querySelector('[data-field="correct"]').value = values.correct ?? 0;
-  row.querySelector('[data-field="incorrect"]').value = values.incorrect ?? Math.max((values.trials ?? 10) - (values.correct ?? 0), 0);
+  row.querySelector('[data-field="incorrect"]').value = values.incorrect ?? Math.max((values.trials ?? 0) - (values.correct ?? 0), 0);
+  row.querySelector('[data-field="frequency"]').value = values.frequency ?? 0;
   row.querySelector('[data-field="promptLevel"]').value = values.promptLevel || "independent";
   row.querySelector('[data-field="phase"]').value = values.phase || "intervention";
   row.querySelector("[data-remove]").addEventListener("click", () => {
@@ -1958,6 +1961,14 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
     renderDomainTabs();
     refreshTargetAvailability();
     saveSessionDraft();
+  });
+  row.responseHistory = [];
+  row.querySelectorAll("[data-record-response]").forEach((button) => {
+    button.addEventListener("click", () => recordSkillResponse(row, button.dataset.recordResponse));
+  });
+  row.querySelector("[data-undo-response]").addEventListener("click", () => undoSkillResponse(row));
+  row.querySelectorAll("[data-frequency-step]").forEach((button) => {
+    button.addEventListener("click", () => changeSkillFrequency(row, Number(button.dataset.frequencyStep || 0)));
   });
   row.querySelectorAll("input, select").forEach((input) => {
     input.addEventListener("input", () => {
@@ -1967,6 +1978,7 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
     });
   });
   programList.append(row);
+  syncSkillCollectionMode(row, values.dataCollectionType);
   syncTrialBalance(row);
   updateProgramIndependence(row);
   if (!suppressRefresh) renderDomainTabs();
@@ -2191,6 +2203,54 @@ function updateProgramIndependence(row) {
   const denominator = trials || correct + incorrect;
   const independence = denominator > 0 ? Math.round((correct / denominator) * 100) : 0;
   row.querySelector("[data-independence]").textContent = `${independence}%`;
+  row.querySelector("[data-correct-summary]").textContent = String(correct);
+  row.querySelector("[data-incorrect-summary]").textContent = String(incorrect);
+  row.querySelector("[data-trials-summary]").textContent = String(denominator);
+}
+
+function syncSkillCollectionMode(row, savedType = "") {
+  const programId = row.querySelector('[data-field="programId"]').value;
+  const program = clientPrograms().find((item) => item.id === programId);
+  const dataCollectionType = normalizeSkillDataCollectionType(savedType || program?.dataCollectionType);
+  row.querySelector('[data-field="dataCollectionType"]').value = dataCollectionType;
+  row.querySelector("[data-percent-collection]").classList.toggle("hidden", dataCollectionType !== "percent_correct");
+  row.querySelector("[data-frequency-collection]").classList.toggle("hidden", dataCollectionType !== "frequency");
+  row.querySelector("[data-frequency-summary]").textContent = String(Math.max(0, Number(row.querySelector('[data-field="frequency"]').value || 0)));
+  row.responseHistory = [];
+  row.querySelector("[data-undo-response]").disabled = true;
+  updateProgramIndependence(row);
+}
+
+function recordSkillResponse(row, response) {
+  if (!['correct', 'incorrect'].includes(response)) return;
+  const field = row.querySelector(`[data-field="${response}"]`);
+  field.value = String(Math.max(0, Number(field.value || 0)) + 1);
+  const trialsField = row.querySelector('[data-field="trials"]');
+  trialsField.value = String(Math.max(0, Number(trialsField.value || 0)) + 1);
+  row.responseHistory.push(response);
+  row.querySelector("[data-undo-response]").disabled = false;
+  updateProgramIndependence(row);
+  saveSessionDraft();
+}
+
+function undoSkillResponse(row) {
+  const response = row.responseHistory.pop();
+  if (!response) return;
+  const field = row.querySelector(`[data-field="${response}"]`);
+  field.value = String(Math.max(0, Number(field.value || 0) - 1));
+  const trialsField = row.querySelector('[data-field="trials"]');
+  trialsField.value = String(Math.max(0, Number(trialsField.value || 0) - 1));
+  row.querySelector("[data-undo-response]").disabled = row.responseHistory.length === 0;
+  updateProgramIndependence(row);
+  saveSessionDraft();
+}
+
+function changeSkillFrequency(row, step) {
+  const field = row.querySelector('[data-field="frequency"]');
+  const frequency = Math.max(0, Math.floor(Number(field.value || 0) + step));
+  field.value = String(frequency);
+  row.querySelector("[data-frequency-summary]").textContent = String(frequency);
+  saveSessionDraft();
 }
 
 function syncTrialBalance(row, sourceField = "") {
@@ -2865,13 +2925,18 @@ function hasMeaningfulSessionDraft(draft) {
   if (meaningfulFieldValues) return true;
 
   const meaningfulProgramRows = (draft.programs || []).some((row) => {
-    const trials = Number(row.trials ?? 10);
+    if (normalizeSkillDataCollectionType(row.dataCollectionType) === "frequency") {
+      return Number(row.frequency || 0) > 0
+        || String(row.promptLevel || "independent") !== "independent"
+        || String(row.phase || "intervention") !== "intervention";
+    }
+    const trials = Number(row.trials ?? 0);
     const correct = Number(row.correct ?? 0);
-    const incorrect = Number(row.incorrect ?? 10);
+    const incorrect = Number(row.incorrect ?? 0);
     return (
-      trials !== 10
+      trials !== 0
       || correct !== 0
-      || incorrect !== 10
+      || incorrect !== 0
       || String(row.promptLevel || "independent") !== "independent"
       || String(row.phase || "intervention") !== "intervention"
     );
@@ -3159,6 +3224,17 @@ function readDataRow(row) {
 }
 
 function normalizeTarget(target) {
+  const dataCollectionType = normalizeSkillDataCollectionType(target.dataCollectionType);
+  if (dataCollectionType === "frequency") {
+    return {
+      programId: target.programId,
+      targetId: target.targetId,
+      dataCollectionType,
+      frequency: Math.max(0, Math.floor(Number(target.frequency || 0))),
+      promptLevel: target.promptLevel,
+      phase: target.phase === "baseline" ? "baseline" : "intervention"
+    };
+  }
   const trials = Number(target.trials || 0);
   const correct = Number(target.correct || 0);
   const incorrect = Number(target.incorrect || 0);
@@ -3166,6 +3242,7 @@ function normalizeTarget(target) {
   return {
     programId: target.programId,
     targetId: target.targetId,
+    dataCollectionType,
     trials,
     correct,
     incorrect,
@@ -3184,9 +3261,11 @@ function groupTargetsByProgram(targets) {
     }
     program.targets.push({
       targetId: target.targetId,
+      dataCollectionType: target.dataCollectionType,
       trials: target.trials,
       correct: target.correct,
       incorrect: target.incorrect,
+      frequency: target.frequency,
       promptLevel: target.promptLevel,
       phase: target.phase,
       independence: target.independence
@@ -8382,6 +8461,9 @@ function bindPlanReviewInputs() {
   planReview.querySelectorAll("[data-plan-parent-prompt-level]").forEach((select) => {
     select.addEventListener("change", handlePlanTextEdit);
   });
+  planReview.querySelectorAll("[data-program-collection-type]").forEach((select) => {
+    select.addEventListener("change", handlePlanTextEdit);
+  });
 }
 
 function renderPlanBehaviorSection(behaviors) {
@@ -8571,6 +8653,13 @@ function renderPlanProgram(program, tab = state.activePlanProgramTab) {
             `).join("")}
           </select>
         </label>
+        <label>
+          Data collection
+          <select data-program-collection-type="${program.id}" aria-label="${program.name} data collection type">
+            <option value="percent_correct" ${normalizeSkillDataCollectionType(program.dataCollectionType) === "percent_correct" ? "selected" : ""}>Percent Correct</option>
+            <option value="frequency" ${normalizeSkillDataCollectionType(program.dataCollectionType) === "frequency" ? "selected" : ""}>Frequency</option>
+          </select>
+        </label>
         <div class="plan-program-actions">
           <button type="button" class="secondary-button" data-open-plan-graph="${program.id}">View graph</button>
           <button type="button" class="secondary-button" data-add-target="${program.id}">Add target</button>
@@ -8669,6 +8758,7 @@ async function handleAddProgram(event) {
     domain: addProgramForm.elements.programDomain.value || clientDomains()[0],
     status: "active",
     objective: "",
+    dataCollectionType: "percent_correct",
     targets: []
   });
   addProgramForm.reset();
@@ -8869,6 +8959,7 @@ function openProgramGraphModal(programId) {
   const program = clientPrograms().find((item) => item.id === programId);
   if (!program) return;
   const chart = buildProgramSkillChart(program, currentSessions().slice().reverse());
+  const chartSettings = skillChartSettings(chart);
   const graphKey = graphTrendKey("skill", programId);
   const phaseConfig = graphPhaseConfig(graphKey, chart.series, masteryMarkersForProgram(program.id));
   programGraphModalTitle.textContent = program.name;
@@ -8877,10 +8968,7 @@ function openProgramGraphModal(programId) {
   programGraphModal.setAttribute("aria-hidden", "false");
   requestAnimationFrame(() => {
     drawLineChart(programGraphModalCanvas, chart.series, {
-      maxY: 100,
-      yStep: 10,
-      yLabel: "% independence",
-      emptyMessage: "No target data for this program",
+      ...chartSettings,
       phaseMarkers: phaseConfig.phaseMarkers,
       treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
       graphType: "skill",
@@ -8892,6 +8980,10 @@ function openProgramGraphModal(programId) {
       });
     }
     if (programGraphModalAnalysis) {
+      if (chartSettings.mode !== "percent_correct") {
+        programGraphModalAnalysis.innerHTML = `<p class="muted">${chartSettings.mode === "frequency" ? "Frequency observations are shown as raw counts." : "Historical percent-correct and frequency observations are shown in their original units."}</p>`;
+        return;
+      }
       programGraphModalAnalysis.innerHTML = renderGraphAnalysisMarkup(
         buildGraphAnalysis(chart.series, {
           graphType: "skill",
@@ -9193,6 +9285,10 @@ async function handlePlanTextEdit(event) {
     const program = programs.find((item) => item.id === input.dataset.programObjective);
     if (program) program.objective = input.value.trim();
   }
+  if (input.dataset.programCollectionType) {
+    const program = programs.find((item) => item.id === input.dataset.programCollectionType);
+    if (program) program.dataCollectionType = normalizeSkillDataCollectionType(input.value);
+  }
   if (input.dataset.targetName) {
     const [programId, targetId] = input.dataset.targetName.split(":");
     const target = programs.find((item) => item.id === programId)?.targets?.find((item) => item.id === targetId);
@@ -9469,6 +9565,10 @@ function currentPlanDraft() {
   planReview.querySelectorAll("[data-program-objective]").forEach((input) => {
     const program = programs.find((item) => item.id === input.dataset.programObjective);
     if (program) program.objective = input.value.trim();
+  });
+  planReview.querySelectorAll("[data-program-collection-type]").forEach((select) => {
+    const program = programs.find((item) => item.id === select.dataset.programCollectionType);
+    if (program) program.dataCollectionType = normalizeSkillDataCollectionType(select.value);
   });
   planReview.querySelectorAll("[data-target-name]").forEach((input) => {
     const [programId, targetId] = input.dataset.targetName.split(":");
@@ -10082,7 +10182,9 @@ function renderHistory() {
           ? ((session.parentGoals || []).map((goal) => `${goal.targetName} ${goal.fidelity}%`).join(", ")
             || "No parent-training goal data recorded")
           : (targetEntries(session)
-            .map((target) => `${lookups().targetName(target.programId, target.targetId)} ${target.independence}%`)
+            .map((target) => normalizeSkillDataCollectionType(target.dataCollectionType) === "frequency"
+              ? `${lookups().targetName(target.programId, target.targetId)} Frequency ${Number(target.frequency || 0)}`
+              : `${lookups().targetName(target.programId, target.targetId)} ${target.independence}%`)
             .join(", ") || "No target data recorded");
         return `
           <div class="history-item ${active}">
@@ -10726,8 +10828,9 @@ function filteredReportSessions() {
 
 function funderReportMetrics(sessions) {
   const targets = sessions.flatMap((session) => targetEntries(session).filter(isActualTargetEntry));
-  const averageIndependence = targets.length
-    ? Math.round(targets.reduce((sum, target) => sum + Number(target.independence || 0), 0) / targets.length)
+  const percentCorrectTargets = targets.filter((target) => normalizeSkillDataCollectionType(target.dataCollectionType) === "percent_correct");
+  const averageIndependence = percentCorrectTargets.length
+    ? Math.round(percentCorrectTargets.reduce((sum, target) => sum + Number(target.independence || 0), 0) / percentCorrectTargets.length)
     : 0;
   const targetKeys = new Set(targets.map((target) => `${target.programId}:${target.targetId}`));
   const totalBehaviorFrequency = sessions
@@ -11359,11 +11462,9 @@ function renderSkillCharts(sessions) {
   visibleGroups.flatMap((group) => group.charts).forEach((chart) => {
     const graphKey = graphTrendKey("skill", chart.program.id);
     const phaseConfig = graphPhaseConfig(graphKey, chart.series, masteryMarkersForProgram(chart.program.id));
+    const chartSettings = skillChartSettings(chart);
     drawLineChart(skillCharts.querySelector(`[data-program-chart="${chart.program.id}"]`), chart.series, {
-      maxY: 100,
-      yStep: 10,
-      yLabel: "% independence",
-      emptyMessage: "No target data for this program",
+      ...chartSettings,
       phaseMarkers: phaseConfig.phaseMarkers,
       treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
       graphType: "skill",
@@ -11371,6 +11472,10 @@ function renderSkillCharts(sessions) {
     });
     const analysisMount = skillCharts.querySelector(`[data-program-analysis="${chart.program.id}"]`);
     if (analysisMount) {
+      if (chartSettings.mode !== "percent_correct") {
+        analysisMount.innerHTML = `<p class="muted">${chartSettings.mode === "frequency" ? "Frequency observations are shown as raw counts." : "Historical percent-correct and frequency observations are shown in their original units."}</p>`;
+        return;
+      }
       analysisMount.innerHTML = '<p class="muted">Loading graph analysis...</p>';
       analysisTasks.push(() => {
         const analysis = buildGraphAnalysis(chart.series, {
@@ -11413,7 +11518,8 @@ function buildProgramSkillChart(program, sessions) {
         .find((item) => item.programId === program.id && item.targetId === target.id);
       return entry ? [{
         x: session.date,
-        y: entry.independence,
+        y: skillObservationValue(entry),
+        dataCollectionType: normalizeSkillDataCollectionType(entry.dataCollectionType),
         phase: entry.phase || "intervention",
         sessionId: session.id,
         programId: program.id,
@@ -11423,6 +11529,19 @@ function buildProgramSkillChart(program, sessions) {
     })
   })).filter((item) => item.points.length);
   return { program, series };
+}
+
+function skillChartSettings(chart) {
+  const types = new Set(chart.series.flatMap((series) => (
+    series.points.map((point) => normalizeSkillDataCollectionType(point.dataCollectionType))
+  )));
+  if (types.size === 1 && types.has("frequency")) {
+    return { mode: "frequency", yLabel: "frequency", emptyMessage: "No frequency data for this program" };
+  }
+  if (types.size > 1) {
+    return { mode: "mixed", yLabel: "recorded value", emptyMessage: "No target data for this program" };
+  }
+  return { mode: "percent_correct", maxY: 100, yStep: 10, yLabel: "% independence", emptyMessage: "No target data for this program" };
 }
 
 function buildParentTrainingChartModels(sessions) {
@@ -11642,7 +11761,9 @@ function renderSkillDataManagerMarkup(chart) {
   const rows = chart.series.flatMap((series) => series.points.map((point) => ({
     label: series.name,
     date: point.x,
-    valueLabel: `${point.y}% independence`,
+    valueLabel: normalizeSkillDataCollectionType(point.dataCollectionType) === "frequency"
+      ? `${point.y} frequency`
+      : `${point.y}% independence`,
     deleteDataset: [
       'data-delete-skill-point="true"',
       `data-session-id="${escapeHtml(point.sessionId)}"`,
@@ -11779,11 +11900,9 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
   charts.forEach((chart) => {
     const graphKey = graphTrendKey("skill", chart.program.id);
     const phaseConfig = graphPhaseConfig(graphKey, chart.series, masteryMarkersForProgram(chart.program.id));
+    const chartSettings = skillChartSettings(chart);
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${chart.program.id}"]`), chart.series, {
-      maxY: 100,
-      yStep: 10,
-      yLabel: "% independence",
-      emptyMessage: "No target data for this program",
+      ...chartSettings,
       phaseMarkers: phaseConfig.phaseMarkers,
       treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
       graphType: "skill",
@@ -11792,6 +11911,10 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
     if (includeProgramInfo) {
       const analysisMount = container.querySelector(`[data-report-program-analysis="${chart.program.id}"]`);
       if (analysisMount) {
+        if (chartSettings.mode !== "percent_correct") {
+          analysisMount.innerHTML = `<p class="muted">${chartSettings.mode === "frequency" ? "Frequency observations are shown as raw counts." : "Observations are shown in their original recorded units."}</p>`;
+          return;
+        }
         const analysis = buildGraphAnalysis(chart.series, {
           graphType: "skill",
           phaseMarkers: phaseConfig.phaseMarkers,

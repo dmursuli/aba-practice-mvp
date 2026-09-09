@@ -16,6 +16,7 @@ import {
 import {
   duplicateBehaviorIds,
   duplicateTargetIdsFromPrograms,
+  normalizeSkillDataCollectionType,
   removeBehaviorPointFromSession,
   removeParentGoalPointFromSession,
   removeTargetPointFromSession
@@ -256,6 +257,30 @@ function validateSession(payload, db) {
     return {
       programId: program.programId,
       targets: targets.filter((target) => target.targetId).map((target) => {
+        const planProgram = client?.programs?.find((item) => item.id === program.programId);
+        const expectedType = normalizeSkillDataCollectionType(planProgram?.dataCollectionType);
+        const providedType = target.dataCollectionType;
+        const declaredType = providedType === undefined || providedType === ""
+          ? expectedType
+          : String(providedType);
+        if (!["percent_correct", "frequency"].includes(declaredType)) {
+          errors.push("Skill acquisition data collection type must be percent_correct or frequency.");
+        } else if (declaredType !== expectedType) {
+          errors.push("Skill acquisition observation type does not match the treatment plan program.");
+        }
+        if (expectedType === "frequency") {
+          const rawFrequency = Number(target.frequency);
+          if (!Number.isFinite(rawFrequency) || rawFrequency < 0) {
+            errors.push("Frequency must be a number greater than or equal to zero.");
+          }
+          return {
+            targetId: target.targetId,
+            dataCollectionType: "frequency",
+            frequency: Number.isFinite(rawFrequency) ? Math.max(0, Math.floor(rawFrequency)) : 0,
+            promptLevel: target.promptLevel,
+            phase: target.phase === "baseline" ? "baseline" : "intervention"
+          };
+        }
         const trials = Number(target.trials || 0);
         const correct = Number(target.correct || 0);
         const incorrect = Number(target.incorrect || 0);
@@ -263,6 +288,7 @@ function validateSession(payload, db) {
         const independence = denominator > 0 ? Math.round((correct / denominator) * 100) : 0;
         return {
           targetId: target.targetId,
+          dataCollectionType: "percent_correct",
           trials,
           correct,
           incorrect,
@@ -5817,6 +5843,7 @@ function sanitizePrograms(programs) {
     masteredDate: program.masteredDate || "",
     masteryDate: program.masteryDate || "",
     objective: String(program.objective || ""),
+    dataCollectionType: normalizeSkillDataCollectionType(program.dataCollectionType),
     targets: (program.targets || []).map((target) => ({
       id: String(target.id),
       name: String(target.name || "Target"),

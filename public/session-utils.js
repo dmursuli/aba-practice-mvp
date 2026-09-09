@@ -75,6 +75,16 @@ export function duplicateBehaviorIds(behaviors = []) {
   return [...duplicates];
 }
 
+export function normalizeSkillDataCollectionType(value) {
+  return value === "frequency" ? "frequency" : "percent_correct";
+}
+
+export function skillObservationValue(observation = {}) {
+  return normalizeSkillDataCollectionType(observation.dataCollectionType) === "frequency"
+    ? Number(observation.frequency || 0)
+    : Number(observation.independence || 0);
+}
+
 export function dedupeTargetEntries(entries = []) {
   const seen = new Set();
   return (entries || []).filter((entry) => {
