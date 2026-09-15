@@ -85,6 +85,10 @@ export async function getClientSessions(clientId, { startDate = "", endDate = ""
   return fetchWithTimeout(url.pathname + url.search, timeoutMs);
 }
 
+export async function getClientTargetReviews(clientId, { timeoutMs = 15000 } = {}) {
+  return fetchWithTimeout(`/api/clients/${encodeURIComponent(clientId)}/target-reviews`, timeoutMs);
+}
+
 export async function getHistoricalImportDuplicateMetadata(clientId, { timeoutMs = 15000 } = {}) {
   return fetchWithTimeout(`/api/clients/${clientId}/historical-import-duplicates`, timeoutMs);
 }

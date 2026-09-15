@@ -25,6 +25,7 @@ import {
   normalizeHistoricalImportDataType,
   validateHistoricalImportRows
 } from "./public/historical-import-utils.js";
+import { buildTargetReviewSummary } from "./lib/target-review.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(root, "public");
@@ -1687,6 +1688,20 @@ export function createAppServer() {
         sessions: historicalImportDuplicateMetadataSessions(db.sessions || [], client.id),
         clientId: client.id
       });
+      return;
+    }
+
+    const clientTargetReviewsMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/target-reviews$/);
+    if (req.method === "GET" && clientTargetReviewsMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const client = (db.clients || []).find((item) => item.id === clientTargetReviewsMatch[1]);
+      if (!client || !canAccessClient(actor, client, db)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
+      sendJson(res, 200, buildTargetReviewSummary(client, db.sessions || []));
       return;
     }
 

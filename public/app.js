@@ -1,4 +1,4 @@
-import { assignClientProvider, cancelAppointment, createAppointment, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRbtFidelityHistory, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { assignClientProvider, cancelAppointment, createAppointment, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRbtFidelityHistory, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -125,6 +125,8 @@ const state = {
   sessionsLoadedHasMore: false,
   sessionsLoading: false,
   sessionsLoadError: "",
+  targetReviewCache: {},
+  targetReviewRequestId: 0,
   planSavePromise: null,
   active97155SessionId: "",
   soapAmendmentModeKey: "",
@@ -665,7 +667,9 @@ async function refreshData() {
     sessionsLoadedTotal: 0,
     sessionsLoadedHasMore: false,
     sessionsLoading: false,
-    sessionsLoadError: ""
+    sessionsLoadError: "",
+    targetReviewCache: {},
+    targetReviewRequestId: state.targetReviewRequestId + 1
   });
   if (!clientSelect.value && state.clients[0]) clientSelect.value = state.clients[0].id;
   populateDomainSelect(addProgramForm.elements.programDomain);
@@ -1095,6 +1099,69 @@ async function ensureSessionDataForView(view = currentView(), { force = false, c
   if (viewNeedsClientSessions(view)) {
     await ensureClientSessionsLoaded(clientId, { force });
   }
+}
+
+function targetReviewCacheEntry(clientId = state.activeClientId) {
+  return state.targetReviewCache?.[clientId] || null;
+}
+
+function targetReviewCacheKey(programId, targetId) {
+  return `${programId}\u0000${targetId}`;
+}
+
+function invalidateTargetReviews(clientId) {
+  const cached = targetReviewCacheEntry(clientId);
+  if (!clientId || !cached) return;
+  state.targetReviewCache = {
+    ...state.targetReviewCache,
+    [clientId]: { ...cached, status: "stale" }
+  };
+}
+
+async function ensureTargetReviewsLoaded(clientId = state.activeClientId, { force = false } = {}) {
+  if (!clientId) return;
+  const cached = targetReviewCacheEntry(clientId);
+  if (!force && cached?.status === "ready") return;
+  const requestId = ++state.targetReviewRequestId;
+  state.targetReviewCache = {
+    ...state.targetReviewCache,
+    [clientId]: {
+      ...cached,
+      status: "loading",
+      requestId,
+      error: ""
+    }
+  };
+  if (currentView() === "plan" && state.activeClientId === clientId) renderPlanReview();
+  try {
+    const snapshot = await getClientTargetReviews(clientId);
+    if (targetReviewCacheEntry(clientId)?.requestId !== requestId) return;
+    if (snapshot.clientId !== clientId) throw new Error("Target review response did not match the selected client.");
+    const reviewsByKey = Object.fromEntries((snapshot.targets || []).map((review) => (
+      [targetReviewCacheKey(review.programId, review.targetId), review]
+    )));
+    state.targetReviewCache = {
+      ...state.targetReviewCache,
+      [clientId]: {
+        status: "ready",
+        requestId,
+        error: "",
+        snapshot: { ...snapshot, reviewsByKey }
+      }
+    };
+  } catch (error) {
+    if (targetReviewCacheEntry(clientId)?.requestId !== requestId) return;
+    state.targetReviewCache = {
+      ...state.targetReviewCache,
+      [clientId]: {
+        ...cached,
+        status: "error",
+        requestId,
+        error: error.message || "Target review classifications could not be loaded."
+      }
+    };
+  }
+  if (currentView() === "plan" && state.activeClientId === clientId) renderPlanReview();
 }
 
 async function refreshHistoricalImportBatches(showMessage = false) {
@@ -1731,6 +1798,8 @@ function resetSensitiveState() {
   state.sessionsLoadedHasMore = false;
   state.sessionsLoading = false;
   state.sessionsLoadError = "";
+  state.targetReviewCache = {};
+  state.targetReviewRequestId += 1;
   state.lastSessionTouchAt = 0;
   currentUserLabel.textContent = "";
   clearSensitiveDom();
@@ -1994,6 +2063,7 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
     state.selectedSoapEntryKey = "";
     state.activeDomain = "";
     state.activePlanDomain = "";
+    state.activePlanReviewFilter = "";
     state.activeGraphDomain = "";
     state.historicalImportRows = [];
     state.historicalImportPreview = null;
@@ -2022,6 +2092,7 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
   render();
   if (["clients", "plan"].includes(currentView())) void refreshClientAssignments();
   void ensureSessionDataForView(currentView(), { force: true, clientId });
+  if (currentView() === "plan") void ensureTargetReviewsLoaded(clientId, { force: true });
   if (currentView() === "import") {
     void refreshHistoricalImportBatches(false);
     void refreshHistoricalImportDuplicateMetadata();
@@ -2442,6 +2513,7 @@ async function handleClientProfileSubmit(event) {
     const updated = await updateClientProfile(client.id, readClientProfileForm());
     const index = state.clients.findIndex((item) => item.id === updated.id);
     if (index >= 0) state.clients[index] = updated;
+    invalidateTargetReviews(updated.id);
     clientSelect.value = updated.id;
     clientProfileMessage.textContent = "Client profile saved.";
     render();
@@ -4026,7 +4098,10 @@ async function switchView(view) {
   }
   if (view === "schedule") await switchScheduleSubview(state.activeScheduleSubview);
   if (view === "clients") await refreshClientAssignments();
-  if (view === "plan") await refreshClientAssignments();
+  if (view === "plan") {
+    await refreshClientAssignments();
+    await ensureTargetReviewsLoaded(state.activeClientId, { force: true });
+  }
   if (view === "graphs") renderCharts();
   if (view === "import") {
     void refreshHistoricalImportBatches(false);
@@ -6212,43 +6287,18 @@ function masteryReviewForTarget(programId, targetId) {
   if (target?.status === "mastered") {
     return { state: "mastered", threshold: 0, consecutiveSessions: 0, matchedDates: [], previewScores: [] };
   }
-  const criteria = currentMasteryCriteria();
-  const qualifyingSessions = currentSessions()
-    .filter((session) => (session.serviceType || "97153") === "97153")
-    .map((session) => {
-      const entry = targetEntries(session).find((target) => target.programId === programId && target.targetId === targetId);
-      return entry ? { session, entry } : null;
-    })
-    .filter(Boolean)
-    .sort((a, b) => {
-      const aValue = `${a.session.date}T${a.session.startTime || "00:00"}`;
-      const bValue = `${b.session.date}T${b.session.startTime || "00:00"}`;
-      return bValue.localeCompare(aValue);
-    });
-
-  if (qualifyingSessions.length < criteria.consecutiveSessions) {
-    return stagnantReviewForTarget(criteria, qualifyingSessions, {
-      state: "none",
-      threshold: criteria.thresholdPercent,
-      consecutiveSessions: criteria.consecutiveSessions,
-      matchedDates: [],
-      previewScores: []
-    });
-  }
-
-  const recentSessions = qualifyingSessions.slice(0, criteria.consecutiveSessions);
-  const scores = recentSessions.map(({ entry }) => Number(entry.independence || 0));
-  const masteryWindow = findMasteryWindow(qualifyingSessions, criteria.consecutiveSessions, criteria.thresholdPercent);
-  const eligible = Boolean(masteryWindow);
-  const nearThreshold = scores.every((score) => score >= Math.max(criteria.thresholdPercent - 10, 0));
-  const averageScore = scores.length ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length) : 0;
-  return stagnantReviewForTarget(criteria, qualifyingSessions, {
-    state: eligible ? "ready" : (nearThreshold && averageScore >= criteria.thresholdPercent - 5 ? "close" : "none"),
+  const snapshot = targetReviewCacheEntry()?.snapshot;
+  const criteria = snapshot?.criteria || currentMasteryCriteria();
+  const review = snapshot?.reviewsByKey?.[targetReviewCacheKey(programId, targetId)];
+  return {
+    state: review?.classification || "none",
     threshold: criteria.thresholdPercent,
     consecutiveSessions: criteria.consecutiveSessions,
-    matchedDates: eligible ? masteryWindow.map(({ session }) => session.date).reverse() : [],
-    previewScores: scores.reverse()
-  });
+    stagnantConsecutiveSessions: criteria.stagnantConsecutiveSessions,
+    stagnantMinimumGain: criteria.stagnantMinimumGain,
+    matchedDates: review?.matchedDates || [],
+    previewScores: review?.previewScores || []
+  };
 }
 
 function findMasteryWindow(qualifyingSessions, consecutiveSessions, thresholdPercent) {
@@ -6262,18 +6312,13 @@ function findMasteryWindow(qualifyingSessions, consecutiveSessions, thresholdPer
 }
 
 function masteryReviewCounts() {
-  return clientPrograms().flatMap((program) => (
-    (program.targets || []).map((target) => masteryReviewForTarget(program.id, target.id).state)
-  )).reduce((counts, stateValue) => {
-    counts[stateValue] = (counts[stateValue] || 0) + 1;
-    return counts;
-  }, {
+  return targetReviewCacheEntry()?.snapshot?.counts || {
     ready: 0,
     close: 0,
     stagnant: 0,
     mastered: 0,
     none: 0
-  });
+  };
 }
 
 function stagnantReviewForTarget(criteria, qualifyingSessions, baseResult) {
@@ -8458,6 +8503,8 @@ function renderPlanReview() {
   const masteredPrograms = programs.filter((program) => programHasPlanContentForTab(program, "mastered")).length;
   const activeTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "active").length;
   const pausedTargets = programs.flatMap((program) => program.targets || []).filter((target) => normalizePlanStatus(target.status) === "paused").length;
+  const targetReviewEntry = targetReviewCacheEntry();
+  const targetReviewsReady = targetReviewEntry?.status === "ready";
   const masteryCounts = masteryReviewCounts();
   planClientSummary.innerHTML = client
     ? `
@@ -8466,7 +8513,7 @@ function renderPlanReview() {
       <div><strong>${activeTargets}</strong><span>Active targets</span></div>
       <div><strong>${pausedTargets}</strong><span>On hold targets</span></div>
       <div><strong>${behaviors.filter((behavior) => behavior.status !== "inactive").length}</strong><span>Active behaviors</span></div>
-      <div><strong>${masteryCounts.ready} / ${masteryCounts.close} / ${masteryCounts.stagnant}</strong><span>Ready / close / stagnant</span></div>
+      <div><strong>${targetReviewsReady ? `${masteryCounts.ready} / ${masteryCounts.close} / ${masteryCounts.stagnant}` : "Loading…"}</strong><span>Ready / close / stagnant</span></div>
     `
     : "";
 
@@ -8513,12 +8560,16 @@ function renderPlanReview() {
 
   planReview.innerHTML = `
     <section class="plan-status-legend">
-      <button type="button" class="health-badge mastery-close-badge ${state.activePlanReviewFilter === "close" ? "is-active" : ""}" data-review-jump="close" aria-pressed="${state.activePlanReviewFilter === "close"}">Close (${masteryCounts.close})</button>
-      <button type="button" class="health-badge mastery-ready-badge ${state.activePlanReviewFilter === "ready" ? "is-active" : ""}" data-review-jump="ready" aria-pressed="${state.activePlanReviewFilter === "ready"}">Ready (${masteryCounts.ready})</button>
-      <button type="button" class="health-badge mastered-badge ${state.activePlanReviewFilter === "mastered" ? "is-active" : ""}" data-review-jump="mastered" aria-pressed="${state.activePlanReviewFilter === "mastered"}">Mastered (${masteryCounts.mastered})</button>
-      <button type="button" class="health-badge stagnant-badge ${state.activePlanReviewFilter === "stagnant" ? "is-active" : ""}" data-review-jump="stagnant" aria-pressed="${state.activePlanReviewFilter === "stagnant"}">Stagnant (${masteryCounts.stagnant})</button>
+      <button type="button" class="health-badge mastery-close-badge ${state.activePlanReviewFilter === "close" ? "is-active" : ""}" data-review-jump="close" aria-pressed="${state.activePlanReviewFilter === "close"}" ${targetReviewsReady ? "" : "disabled"}>Close (${targetReviewsReady ? masteryCounts.close : "…"})</button>
+      <button type="button" class="health-badge mastery-ready-badge ${state.activePlanReviewFilter === "ready" ? "is-active" : ""}" data-review-jump="ready" aria-pressed="${state.activePlanReviewFilter === "ready"}" ${targetReviewsReady ? "" : "disabled"}>Ready (${targetReviewsReady ? masteryCounts.ready : "…"})</button>
+      <button type="button" class="health-badge mastered-badge ${state.activePlanReviewFilter === "mastered" ? "is-active" : ""}" data-review-jump="mastered" aria-pressed="${state.activePlanReviewFilter === "mastered"}" ${targetReviewsReady ? "" : "disabled"}>Mastered (${targetReviewsReady ? masteryCounts.mastered : "…"})</button>
+      <button type="button" class="health-badge stagnant-badge ${state.activePlanReviewFilter === "stagnant" ? "is-active" : ""}" data-review-jump="stagnant" aria-pressed="${state.activePlanReviewFilter === "stagnant"}" ${targetReviewsReady ? "" : "disabled"}>Stagnant (${targetReviewsReady ? masteryCounts.stagnant : "…"})</button>
     </section>
-    ${state.activePlanReviewFilter ? `<p class="plan-review-filter-note">Showing all ${escapeHtml(state.activePlanReviewFilter)} targets across domains. Click the same badge again to clear.</p>` : ""}
+    ${!targetReviewsReady
+      ? `<p class="plan-review-filter-note">${escapeHtml(targetReviewEntry?.error || "Calculating target-review classifications…")}</p>`
+      : state.activePlanReviewFilter
+        ? `<p class="plan-review-filter-note">Showing all ${escapeHtml(state.activePlanReviewFilter)} targets across domains. Click the same badge again to clear.</p>`
+        : ""}
     ${groupedPrograms.map(([domain, domainPrograms]) => `
     <section class="plan-domain ${state.activePlanReviewFilter || domain === state.activePlanDomain ? "" : "hidden"}" data-plan-domain="${escapeHtml(domain)}">
       <div class="plan-domain-heading">
@@ -9676,8 +9727,10 @@ async function savePlan(
   });
   const index = state.clients.findIndex((item) => item.id === updated.id);
   if (index >= 0) state.clients[index] = updated;
+  invalidateTargetReviews(updated.id);
   resetRows();
   render();
+  if (currentView() === "plan") await ensureTargetReviewsLoaded(updated.id, { force: true });
 }
 
 function currentPlanChangeDate() {
