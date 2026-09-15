@@ -1,8 +1,9 @@
-import { cancelAppointment, createAppointment, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { assignClientProvider, cancelAppointment, createAppointment, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRbtFidelityHistory, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
 import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
+import { calculateRbtFidelity, setRbtFidelityResponse } from "./rbt-fidelity.js";
 import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, isLegacyGeneratedSkillAcquisitionSummary, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, summarizeSkillAcquisitionReport } from "./report-utils.js";
 import { format97155TargetChangeSummary, generateSoapNote, planChangesFor97155Session, summarize97155TargetChanges } from "./soap.js";
 import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms, normalizeSkillDataCollectionType, skillObservationValue } from "./session-utils.js";
@@ -59,6 +60,14 @@ const state = {
   auditLog: [],
   healthIssues: [],
   users: [],
+  clientAssignments: [],
+  clientAssignmentProviders: [],
+  clientAssignmentsLoadedFor: "",
+  clientAssignmentsCanManage: false,
+  rbtFidelityDraft: {},
+  rbtFidelityHistoryRbts: [],
+  rbtFidelityHistoryObservations: [],
+  selectedRbtFidelityHistoryUserId: "",
   historicalImportBatches: [],
   historicalImportDuplicateSessions: [],
   selectedSessionId: null,
@@ -126,7 +135,7 @@ const state = {
 
 const roleViews = {
   admin: ["clients", "users", "session", "schedule", "intake", "workflow", "plan", "parent", "graphs", "import", "report", "soap", "billing", "health", "audit"],
-  bcba: ["clients", "session", "schedule", "intake", "workflow", "plan", "parent", "graphs", "import", "report", "soap", "billing", "health", "audit"],
+  bcba: ["clients", "users", "session", "schedule", "intake", "workflow", "plan", "parent", "graphs", "import", "report", "soap", "billing", "health", "audit"],
   rbt: ["session", "graphs", "soap"],
   "read-only": ["graphs", "report", "soap"]
 };
@@ -181,7 +190,7 @@ const workflowColumns = [
   { id: "done", label: "Done" }
 ];
 
-const agencyOptions = ["Triumph ABA", "One Clinical Care"];
+const agencyOptions = ["Triumph ABA"];
 
 const loginScreen = document.querySelector("#login-screen");
 const loginForm = document.querySelector("#login-form");
@@ -202,11 +211,22 @@ const userList = document.querySelector("#user-list");
 const newUserMessage = document.querySelector("#new-user-message");
 const userManagementMessage = document.querySelector("#user-management-message");
 const refreshUsersButton = document.querySelector("#refresh-users");
+const rbtFidelityHistorySelect = document.querySelector("#rbt-fidelity-history-rbt");
+const rbtFidelityHistoryMessage = document.querySelector("#rbt-fidelity-history-message");
+const rbtFidelityHistoryChart = document.querySelector("#rbt-fidelity-history-chart");
+const rbtFidelityChartTitle = document.querySelector("#rbt-fidelity-chart-title");
+const rbtFidelityHistoryList = document.querySelector("#rbt-fidelity-history-list");
 const form = document.querySelector("#session-form");
 const clientProfileForm = document.querySelector("#client-profile-form");
 const deleteClientButton = document.querySelector("#delete-client-button");
 const clientDocumentForm = document.querySelector("#client-document-form");
 const newClientForm = document.querySelector("#new-client-form");
+const toggleNewClientButton = document.querySelector("#toggle-new-client");
+const cancelNewClientButton = document.querySelector("#cancel-new-client");
+const clientAssignmentForm = document.querySelector("#client-assignment-form");
+const clientAssignmentProvider = document.querySelector("#client-assignment-provider");
+const clientAssignmentList = document.querySelector("#client-assignment-list");
+const clientAssignmentMessage = document.querySelector("#client-assignment-message");
 const intakeForm = document.querySelector("#intake-form");
 const bcbaSessionForm = document.querySelector("#bcba-session-form");
 const parentTrainingForm = document.querySelector("#parent-training-form");
@@ -215,6 +235,7 @@ const rbtFidelityScore = document.querySelector("#rbt-fidelity-score");
 const rbtWrittenFeedback = document.querySelector("#rbt-written-feedback");
 const rbtFeedbackHelp = document.querySelector("#rbt-feedback-help");
 const rbtFidelityRows = document.querySelector("#rbt-fidelity-rows");
+const rbtSupervisionUserSelect = document.querySelector("#rbt-supervision-user");
 const addRbtPerformanceAreaButton = document.querySelector("#add-rbt-performance-area");
 const workspaceClientSelect = document.querySelector("#workspace-client-select");
 const clientSelect = document.querySelector("#client-select");
@@ -667,6 +688,71 @@ async function refreshUsers(showMessage = true) {
   }
 }
 
+async function refreshRbtFidelityHistory() {
+  if (!["admin", "bcba"].includes(state.currentUser?.role)) return;
+  rbtFidelityHistoryMessage.textContent = "Loading fidelity history...";
+  try {
+    const payload = await getRbtFidelityHistory(state.selectedRbtFidelityHistoryUserId);
+    state.rbtFidelityHistoryRbts = payload.rbts || [];
+    state.rbtFidelityHistoryObservations = payload.observations || [];
+    state.selectedRbtFidelityHistoryUserId = payload.selectedRbtUserId || "";
+    rbtFidelityHistoryMessage.textContent = "";
+    renderRbtFidelityHistory();
+  } catch (error) {
+    rbtFidelityHistoryMessage.textContent = error.message;
+  }
+}
+
+function renderRbtFidelityHistory() {
+  if (!rbtFidelityHistorySelect || !rbtFidelityHistoryChart || !rbtFidelityHistoryList) return;
+  const rbts = state.rbtFidelityHistoryRbts;
+  rbtFidelityHistorySelect.innerHTML = rbts.length
+    ? rbts.map((rbt) => `<option value="${escapeHtml(rbt.id)}">${escapeHtml(rbt.name)}</option>`).join("")
+    : '<option value="">No RBT users available</option>';
+  rbtFidelityHistorySelect.disabled = !rbts.length;
+  if (state.selectedRbtFidelityHistoryUserId) {
+    rbtFidelityHistorySelect.value = state.selectedRbtFidelityHistoryUserId;
+  }
+  const selectedRbt = rbts.find((rbt) => rbt.id === state.selectedRbtFidelityHistoryUserId);
+  const observations = state.rbtFidelityHistoryObservations;
+  rbtFidelityChartTitle.textContent = selectedRbt
+    ? `${selectedRbt.name} fidelity over time`
+    : "Fidelity over time";
+  drawLineChart(rbtFidelityHistoryChart, observations.length ? [{
+    name: "Fidelity",
+    points: observations.map((observation) => ({
+      x: observation.observationDate,
+      y: observation.fidelityPercent,
+      phase: "intervention",
+      clientName: observation.clientName,
+      supervisorName: observation.supervisingUserName
+    }))
+  }] : [], {
+    maxY: 100,
+    yStep: 10,
+    yLabel: "fidelity %",
+    suppressAutoTreatmentBoundary: true,
+    emptyMessage: selectedRbt ? "No fidelity observations for this RBT" : "Select an RBT"
+  });
+  if (!selectedRbt) {
+    rbtFidelityHistoryList.innerHTML = '<p class="muted">No RBT users are available for review.</p>';
+    return;
+  }
+  if (!observations.length) {
+    rbtFidelityHistoryList.innerHTML = '<p class="muted">No completed fidelity observations for this RBT.</p>';
+    return;
+  }
+  rbtFidelityHistoryList.innerHTML = observations.slice().reverse().map((observation) => `
+    <div class="document-row">
+      <div>
+        <strong>${formatDate(observation.observationDate)} · ${observation.fidelityPercent}% fidelity</strong>
+        <span>Client: ${escapeHtml(observation.clientName)}</span>
+        <span>Supervising BCBA: ${escapeHtml(observation.supervisingUserName)}</span>
+      </div>
+    </div>
+  `).join("");
+}
+
 function ensureGraphsMessage() {
   if (!graphsClientSummary?.parentElement) return { textContent: "" };
   const existing = document.querySelector("#graphs-message");
@@ -1058,6 +1144,10 @@ function bindEvents() {
   userList.addEventListener("click", handleUserListClick);
   userList.addEventListener("change", handleUserListChange);
   refreshUsersButton.addEventListener("click", refreshUsers);
+  rbtFidelityHistorySelect?.addEventListener("change", () => {
+    state.selectedRbtFidelityHistoryUserId = rbtFidelityHistorySelect.value;
+    void refreshRbtFidelityHistory();
+  });
   document.querySelectorAll("[data-view-button]").forEach((button) => {
     button.addEventListener("click", (event) => handleViewTabClick(event, button.dataset.viewButton));
   });
@@ -1138,10 +1228,14 @@ function bindEvents() {
   deleteClientButton.addEventListener("click", handleDeleteClient);
   clientDocumentForm.addEventListener("submit", handleClientDocumentSubmit);
   clientDocumentList.addEventListener("click", handleClientDocumentClick);
+  clientAssignmentForm?.addEventListener("submit", handleClientAssignmentSubmit);
+  clientAssignmentList?.addEventListener("click", handleClientAssignmentClick);
   exportClientPackageButton.addEventListener("click", handleExportClientPackage);
   downloadPracticeBackupButton.addEventListener("click", handleDownloadPracticeBackup);
   restorePracticeBackupButton.addEventListener("click", handleRestorePracticeBackup);
   newClientForm.addEventListener("submit", handleNewClientSubmit);
+  toggleNewClientButton?.addEventListener("click", toggleNewClientForm);
+  cancelNewClientButton?.addEventListener("click", closeNewClientForm);
   intakeClientSelect.addEventListener("change", () => setActiveClient(intakeClientSelect.value));
   intakeVbMappLevelSelect.addEventListener("change", updateVbMappVisibility);
   intakeVbMappLevelSelect.addEventListener("input", updateVbMappVisibility);
@@ -1156,7 +1250,7 @@ function bindEvents() {
   historicalImportForm?.addEventListener("submit", handleCommitHistoricalImport);
   parentTrainingForm.addEventListener("submit", handleParentTrainingSubmit);
   bcbaSessionForm.elements.rbtPresent.addEventListener("change", toggleRbtFeedbackSection);
-  rbtFeedbackSection.addEventListener("change", updateRbtFidelityScore);
+  rbtFeedbackSection.addEventListener("change", handleRbtFidelityChange);
   rbtFeedbackSection.addEventListener("focusout", handleRbtPerformanceAreaEdit);
   rbtFeedbackSection.addEventListener("click", handleRbtPerformanceAreaClick);
   addRbtPerformanceAreaButton.addEventListener("click", handleAddRbtPerformanceArea);
@@ -1754,9 +1848,7 @@ async function handleCreateUser(event) {
       username: values.get("username"),
       email: values.get("email"),
       role: values.get("role"),
-      password: values.get("password"),
-      agency: values.get("agency"),
-      isMasterAdmin: values.get("isMasterAdmin") === "true"
+      password: values.get("password")
     });
     newUserForm.reset();
     syncAdminAgencyControls();
@@ -1797,8 +1889,6 @@ async function saveUserRow(row, resetPassword, password = "") {
       name: row.querySelector('[data-user-field="name"]').value,
       email: row.querySelector('[data-user-field="email"]').value,
       role: row.querySelector('[data-user-field="role"]').value,
-      agency: row.querySelector('[data-user-field="agency"]')?.value,
-      isMasterAdmin: row.querySelector('[data-user-field="isMasterAdmin"]')?.checked || false,
       active: row.querySelector('[data-user-field="active"]').value === "true",
       password: resetPassword ? password : ""
     });
@@ -1829,9 +1919,7 @@ function showLogin(message = "") {
 function showApp() {
   loginScreen.classList.add("hidden");
   appRoot.classList.remove("hidden");
-  const agencySuffix = state.currentUser?.agency ? ` - ${state.currentUser.agency}` : "";
-  const masterSuffix = state.currentUser?.isMasterAdmin ? ", Master admin" : "";
-  currentUserLabel.textContent = `${state.currentUser?.name || "User"} (${roleLabel(state.currentUser?.role)}${masterSuffix}${agencySuffix})`;
+  currentUserLabel.textContent = `${state.currentUser?.name || "User"} (${roleLabel(state.currentUser?.role)})`;
   applyRoleAccess();
 }
 
@@ -1880,8 +1968,7 @@ function populateSelect(select, items, selected = "") {
 
 function clientOptionLabel(client) {
   const archivedSuffix = client.status === "archived" ? " (archived)" : "";
-  const agencySuffix = state.currentUser?.isMasterAdmin && client.agency ? ` - ${client.agency}` : "";
-  return `${client.name}${agencySuffix}${archivedSuffix}`;
+  return `${client.name}${archivedSuffix}`;
 }
 
 function workflowClients() {
@@ -1927,7 +2014,13 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
     state.sessionsLoadedHasMore = false;
   }
   syncGraphPhaseLineState(currentClient());
+  state.clientAssignments = [];
+  state.clientAssignmentProviders = [];
+  state.clientAssignmentsLoadedFor = "";
+  state.rbtFidelityDraft = {};
+  if (rbtWrittenFeedback) rbtWrittenFeedback.value = "";
   render();
+  if (["clients", "plan"].includes(currentView())) void refreshClientAssignments();
   void ensureSessionDataForView(currentView(), { force: true, clientId });
   if (currentView() === "import") {
     void refreshHistoricalImportBatches(false);
@@ -2556,6 +2649,25 @@ async function handleDeleteClient() {
   }
 }
 
+function toggleNewClientForm() {
+  if (newClientForm.classList.contains("hidden")) {
+    newClientForm.reset();
+    newClientMessage.textContent = "";
+    newClientForm.classList.remove("hidden");
+    toggleNewClientButton.setAttribute("aria-expanded", "true");
+    newClientForm.elements.name?.focus();
+    return;
+  }
+  closeNewClientForm();
+}
+
+function closeNewClientForm() {
+  newClientForm.reset();
+  newClientMessage.textContent = "";
+  newClientForm.classList.add("hidden");
+  toggleNewClientButton?.setAttribute("aria-expanded", "false");
+}
+
 async function handleNewClientSubmit(event) {
   event.preventDefault();
   newClientMessage.textContent = "";
@@ -2564,17 +2676,16 @@ async function handleNewClientSubmit(event) {
   try {
     const client = await createClient({
       name: values.get("name"),
-      agency: values.get("agency"),
       dob: values.get("dob"),
       defaultSetting: values.get("defaultSetting"),
       diagnosis: values.get("diagnosis")
     });
-    newClientForm.reset();
     syncAdminAgencyControls();
     await refreshData();
     state.activeClientId = client.id;
     setActiveClient(client.id);
-    newClientMessage.textContent = "Client created. Add programs and behaviors under Treatment plan.";
+    closeNewClientForm();
+    clientProfileMessage.textContent = `${client.name} created. Add programs and behaviors under Treatment plan.`;
   } catch (error) {
     newClientMessage.textContent = error.message;
   }
@@ -2755,7 +2866,6 @@ function readClientProfileForm() {
   const values = new FormData(clientProfileForm);
   return {
     name: values.get("name"),
-    agency: values.get("agency"),
     dob: values.get("dob"),
     defaultSetting: values.get("defaultSetting"),
     status: values.get("status"),
@@ -3014,7 +3124,6 @@ function syncClientProfileForm() {
   managementClientSelect.value = client.id;
   clientProfileForm.elements.status.value = client.status === "archived" ? "archived" : "active";
   clientProfileForm.elements.name.value = client.name || "";
-  if (clientProfileForm.elements.agency) clientProfileForm.elements.agency.value = client.agency || state.currentUser?.agency || agencyOptions[0];
   clientProfileForm.elements.dob.value = client.dob || "";
   clientProfileForm.elements.defaultSetting.value = client.defaultSetting || "";
   clientProfileForm.elements.caregivers.value = client.profile?.caregivers || client.caregivers || "";
@@ -3352,6 +3461,7 @@ function render() {
   syncFunderReportDraftForClient();
   renderClientManagementSummary();
   renderClientDocuments();
+  renderClientAssignments();
   renderSummary();
   renderWorkflowBoard();
   renderSoapSummary();
@@ -3381,6 +3491,22 @@ function syncBcbaSessionDefaults() {
   if (client && !bcbaSessionForm.elements.setting.value) {
     bcbaSessionForm.elements.setting.value = client.defaultSetting;
   }
+  syncRbtSupervisionProviderOptions();
+}
+
+function syncRbtSupervisionProviderOptions() {
+  if (!rbtSupervisionUserSelect) return;
+  const selected = rbtSupervisionUserSelect.value;
+  const rbts = state.clientAssignments
+    .map((assignment) => assignment.provider)
+    .filter((provider) => provider?.role === "rbt" && provider.active !== false);
+  rbtSupervisionUserSelect.innerHTML = rbts.length
+    ? `<option value="">Select assigned RBT</option>${rbts.map((provider) => (
+        `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)}</option>`
+      )).join("")}`
+    : '<option value="">No assigned RBTs available</option>';
+  if (rbts.some((provider) => provider.id === selected)) rbtSupervisionUserSelect.value = selected;
+  rbtSupervisionUserSelect.disabled = bcbaSessionForm.elements.rbtPresent.value !== "true" || !rbts.length;
 }
 
 function syncParentTrainingDefaults() {
@@ -3899,6 +4025,8 @@ async function switchView(view) {
     await ensureSessionDataForView(view, { clientId: state.activeClientId });
   }
   if (view === "schedule") await switchScheduleSubview(state.activeScheduleSubview);
+  if (view === "clients") await refreshClientAssignments();
+  if (view === "plan") await refreshClientAssignments();
   if (view === "graphs") renderCharts();
   if (view === "import") {
     void refreshHistoricalImportBatches(false);
@@ -3908,7 +4036,10 @@ async function switchView(view) {
   if (view === "billing") renderBillingExport();
   if (view === "audit") refreshAuditLog(false);
   if (view === "health") runDataHealthCheck();
-  if (view === "users") refreshUsers(false);
+  if (view === "users") {
+    refreshUsers(false);
+    await refreshRbtFidelityHistory();
+  }
   syncWorkspaceUrl(view);
 }
 
@@ -6031,6 +6162,9 @@ function handleReportSectionNavClick(event) {
 
 function applyRoleAccess() {
   const views = allowedViews();
+  document.querySelectorAll("[data-admin-user-management]").forEach((section) => {
+    section.classList.toggle("hidden", state.currentUser?.role !== "admin");
+  });
   document.querySelectorAll("[data-view-button]").forEach((button) => {
     button.classList.toggle("hidden", !views.includes(button.dataset.viewButton));
   });
@@ -6051,10 +6185,6 @@ function canEditAdmin() {
 
 function canEditClinical() {
   return ["admin", "bcba"].includes(state.currentUser?.role);
-}
-
-function canManageAcrossAgencies() {
-  return canEditAdmin() && Boolean(state.currentUser?.isMasterAdmin);
 }
 
 function roleLabel(role) {
@@ -6486,7 +6616,7 @@ function renderClientManagementSummary() {
   clientManagementSummary.innerHTML = `
     <div><strong>${state.clients.length}</strong><span>Total clients</span></div>
     <div><strong>${activeClients} / ${archivedClients}</strong><span>Active / archived</span></div>
-    <div><strong>${client?.name || "None"}</strong><span>${client?.agency || "Selected client"}</span></div>
+    <div><strong>${client?.name || "None"}</strong><span>Selected client</span></div>
   `;
 }
 
@@ -6587,26 +6717,12 @@ function renderUsers() {
         </select>
       </label>
       <label>
-        Agency
-        <select data-user-field="agency" ${canManageAcrossAgencies() ? "" : "disabled"}>
-          ${agencyOptions.map((agency) => `
-            <option value="${escapeHtml(agency)}" ${user.agency === agency ? "selected" : ""}>${escapeHtml(agency)}</option>
-          `).join("")}
-        </select>
-      </label>
-      <label>
         Status
         <select data-user-field="active">
           <option value="true" ${user.active ? "selected" : ""}>Active</option>
           <option value="false" ${!user.active ? "selected" : ""}>Inactive</option>
         </select>
       </label>
-      ${canManageAcrossAgencies() ? `
-        <label>
-          Master admin
-          <input type="checkbox" data-user-field="isMasterAdmin" value="true" ${user.isMasterAdmin ? "checked" : ""} ${user.role !== "admin" ? "disabled" : ""}>
-        </label>
-      ` : ""}
       <div class="button-row">
         <button type="button" class="secondary-button" data-save-user>Save</button>
         <button type="button" class="delete-button" data-reset-password>Reset password</button>
@@ -6617,35 +6733,14 @@ function renderUsers() {
 }
 
 function syncAdminAgencyControls() {
-  const masterOnlyVisible = canManageAcrossAgencies();
   document.querySelectorAll("[data-master-admin-only]").forEach((section) => {
-    section.classList.toggle("hidden", !masterOnlyVisible);
+    section.classList.add("hidden");
   });
-  if (newUserForm?.elements.agency) {
-    newUserForm.elements.agency.value = state.currentUser?.agency || agencyOptions[0];
-    newUserForm.elements.agency.disabled = !masterOnlyVisible;
-  }
-  if (clientProfileForm?.elements.agency) {
-    clientProfileForm.elements.agency.disabled = !canEditAdmin() || !masterOnlyVisible;
-  }
-  if (newClientForm?.elements.agency) {
-    newClientForm.elements.agency.value = state.currentUser?.agency || agencyOptions[0];
-    newClientForm.elements.agency.disabled = !masterOnlyVisible;
-  }
-  if (newUserForm?.elements.isMasterAdmin) {
-    newUserForm.elements.isMasterAdmin.checked = false;
-  }
   syncUserRoleControls();
 }
 
 function syncUserRoleControls() {
-  if (!newUserForm?.elements.role) return;
-  const isAdminRole = newUserForm.elements.role.value === "admin";
-  const masterField = newUserForm.elements.isMasterAdmin;
-  if (masterField) {
-    masterField.disabled = !canManageAcrossAgencies() || !isAdminRole;
-    if (!isAdminRole) masterField.checked = false;
-  }
+  return;
 }
 
 function syncUserRowRoleControls(row) {
@@ -6684,6 +6779,92 @@ function renderClientDocuments() {
       </div>
     </div>
   `).join("");
+}
+
+async function refreshClientAssignments() {
+  const client = currentClient();
+  if (!client || !["admin", "bcba", "rbt"].includes(state.currentUser?.role)) return;
+  try {
+    const payload = await getClientAssignments(client.id);
+    if (currentClient()?.id !== client.id) return;
+    state.clientAssignments = payload.assignments || [];
+    state.clientAssignmentProviders = payload.providers || [];
+    state.clientAssignmentsCanManage = Boolean(payload.canManage);
+    state.clientAssignmentsLoadedFor = client.id;
+    clientAssignmentMessage.textContent = "";
+    renderClientAssignments();
+    syncRbtSupervisionProviderOptions();
+  } catch (error) {
+    clientAssignmentMessage.textContent = error.message;
+  }
+}
+
+function renderClientAssignments() {
+  if (!clientAssignmentList || !clientAssignmentForm || !clientAssignmentProvider) return;
+  const client = currentClient();
+  const loaded = client && state.clientAssignmentsLoadedFor === client.id;
+  clientAssignmentForm.classList.toggle("hidden", !state.clientAssignmentsCanManage || !client);
+  const assignedIds = new Set(state.clientAssignments.map((assignment) => assignment.userId));
+  const providers = state.clientAssignmentProviders.filter((provider) => (
+    !assignedIds.has(provider.id)
+    && (state.currentUser?.role === "admin" || provider.role === "rbt")
+  ));
+  clientAssignmentProvider.innerHTML = providers.length
+    ? providers.map((provider) => `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)} (${roleLabel(provider.role)})</option>`).join("")
+    : '<option value="">No eligible providers available</option>';
+  clientAssignmentProvider.disabled = !providers.length;
+  const submit = clientAssignmentForm.querySelector('button[type="submit"]');
+  if (submit) submit.disabled = !providers.length;
+  if (!client) {
+    clientAssignmentList.innerHTML = '<p class="muted">Select a client to view the case team.</p>';
+    return;
+  }
+  if (!loaded) {
+    clientAssignmentList.innerHTML = '<p class="muted">Loading case team…</p>';
+    return;
+  }
+  if (!state.clientAssignments.length) {
+    clientAssignmentList.innerHTML = '<p class="muted">No providers assigned yet.</p>';
+    return;
+  }
+  clientAssignmentList.innerHTML = state.clientAssignments.map((assignment) => {
+    const provider = assignment.provider || {};
+    const canRemove = state.clientAssignmentsCanManage
+      && (state.currentUser?.role === "admin" || provider.role === "rbt");
+    return `
+      <div class="document-row">
+        <div><strong>${escapeHtml(provider.name || "Provider")}</strong><span>${roleLabel(provider.role)}</span></div>
+        ${canRemove ? `<button type="button" class="delete-button" data-remove-client-provider="${escapeHtml(provider.id)}">Remove</button>` : ""}
+      </div>
+    `;
+  }).join("");
+}
+
+async function handleClientAssignmentSubmit(event) {
+  event.preventDefault();
+  const client = currentClient();
+  const userId = clientAssignmentProvider?.value;
+  if (!client || !userId) return;
+  try {
+    await assignClientProvider(client.id, userId);
+    await refreshClientAssignments();
+    clientAssignmentMessage.textContent = "Provider assigned.";
+  } catch (error) {
+    clientAssignmentMessage.textContent = error.message;
+  }
+}
+
+async function handleClientAssignmentClick(event) {
+  const button = event.target.closest("[data-remove-client-provider]");
+  const client = currentClient();
+  if (!button || !client) return;
+  try {
+    await removeClientProvider(client.id, button.dataset.removeClientProvider);
+    await refreshClientAssignments();
+    clientAssignmentMessage.textContent = "Provider removed.";
+  } catch (error) {
+    clientAssignmentMessage.textContent = error.message;
+  }
 }
 
 async function refreshAuditLog(showMessage = true) {
@@ -9721,18 +9902,26 @@ async function refreshCurrentClientPlanBefore97155Generation() {
 async function handleGenerate97155Note() {
   note97155Status.textContent = "Refreshing treatment-plan changes...";
   await persistCurrentPlanDraftBefore97155Generation();
-  const sessionContext = current97155SessionContext({ create: false });
+  const sessionContext = current97155SessionContext({ create: true });
   try {
     await refreshCurrentClientPlanBefore97155Generation();
   } catch (error) {
     note97155Status.textContent = "Using locally loaded treatment-plan changes.";
+  }
+  const sessionDetails = readBcbaSessionDetails();
+  if (sessionDetails.rbtPresent && !sessionDetails.rbtUserId) {
+    note97155Status.textContent = "Select the assigned RBT being supervised.";
+    return;
+  }
+  if (sessionDetails.rbtPresent && sessionDetails.rbtFidelity.percent === null) {
+    note97155Status.textContent = "Answer at least one RBT fidelity checklist item.";
+    return;
   }
   const note = generate97155Note(sessionContext);
   if (!confirmRegenerateNote("97155", note)) {
     note97155Status.textContent = "Regeneration canceled.";
     return;
   }
-  const sessionDetails = readBcbaSessionDetails();
   const selected = selectedNoteHistoryEntry("97155");
   const selectedStatus = soapEntryStatus({ type: "97155", record: selected });
   const selectedLocked = selected && ["finalized", "amended"].includes(selectedStatus)
@@ -9761,6 +9950,19 @@ async function handleGenerate97155Note() {
     note97155History,
     currentClient()?.note97151History || []
   );
+  if (sessionDetails.rbtPresent) {
+    const result = await createRbtFidelityObservation(currentClient().id, {
+      rbtUserId: sessionDetails.rbtUserId,
+      observationDate: sessionDetails.date,
+      responses: sessionDetails.rbtFidelity.responses,
+      fidelityPercent: sessionDetails.rbtFidelity.percent,
+      writtenFeedback: sessionDetails.rbtWrittenFeedback,
+      relatedSessionId: sessionContext.sessionId
+    });
+    replaceClient(result.client);
+    state.rbtFidelityDraft = {};
+    rbtWrittenFeedback.value = "";
+  }
   state.selectedSoapEntryKey = soapNoteEntryKey("97155", note97155History[0].id);
   state.active97155SessionId = "";
   note97155Status.textContent = "97155 note generated.";
@@ -9939,8 +10141,8 @@ function renderRbtFidelityRows() {
         Area
         <input type="text" value="${escapeHtml(area.label)}" data-rbt-area-name="${escapeHtml(area.id)}" aria-label="RBT performance area">
       </label>
-      <label><input type="radio" name="rbtFidelity_${escapeHtml(area.id)}" value="yes" data-rbt-score ${rbtPresent ? "" : "disabled"}> Yes</label>
-      <label><input type="radio" name="rbtFidelity_${escapeHtml(area.id)}" value="no" data-rbt-score checked ${rbtPresent ? "" : "disabled"}> No</label>
+      <label><input type="radio" name="rbtFidelity_${escapeHtml(area.id)}" value="yes" data-rbt-score data-rbt-area-id="${escapeHtml(area.id)}" ${state.rbtFidelityDraft[area.id] === "yes" ? "checked" : ""} ${rbtPresent ? "" : "disabled"}> Yes</label>
+      <label><input type="radio" name="rbtFidelity_${escapeHtml(area.id)}" value="no" data-rbt-score data-rbt-area-id="${escapeHtml(area.id)}" ${state.rbtFidelityDraft[area.id] === "no" ? "checked" : ""} ${rbtPresent ? "" : "disabled"}> No</label>
       <button type="button" class="icon-button" data-remove-rbt-area="${escapeHtml(area.id)}" aria-label="Remove ${escapeHtml(area.label)}">x</button>
     </div>
   `).join("");
@@ -9984,6 +10186,7 @@ function readBcbaSessionDetails() {
     endTime: values.get("endTime"),
     caregiverPresent: values.get("caregiverPresent") === "true",
     rbtPresent: values.get("rbtPresent") === "true",
+    rbtUserId: values.get("rbtUserId"),
     rbtFidelity: readRbtFidelity(),
     rbtWrittenFeedback: rbtWrittenFeedback.value.trim(),
     focus: values.get("focus"),
@@ -10066,31 +10269,29 @@ function toggleRbtFeedbackSection() {
   rbtFeedbackSection.querySelectorAll("[data-rbt-score], #rbt-written-feedback").forEach((field) => {
     field.disabled = !rbtPresent;
   });
+  syncRbtSupervisionProviderOptions();
   updateRbtFidelityScore();
 }
 
 function readRbtFidelity() {
-  const scoredItems = clientRbtPerformanceAreas().map((item) => {
-    const selected = rbtFeedbackSection.querySelector(`input[name="rbtFidelity_${item.id}"]:checked`);
-    return {
-      ...item,
-      value: selected?.value || "no"
-    };
-  });
-  const total = scoredItems.length;
-  const yesItems = scoredItems.filter((item) => item.value === "yes");
-  const noItems = scoredItems.filter((item) => item.value !== "yes").map((item) => item.label);
-  return {
-    total,
-    yesCount: yesItems.length,
-    noItems,
-    percent: total ? Math.round((yesItems.length / total) * 100) : 0
-  };
+  return calculateRbtFidelity(clientRbtPerformanceAreas(), state.rbtFidelityDraft);
+}
+
+function handleRbtFidelityChange(event) {
+  const control = event.target.closest("[data-rbt-score]");
+  if (control) {
+    state.rbtFidelityDraft = setRbtFidelityResponse(
+      state.rbtFidelityDraft,
+      control.dataset.rbtAreaId,
+      control.value
+    );
+  }
+  updateRbtFidelityScore();
 }
 
 function updateRbtFidelityScore() {
   const fidelity = readRbtFidelity();
-  rbtFidelityScore.textContent = `${fidelity.percent}% fidelity`;
+  rbtFidelityScore.textContent = fidelity.percent === null ? "Unscored" : `${fidelity.percent}% fidelity`;
 }
 
 async function handleAddRbtPerformanceArea() {
@@ -13183,6 +13384,14 @@ function updateProgramDisplay(row) {
   const program = clientPrograms().find((item) => item.id === programId);
   const display = row.querySelector("[data-program-display]");
   if (display) display.textContent = program?.name || "Program";
+  const objective = String(program?.objective || program?.description || program?.instructions || "").trim();
+  const objectiveDetails = row.querySelector("[data-program-objective-details]");
+  const objectiveText = row.querySelector("[data-program-objective-text]");
+  if (objectiveText) objectiveText.textContent = objective;
+  if (objectiveDetails) {
+    objectiveDetails.hidden = !objective;
+    if (!objective) objectiveDetails.open = false;
+  }
 }
 
 function renderDomainTabs() {

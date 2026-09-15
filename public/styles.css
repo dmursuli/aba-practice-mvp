@@ -516,6 +516,28 @@ button:focus-visible {
   color: var(--ink);
 }
 
+.program-objective {
+  margin-top: 1px;
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+}
+
+.program-objective summary {
+  width: fit-content;
+  color: #426981;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.program-objective p {
+  margin: 7px 0 1px;
+  padding: 8px 10px;
+  border-left: 3px solid #a9c5df;
+  background: var(--soft);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .visually-hidden-control {
   position: absolute;
   width: 1px;

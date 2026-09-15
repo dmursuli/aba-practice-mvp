@@ -169,6 +169,13 @@ function entireSeriesFuturePayload(appointment, series, overrides = {}) {
   };
 }
 
+function useRecurrenceEditTestClock(t) {
+  t.mock.timers.enable({
+    apis: ["Date"],
+    now: Date.parse("2026-09-01T12:00:00.000Z")
+  });
+}
+
 test("Admin and BCBA can create series while RBT and read-only users cannot", async () => {
   await resetDb();
   const adminCookie = await login();
@@ -762,7 +769,8 @@ test("recurring cancellation requires both current versions and preserves cancel
   assert.equal(JSON.stringify(seriesAudits).includes("123 Authoritative Way"), false);
 });
 
-test("This and Future splits the governing revision and updates eligible future occurrences", async () => {
+test("This and Future splits the governing revision and updates eligible future occurrences", async (t) => {
+  useRecurrenceEditTestClock(t);
   await resetDb();
   const cookie = await login();
   const created = await createSeries(cookie, {
@@ -865,7 +873,8 @@ test("This and Future splits the governing revision and updates eligible future 
   assert.equal(serializedAudit.includes("Recurring Client"), false);
 });
 
-test("This and Future protects represented exceptions and uses system-safe removal identities", async () => {
+test("This and Future protects represented exceptions and uses system-safe removal identities", async (t) => {
+  useRecurrenceEditTestClock(t);
   await resetDb();
   const cookie = await login();
   await createSeries(cookie, {
@@ -921,7 +930,8 @@ test("This and Future protects represented exceptions and uses system-safe remov
   assert.equal(new Set(persisted.appointments.map((item) => item.recurrenceOccurrenceId)).size, persisted.appointments.length);
 });
 
-test("This and Future leaves every protected occurrence class unchanged while reconciling later eligible slots", async () => {
+test("This and Future leaves every protected occurrence class unchanged while reconciling later eligible slots", async (t) => {
+  useRecurrenceEditTestClock(t);
   await resetDb();
   const cookie = await login();
   await createSeries(cookie, {
@@ -984,7 +994,8 @@ test("This and Future leaves every protected occurrence class unchanged while re
   assert.equal(eligible.version, 2);
 });
 
-test("This and Future rejects missing, stale, boundary, and concurrent versions with zero partial mutation", async () => {
+test("This and Future rejects missing, stale, boundary, and concurrent versions with zero partial mutation", async (t) => {
+  useRecurrenceEditTestClock(t);
   await resetDb();
   const cookie = await login();
   await createSeries(cookie, {
@@ -1039,7 +1050,8 @@ test("This and Future rejects missing, stale, boundary, and concurrent versions 
   assert.equal(persisted.auditLog.filter((entry) => entry.action === "recurring-series-this-and-future-updated").length, 1);
 });
 
-test("Entire Series future uses the earliest boundary and replaces the complete future pattern", async () => {
+test("Entire Series future uses the earliest boundary and replaces the complete future pattern", async (t) => {
+  useRecurrenceEditTestClock(t);
   await resetDb();
   const cookie = await login();
   await createSeries(cookie, {
@@ -1110,7 +1122,8 @@ test("Entire Series future uses the earliest boundary and replaces the complete 
   assert.equal(JSON.stringify(operationAudits[0]).includes("123 Authoritative Way"), false);
 });
 
-test("Entire Series future leaves past and protected appointments unchanged and retains removed slots", async () => {
+test("Entire Series future leaves past and protected appointments unchanged and retains removed slots", async (t) => {
+  useRecurrenceEditTestClock(t);
   await resetDb();
   const cookie = await login();
   await createSeries(cookie, {
@@ -1209,7 +1222,8 @@ test("Entire Series future rejects invalid rows and stale versions with atomic z
   }
 });
 
-test("Entire Series future preserves and replaces later active revision segments", async () => {
+test("Entire Series future preserves and replaces later active revision segments", async (t) => {
+  useRecurrenceEditTestClock(t);
   await resetDb();
   const cookie = await login();
   await createSeries(cookie, {

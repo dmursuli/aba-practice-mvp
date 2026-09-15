@@ -81,6 +81,28 @@ test("existing PostgreSQL write path remains a non-transactional single state wr
   assert.equal(fake.queries.filter((sql) => sql.includes("insert into app_state")).length, 1);
 });
 
+test("PostgreSQL assignment persistence uses an additive normalized table with a duplicate guard", async () => {
+  const fake = fakePostgres({ clients: [{ id: "client-1" }], users: [{ id: "user-1" }] });
+  await writeDbToPostgres(fake.config, {
+    clients: [{ id: "client-1" }],
+    users: [{ id: "user-1" }],
+    clientUserAssignments: [{
+      id: "assignment-1",
+      clientId: "client-1",
+      userId: "user-1",
+      createdAt: "2026-09-10T12:00:00.000Z",
+      createdByUserId: "admin-1"
+    }]
+  });
+  assert.ok(fake.queries.some((sql) => (
+    sql.includes("create table if not exists client_user_assignments")
+    && sql.includes("unique (client_id, user_id)")
+  )));
+  assert.ok(fake.queries.some((sql) => sql.includes("insert into client_user_assignments")));
+  assert.ok(fake.queries.some((sql) => sql.startsWith("delete from client_user_assignments")));
+  assert.equal("clientUserAssignments" in fake.state, false);
+});
+
 test("local JSON transaction mutator commits atomically and preserves serialized writes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "aba-json-state-"));
   const path = join(directory, "db.json");

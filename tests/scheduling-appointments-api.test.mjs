@@ -227,7 +227,7 @@ test("appointment endpoints require authentication and Scheduling roles", async 
   assert.equal(readOnlyRead.response.status, 403);
 });
 
-test("appointment options are active, eligible, same-agency, and available to admin and BCBA", async () => {
+test("appointment options are active, eligible, organization-wide, and available to admin and BCBA", async () => {
   await resetDb({
     ...baseDb,
     clients: [
@@ -265,15 +265,15 @@ test("appointment options are active, eligible, same-agency, and available to ad
 
   const adminOptions = await request("/api/appointment-options", { cookie: adminCookie });
   assert.equal(adminOptions.response.status, 200);
-  assert.deepEqual(adminOptions.json.clients.map((client) => client.id), ["client-1"]);
-  assert.deepEqual(adminOptions.json.providers.map((provider) => provider.id), ["user-bcba"]);
+  assert.deepEqual(adminOptions.json.clients.map((client) => client.id), ["client-1", "other-client"]);
+  assert.deepEqual(adminOptions.json.providers.map((provider) => provider.id), ["user-bcba", otherProvider.json.id]);
   assert.ok(adminOptions.json.providers.every((provider) => ["bcba", "rbt"].includes(provider.role)));
   assert.ok(adminOptions.json.providers.every((provider) => !["email", "username", "agency"].some((key) => key in provider)));
 
   const bcbaCookie = await loginAs("bcba", "bcba123");
   const bcbaOptions = await request("/api/appointment-options", { cookie: bcbaCookie });
   assert.equal(bcbaOptions.response.status, 200);
-  assert.deepEqual(bcbaOptions.json.clients.map((client) => client.id), ["client-1"]);
+  assert.deepEqual(bcbaOptions.json.clients.map((client) => client.id), ["client-1", "other-client"]);
 
   const readOnlyCookie = await loginAs("readonly", "readonly123");
   const readOnlyOptions = await request("/api/appointment-options", { cookie: readOnlyCookie });
@@ -380,7 +380,7 @@ test("create validates canonical service codes, providers, timestamps, timezone,
   assert.match(archivedClient.json.errors.join(" "), /Client must be active/);
 });
 
-test("provider must be active and in the client agency", async () => {
+test("provider must be active and is eligible organization-wide", async () => {
   await resetDb();
   const cookie = await loginAs();
   const deactivate = await request("/api/users/user-rbt", {
@@ -414,14 +414,13 @@ test("provider must be active and in the client agency", async () => {
     }
   });
   assert.equal(otherAgencyProvider.response.status, 201);
-  const mismatch = await createAppointment(nextCookie, {
+  const organizationWide = await createAppointment(nextCookie, {
     providerAssignments: [{ userId: otherAgencyProvider.json.id, assignmentRole: "primary" }]
   });
-  assert.equal(mismatch.response.status, 400);
-  assert.match(mismatch.json.errors.join(" "), /must belong to the appointment agency/);
+  assert.equal(organizationWide.response.status, 201);
 });
 
-test("date-range and ID reads are lightweight and agency scoped", async () => {
+test("date-range and ID reads are lightweight and organization-wide", async () => {
   await resetDb();
   const adminCookie = await loginAs();
   const triumph = await createAppointment(adminCookie);
@@ -460,8 +459,11 @@ test("date-range and ID reads are lightweight and agency scoped", async () => {
   const bcbaCookie = await loginAs("bcba", "bcba123");
   const range = await request("/api/appointments?startDate=2026-08-01&endDate=2026-08-31", { cookie: bcbaCookie });
   assert.equal(range.response.status, 200);
-  assert.equal(range.json.appointments.length, 1);
-  assert.equal(range.json.appointments[0].id, triumph.json.id);
+  assert.equal(range.json.appointments.length, 2);
+  assert.deepEqual(
+    new Set(range.json.appointments.map((appointment) => appointment.id)),
+    new Set([triumph.json.id, otherAppointment.json.id])
+  );
   assert.equal("notes" in range.json.appointments[0], false);
   assert.equal("createdBy" in range.json.appointments[0], false);
   assert.equal("soapNote" in range.json.appointments[0], false);
@@ -469,8 +471,8 @@ test("date-range and ID reads are lightweight and agency scoped", async () => {
   const byId = await request(`/api/appointments/${triumph.json.id}`, { cookie: bcbaCookie });
   assert.equal(byId.response.status, 200);
   assert.equal(byId.json.notes, "Operational scheduling note");
-  const blocked = await request(`/api/appointments/${otherAppointment.json.id}`, { cookie: bcbaCookie });
-  assert.equal(blocked.response.status, 403);
+  const organizationWide = await request(`/api/appointments/${otherAppointment.json.id}`, { cookie: bcbaCookie });
+  assert.equal(organizationWide.response.status, 200);
 });
 
 test("updates increment versions and reject stale or immutable linkage writes", async () => {

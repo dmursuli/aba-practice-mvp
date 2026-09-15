@@ -121,6 +121,7 @@ async function readDbWithUsers() {
   const db = await readDb();
   let changed = ensureDefaultUsers(db);
   if (ensureAgencyScoping(db)) changed = true;
+  if (ensureClientUserAssignments(db)) changed = true;
   if (ensureClientNoteHistories(db)) changed = true;
   if (ensureUserSecurityDefaults(db)) changed = true;
   if (changed) await writeDb(db);
@@ -651,7 +652,7 @@ async function serveUpload(req, res, db, user) {
   const clientId = safePath.split(/[\\/]/)[0];
   const client = (db.clients || []).find((item) => item.id === clientId);
 
-  if (!client || !canAccessClient(user, client)) {
+  if (!client || !canAccessClient(user, client, db)) {
     res.writeHead(403);
     res.end("Forbidden");
     return;
@@ -778,6 +779,25 @@ function ensureAgencyScoping(db) {
   });
 
   return changed;
+}
+
+function ensureClientUserAssignments(db) {
+  if (!Array.isArray(db.clientUserAssignments)) {
+    db.clientUserAssignments = [];
+    return true;
+  }
+  const seen = new Set();
+  const normalized = db.clientUserAssignments.filter((assignment) => {
+    const clientId = String(assignment?.clientId || "");
+    const userId = String(assignment?.userId || "");
+    const key = `${clientId}\u0000${userId}`;
+    if (!clientId || !userId || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (normalized.length === db.clientUserAssignments.length) return false;
+  db.clientUserAssignments = normalized;
+  return true;
 }
 
 function ensureAppointmentsState(db) {
@@ -1232,17 +1252,14 @@ export function createAppServer() {
     if (req.method === "GET" && url.pathname === "/api/appointment-options") {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin", "bcba"])) return;
-      const actor = currentUser(req, db);
-      const agency = userAgency(actor);
       const clients = (db.clients || [])
-        .filter((client) => client.status !== "archived" && normalizeAgency(client.agency) === agency)
+        .filter((client) => client.status !== "archived")
         .map((client) => ({ id: client.id, name: client.name, agency: normalizeAgency(client.agency) }))
         .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
       const providers = (db.users || [])
         .filter((provider) => (
           provider.active !== false
           && ["bcba", "rbt"].includes(provider.role)
-          && userAgency(provider) === agency
         ))
         .map((provider) => ({ id: provider.id, name: provider.name, role: provider.role }))
         .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
@@ -1254,14 +1271,9 @@ export function createAppServer() {
     if (req.method === "GET" && appointmentMatch) {
       const db = await readSchedulingDb();
       if (!requireRole(req, res, db, ["admin", "bcba"])) return;
-      const actor = currentUser(req, db);
       const appointment = (db.appointments || []).find((item) => item.id === appointmentMatch[1]);
       if (!appointment) {
         sendJson(res, 404, { errors: ["Appointment not found."] });
-        return;
-      }
-      if (!canAccessAgency(actor, appointment.agency)) {
-        sendJson(res, 403, { errors: ["You cannot access this appointment."] });
         return;
       }
       sendJson(res, 200, appointmentDetailsResponse(db, appointment));
@@ -1667,7 +1679,7 @@ export function createAppServer() {
       }
       const user = state.user;
       const client = (db.clients || []).find((item) => item.id === historicalImportDuplicatesMatch[1]);
-      if (!client || !canAccessClient(user, client)) {
+      if (!client || !canAccessClient(user, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -1688,7 +1700,7 @@ export function createAppServer() {
       }
       const user = state.user;
       const client = (db.clients || []).find((item) => item.id === clientSessionsMatch[1]);
-      if (!client || !canAccessClient(user, client)) {
+      if (!client || !canAccessClient(user, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -1827,6 +1839,47 @@ export function createAppServer() {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/rbt-fidelity-history") {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const rbts = (db.users || [])
+        .filter((user) => user.role === "rbt")
+        .map(assignmentPublicUser)
+        .sort(compareAssignmentProviders);
+      const requestedRbtUserId = String(url.searchParams.get("rbtUserId") || "");
+      const selectedRbtUserId = requestedRbtUserId || rbts[0]?.id || "";
+      if (selectedRbtUserId && !rbts.some((rbt) => rbt.id === selectedRbtUserId)) {
+        sendJson(res, 404, { errors: ["RBT user not found."] });
+        return;
+      }
+      const accessibleClients = visibleClients(db, actor);
+      const observations = accessibleClients
+        .flatMap((client) => (client.rbtFidelityObservations || []).map((observation) => ({ client, observation })))
+        .filter(({ observation }) => observation.rbtUserId === selectedRbtUserId)
+        .map(({ client, observation }) => {
+          const supervisor = (db.users || []).find((user) => user.id === observation.supervisingUserId);
+          const fidelityPercent = Math.min(100, Math.max(0, Number(observation.fidelityPercent) || 0));
+          return {
+            id: observation.id,
+            rbtUserId: observation.rbtUserId,
+            clientId: client.id,
+            clientName: client.name,
+            supervisingUserId: observation.supervisingUserId,
+            supervisingUserName: supervisor?.name || "Unknown supervisor",
+            observationDate: observation.observationDate,
+            fidelityPercent,
+            relatedSessionId: observation.relatedSessionId || ""
+          };
+        })
+        .sort((left, right) => (
+          String(left.observationDate || "").localeCompare(String(right.observationDate || ""))
+          || String(left.id || "").localeCompare(String(right.id || ""))
+        ));
+      sendJson(res, 200, { rbts, selectedRbtUserId, observations });
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/users") {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin"])) return;
@@ -1851,10 +1904,6 @@ export function createAppServer() {
       const targetUser = (db.users || []).find((item) => item.id === userMatch[1]);
       if (!targetUser) {
         sendJson(res, 404, { errors: ["User not found."] });
-        return;
-      }
-      if (!isMasterAdmin(actor) && (isMasterAdmin(targetUser) || userAgency(targetUser) !== userAgency(actor))) {
-        sendJson(res, 403, { errors: ["You can only manage users in your agency."] });
         return;
       }
       const before = userAuditSnapshot(targetUser);
@@ -1882,7 +1931,7 @@ export function createAppServer() {
       const payload = await readBody(req);
       if (payload.clientId) {
         const client = db.clients.find((item) => item.id === payload.clientId);
-        if (!client || !canAccessClient(user, client)) {
+        if (!client || !canAccessClient(user, client, db)) {
           sendJson(res, 403, { errors: ["You cannot record events for this client."] });
           return;
         }
@@ -1924,6 +1973,105 @@ export function createAppServer() {
       return;
     }
 
+    const clientAssignmentsMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/assignments$/);
+    if (req.method === "GET" && clientAssignmentsMatch) {
+      const db = await readDbWithUsers();
+      const state = sessionStatus(req, db);
+      if (state.status !== "ok") {
+        requireAuth(req, res, db, state);
+        return;
+      }
+      const actor = state.user;
+      const client = db.clients.find((item) => item.id === clientAssignmentsMatch[1]);
+      if (!client || !canAccessClient(actor, client, db)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
+      const assignments = clientAssignmentProviders(db, client.id);
+      const canManage = ["admin", "bcba"].includes(actor.role);
+      const providers = canManage
+        ? (db.users || [])
+          .filter((user) => user.active !== false && ["bcba", "rbt"].includes(user.role))
+          .map(assignmentPublicUser)
+          .sort(compareAssignmentProviders)
+        : [];
+      sendJson(res, 200, { clientId: client.id, assignments, providers, canManage });
+      return;
+    }
+
+    if (req.method === "POST" && clientAssignmentsMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const client = db.clients.find((item) => item.id === clientAssignmentsMatch[1]);
+      if (!client || !canAccessClient(actor, client, db)) {
+        sendJson(res, 403, { errors: ["You cannot manage assignments for this client."] });
+        return;
+      }
+      const payload = await readBody(req);
+      const assignedUser = (db.users || []).find((user) => user.id === String(payload.userId || ""));
+      if (!assignedUser || assignedUser.active === false || !["bcba", "rbt"].includes(assignedUser.role)) {
+        sendJson(res, 400, { errors: ["Select an active BCBA or RBT user."] });
+        return;
+      }
+      if (actor.role === "bcba" && assignedUser.role !== "rbt") {
+        sendJson(res, 403, { errors: ["BCBA users can only manage RBT assignments."] });
+        return;
+      }
+      if ((db.clientUserAssignments || []).some((item) => item.clientId === client.id && item.userId === assignedUser.id)) {
+        sendJson(res, 409, { errors: ["That provider is already assigned to this client."] });
+        return;
+      }
+      const assignment = {
+        id: crypto.randomUUID(),
+        clientId: client.id,
+        userId: assignedUser.id,
+        createdAt: new Date().toISOString(),
+        createdByUserId: actor.id
+      };
+      db.clientUserAssignments.push(assignment);
+      logAudit(db, req, actor, "client-provider-assigned", {
+        clientId: client.id,
+        details: { userId: assignedUser.id, role: assignedUser.role }
+      });
+      await writeDb(db);
+      sendJson(res, 201, { assignment, provider: assignmentPublicUser(assignedUser) });
+      return;
+    }
+
+    const clientAssignmentMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/assignments\/([^/]+)$/);
+    if (req.method === "DELETE" && clientAssignmentMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const client = db.clients.find((item) => item.id === clientAssignmentMatch[1]);
+      if (!client || !canAccessClient(actor, client, db)) {
+        sendJson(res, 403, { errors: ["You cannot manage assignments for this client."] });
+        return;
+      }
+      const userId = decodeURIComponent(clientAssignmentMatch[2]);
+      const assignedUser = (db.users || []).find((user) => user.id === userId);
+      if (actor.role === "bcba" && assignedUser?.role !== "rbt") {
+        sendJson(res, 403, { errors: ["BCBA users can only manage RBT assignments."] });
+        return;
+      }
+      const beforeLength = db.clientUserAssignments.length;
+      db.clientUserAssignments = db.clientUserAssignments.filter((item) => (
+        item.clientId !== client.id || item.userId !== userId
+      ));
+      if (db.clientUserAssignments.length === beforeLength) {
+        sendJson(res, 404, { errors: ["Assignment not found."] });
+        return;
+      }
+      logAudit(db, req, actor, "client-provider-unassigned", {
+        clientId: client.id,
+        details: { userId, role: assignedUser?.role || "" }
+      });
+      await writeDb(db);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
     const clientMatch = url.pathname.match(/^\/api\/clients\/([^/]+)$/);
     if (req.method === "DELETE" && clientMatch) {
       const db = await readDbWithUsers();
@@ -1934,7 +2082,7 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Client not found."] });
         return;
       }
-      if (!canAccessClient(actor, client)) {
+      if (!canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -1951,6 +2099,7 @@ export function createAppServer() {
       const removedSessions = db.sessions.filter((session) => session.clientId === client.id).length;
       db.sessions = db.sessions.filter((session) => session.clientId !== client.id);
       db.clients = db.clients.filter((item) => item.id !== client.id);
+      db.clientUserAssignments = (db.clientUserAssignments || []).filter((item) => item.clientId !== client.id);
       db.auditLog = (db.auditLog || []).filter((entry) => entry.clientId !== client.id && entry.clientName !== client.name);
       logAudit(db, req, actor, "client-deleted", {
         details: {
@@ -1975,7 +2124,7 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Client not found."] });
         return;
       }
-      if (!canAccessClient(actor, client)) {
+      if (!canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -2010,7 +2159,7 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Client not found."] });
         return;
       }
-      if (!canAccessClient(actor, client)) {
+      if (!canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -2050,7 +2199,7 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Client not found."] });
         return;
       }
-      if (!canAccessClient(actor, client)) {
+      if (!canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -2092,7 +2241,7 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Client not found."] });
         return;
       }
-      if (!canAccessClient(actor, client)) {
+      if (!canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -2138,7 +2287,7 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Client not found."] });
         return;
       }
-      if (!canAccessClient(actor, client)) {
+      if (!canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -2167,7 +2316,7 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Client not found."] });
         return;
       }
-      if (!canAccessClient(actor, client)) {
+      if (!canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -2200,7 +2349,7 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Client not found."] });
         return;
       }
-      if (!canAccessClient(actor, client)) {
+      if (!canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -2224,7 +2373,7 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Client not found."] });
         return;
       }
-      if (!canAccessClient(actor, client)) {
+      if (!canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -2252,6 +2401,84 @@ export function createAppServer() {
     }
 
     const planMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/plan$/);
+    const rbtFidelityObservationsMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/rbt-fidelity-observations$/);
+    if (req.method === "POST" && rbtFidelityObservationsMatch) {
+      const db = await readDbWithUsers();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const client = db.clients.find((item) => item.id === rbtFidelityObservationsMatch[1]);
+      if (!client || !canAccessClient(actor, client, db)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
+        return;
+      }
+      const payload = await readBody(req);
+      const rbtUserId = String(payload.rbtUserId || "");
+      const rbtUser = (db.users || []).find((user) => user.id === rbtUserId && user.role === "rbt" && user.active !== false);
+      const assigned = (db.clientUserAssignments || []).some((assignment) => (
+        assignment.clientId === client.id && assignment.userId === rbtUserId
+      ));
+      if (!rbtUser || !assigned) {
+        sendJson(res, 400, { errors: ["Select an assigned active RBT for this observation."] });
+        return;
+      }
+      const observationDate = String(payload.observationDate || "").slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(observationDate)) {
+        sendJson(res, 400, { errors: ["Observation date is required."] });
+        return;
+      }
+      const seenAreaIds = new Set();
+      const responses = (Array.isArray(payload.responses) ? payload.responses : [])
+        .map((response) => ({
+          areaId: String(response?.areaId || ""),
+          label: String(response?.label || "").trim(),
+          response: response?.response === "yes" || response?.response === "no" ? response.response : null
+        }))
+        .filter((response) => {
+          if (!response.areaId || seenAreaIds.has(response.areaId)) return false;
+          seenAreaIds.add(response.areaId);
+          return true;
+        });
+      const answered = responses.filter((response) => response.response);
+      if (!answered.length) {
+        sendJson(res, 400, { errors: ["Answer at least one fidelity checklist item."] });
+        return;
+      }
+      const yesCount = answered.filter((response) => response.response === "yes").length;
+      const noCount = answered.length - yesCount;
+      const observation = {
+        id: crypto.randomUUID(),
+        rbtUserId,
+        supervisingUserId: actor.id,
+        clientId: client.id,
+        observationDate,
+        responses,
+        yesCount,
+        noCount,
+        answeredCount: answered.length,
+        fidelityPercent: Math.round((yesCount / answered.length) * 100),
+        writtenFeedback: String(payload.writtenFeedback || "").trim().slice(0, 700),
+        relatedSessionId: String(payload.relatedSessionId || ""),
+        serviceCode: "97155",
+        createdAt: new Date().toISOString()
+      };
+      client.rbtFidelityObservations = Array.isArray(client.rbtFidelityObservations)
+        ? [...client.rbtFidelityObservations, observation]
+        : [observation];
+      client.updatedAt = observation.createdAt;
+      logAudit(db, req, actor, "rbt-fidelity-observation-created", {
+        clientId: client.id,
+        details: {
+          observationId: observation.id,
+          rbtUserId,
+          relatedSessionId: observation.relatedSessionId,
+          fidelityPercent: observation.fidelityPercent
+        }
+      });
+      await writeDb(db);
+      sendJson(res, 201, { observation, client });
+      return;
+    }
+
     if (req.method === "PUT" && planMatch) {
       const db = await readDbWithUsers();
       if (!requireRole(req, res, db, ["admin", "bcba"])) return;
@@ -2262,7 +2489,7 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Client not found."] });
         return;
       }
-      if (!canAccessClient(actor, client)) {
+      if (!canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -2322,7 +2549,7 @@ export function createAppServer() {
         return;
       }
       const client = db.clients.find((item) => item.id === payload.clientId);
-      if (!client || !canAccessClient(user, client)) {
+      if (!client || !canAccessClient(user, client, db)) {
         sendJson(res, 403, { errors: ["You cannot create sessions for this client."] });
         return;
       }
@@ -2358,7 +2585,7 @@ export function createAppServer() {
       const actor = currentUser(req, db);
       const payload = await readBody(req);
       const client = db.clients.find((item) => item.id === payload.clientId);
-      if (!client || !canAccessClient(actor, client)) {
+      if (!client || !canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot import historical data for this client."] });
         return;
       }
@@ -2513,7 +2740,7 @@ export function createAppServer() {
         return;
       }
       const client = db.clients.find((item) => item.id === batch.clientId);
-      if (!client || !canAccessClient(actor, client)) {
+      if (!client || !canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot rollback this historical import batch."] });
         return;
       }
@@ -2553,7 +2780,8 @@ export function createAppServer() {
       if (!requireRole(req, res, db, ["admin", "bcba"])) return;
       const actor = currentUser(req, db);
       const session = db.sessions.find((item) => item.id === sessionMatch[1]);
-      if (session && !canAccessAgency(actor, session.agency)) {
+      const sessionClient = session && db.clients.find((item) => item.id === session.clientId);
+      if (session && (!sessionClient || !canAccessClient(actor, sessionClient, db))) {
         sendJson(res, 403, { errors: ["You cannot access this session."] });
         return;
       }
@@ -2582,12 +2810,8 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Session not found."] });
         return;
       }
-      if (!canAccessAgency(actor, session.agency)) {
-        sendJson(res, 403, { errors: ["You cannot access this session."] });
-        return;
-      }
       const client = db.clients.find((item) => item.id === session.clientId);
-      if (!client || !canAccessClient(actor, client)) {
+      if (!client || !canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -2617,12 +2841,8 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Session not found."] });
         return;
       }
-      if (!canAccessAgency(actor, session.agency)) {
-        sendJson(res, 403, { errors: ["You cannot access this session."] });
-        return;
-      }
       const client = db.clients.find((item) => item.id === session.clientId);
-      if (!client || !canAccessClient(actor, client)) {
+      if (!client || !canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -2652,12 +2872,8 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Session not found."] });
         return;
       }
-      if (!canAccessAgency(actor, session.agency)) {
-        sendJson(res, 403, { errors: ["You cannot access this session."] });
-        return;
-      }
       const client = db.clients.find((item) => item.id === session.clientId);
-      if (!client || !canAccessClient(actor, client)) {
+      if (!client || !canAccessClient(actor, client, db)) {
         sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
@@ -2690,8 +2906,9 @@ export function createAppServer() {
         sendJson(res, 404, { errors: ["Session not found."] });
         return;
       }
-      if (!canAccessAgency(actor, session.agency)) {
-        sendJson(res, 403, { errors: ["You cannot access this session."] });
+      const client = db.clients.find((item) => item.id === session.clientId);
+      if (!client || !canAccessClient(actor, client, db)) {
+        sendJson(res, 403, { errors: ["You cannot access this client."] });
         return;
       }
       const before = soapNoteAuditSnapshot(session);
@@ -2865,9 +3082,7 @@ function createUserRecord(payload, existingUsers, actor = null) {
   const name = text(payload.name);
   const password = String(payload.password || "");
   const role = validRole(payload.role);
-  const agency = isMasterAdmin(actor)
-    ? normalizeAgency(payload.agency, actor?.agency)
-    : normalizeAgency(actor?.agency || payload.agency);
+  const agency = DEFAULT_AGENCY;
   const allowMasterAdmin = isMasterAdmin(actor) && role === "admin" && Boolean(payload.isMasterAdmin);
   if (!username) throw new Error("Username is required.");
   if (!name) throw new Error("Name is required.");
@@ -2911,9 +3126,7 @@ function updateUserRecord(user, payload, actor, existingUsers = []) {
   user.name = name;
   user.email = email;
   user.role = validRole(payload.role);
-  user.agency = isMasterAdmin(actor)
-    ? normalizeAgency(payload.agency, user.agency)
-    : normalizeAgency(actor?.agency || user.agency);
+  user.agency = normalizeAgency(user.agency);
   user.isMasterAdmin = user.role === "admin" && isMasterAdmin(actor) ? Boolean(payload.isMasterAdmin) : false;
   user.active = Boolean(payload.active);
   if (!existingUsers.some((item) => item.id !== user.id && item.role === "admin" && item.active !== false && item.isMasterAdmin)
@@ -3305,14 +3518,16 @@ function canAccessAgency(user, agency) {
   return Boolean(user) && (isMasterAdmin(user) || userAgency(user) === normalizeAgency(agency));
 }
 
-function canAccessClient(user, client) {
-  return Boolean(client) && canAccessAgency(user, client.agency);
+function canAccessClient(user, client, db) {
+  if (!user || !client) return false;
+  if (user.role !== "rbt") return true;
+  return (db?.clientUserAssignments || []).some((assignment) => (
+    assignment.clientId === client.id && assignment.userId === user.id
+  ));
 }
 
 function visibleClients(db, user) {
-  return isMasterAdmin(user)
-    ? (db.clients || [])
-    : (db.clients || []).filter((client) => canAccessClient(user, client));
+  return (db.clients || []).filter((client) => canAccessClient(user, client, db));
 }
 
 function visibleSessions(db, user) {
@@ -3321,7 +3536,7 @@ function visibleSessions(db, user) {
 }
 
 function visibleAppointments(db, user) {
-  return (db.appointments || []).filter((appointment) => canAccessAgency(user, appointment.agency));
+  return ["admin", "bcba"].includes(user?.role) ? (db.appointments || []) : [];
 }
 
 class RecurringSeriesRequestError extends Error {
@@ -4387,10 +4602,7 @@ function validateAppointmentRecord(appointment, db, actor) {
     errors.push("An existing client is required.");
   } else {
     if (client.status === "archived") errors.push("Client must be active.");
-    if (!canAccessClient(actor, client)) errors.push("You cannot schedule this client.");
-    if (normalizeAgency(client.agency) !== normalizeAgency(appointment.agency)) {
-      errors.push("Appointment agency must match the client agency.");
-    }
+    if (!canAccessClient(actor, client, db)) errors.push("You cannot schedule this client.");
   }
 
   if (!APPOINTMENT_SERVICE_CODES.has(appointment.serviceCode)) {
@@ -4415,9 +4627,6 @@ function validateAppointmentRecord(appointment, db, actor) {
       return;
     }
     if (provider.active === false) errors.push(`Provider ${assignment.userId} must be active.`);
-    if (userAgency(provider) !== normalizeAgency(appointment.agency)) {
-      errors.push(`Provider ${assignment.userId} must belong to the appointment agency.`);
-    }
     const permittedRoles = APPOINTMENT_PROVIDER_ROLES[appointment.serviceCode];
     if (permittedRoles && !permittedRoles.has(provider.role)) {
       errors.push(`Provider ${assignment.userId} role is not permitted for service ${appointment.serviceCode}.`);
@@ -4838,9 +5047,7 @@ function visibleSessionSummaries(db, user) {
 }
 
 function visibleUsers(db, user) {
-  return isMasterAdmin(user)
-    ? (db.users || [])
-    : (db.users || []).filter((candidate) => !isMasterAdmin(candidate) && userAgency(candidate) === userAgency(user));
+  return user?.role === "admin" ? (db.users || []) : [];
 }
 
 function visibleAuditLog(db, user) {
@@ -4908,8 +5115,33 @@ function publicUser(user) {
   };
 }
 
+function assignmentPublicUser(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    role: user.role,
+    active: user.active !== false
+  };
+}
+
+function compareAssignmentProviders(left, right) {
+  return String(left.role || "").localeCompare(String(right.role || ""))
+    || String(left.name || "").localeCompare(String(right.name || ""));
+}
+
+function clientAssignmentProviders(db, clientId) {
+  return (db.clientUserAssignments || [])
+    .filter((assignment) => assignment.clientId === clientId)
+    .map((assignment) => {
+      const user = (db.users || []).find((candidate) => candidate.id === assignment.userId);
+      return user ? { ...assignment, provider: assignmentPublicUser(user) } : null;
+    })
+    .filter(Boolean)
+    .sort((left, right) => compareAssignmentProviders(left.provider, right.provider));
+}
+
 function redactDb(db, user) {
-  const { users, auditLog, appointments, recurringAppointmentSeries, ...publicDb } = db;
+  const { users, auditLog, appointments, recurringAppointmentSeries, clientUserAssignments, ...publicDb } = db;
   return {
     ...publicDb,
     clients: visibleClients(db, user),
@@ -4919,7 +5151,7 @@ function redactDb(db, user) {
 }
 
 function bootstrapDb(db, user) {
-  const { users, auditLog, sessions, appointments, recurringAppointmentSeries, ...publicDb } = db;
+  const { users, auditLog, sessions, appointments, recurringAppointmentSeries, clientUserAssignments, ...publicDb } = db;
   return {
     ...publicDb,
     clients: visibleClients(db, user),
@@ -4941,6 +5173,7 @@ function practiceBackupPayload(db) {
       sessions: db.sessions || [],
       appointments: db.appointments || [],
       recurringAppointmentSeries: db.recurringAppointmentSeries || [],
+      clientUserAssignments: db.clientUserAssignments || [],
       historicalImportBatches: db.historicalImportBatches || [],
       auditLog: db.auditLog || [],
       users: (db.users || []).map(publicUser)
@@ -4952,7 +5185,7 @@ function restorePracticeBackup(currentDb, backup) {
   if (!backup || backup.app !== "ABA Practice MVP" || !backup.data) {
     throw new Error("That file is not a valid ABA Practice MVP backup.");
   }
-  const { clients, sessions, appointments, recurringAppointmentSeries, historicalImportBatches, auditLog } = backup.data;
+  const { clients, sessions, appointments, recurringAppointmentSeries, clientUserAssignments, historicalImportBatches, auditLog } = backup.data;
   if (!Array.isArray(clients) || !Array.isArray(sessions)) {
     throw new Error("Backup must include clients and sessions.");
   }
@@ -4962,6 +5195,7 @@ function restorePracticeBackup(currentDb, backup) {
     sessions,
     appointments: Array.isArray(appointments) ? appointments : [],
     recurringAppointmentSeries: Array.isArray(recurringAppointmentSeries) ? recurringAppointmentSeries : [],
+    clientUserAssignments: Array.isArray(clientUserAssignments) ? clientUserAssignments : (currentDb.clientUserAssignments || []),
     historicalImportBatches: Array.isArray(historicalImportBatches) ? historicalImportBatches : [],
     auditLog: Array.isArray(auditLog) ? auditLog : [],
     users: currentDb.users || []
@@ -5268,9 +5502,7 @@ function createClientRecord(payload, existingClients, actor = null) {
   return {
     id: uniqueSlug(name, "client", existingClients.map((client) => client.id)),
     name,
-    agency: isMasterAdmin(actor)
-      ? normalizeAgency(payload.agency, actor?.agency)
-      : normalizeAgency(actor?.agency || payload.agency),
+    agency: DEFAULT_AGENCY,
     dob: text(payload.dob),
     defaultSetting: text(payload.defaultSetting) || "Clinic",
     status: "active",
@@ -5290,6 +5522,7 @@ function createClientRecord(payload, existingClients, actor = null) {
     note97151History: [],
     note97155History: [],
     rbtPerformanceAreas: [],
+    rbtFidelityObservations: [],
     createdAt: new Date().toISOString(),
     planUpdatedAt: ""
   };
@@ -5298,9 +5531,7 @@ function createClientRecord(payload, existingClients, actor = null) {
 function updateClientRecord(client, payload, actor = null) {
   const existingServiceLocations = clientServiceLocationRecords(client);
   client.name = text(payload.name);
-  client.agency = canEditClientAgency(actor)
-    ? normalizeAgency(payload.agency, client.agency)
-    : normalizeAgency(client.agency);
+  client.agency = normalizeAgency(client.agency);
   client.dob = text(payload.dob);
   client.defaultSetting = text(payload.defaultSetting) || "Clinic";
   client.status = payload.status === "archived" ? "archived" : "active";
@@ -5310,10 +5541,6 @@ function updateClientRecord(client, payload, actor = null) {
     ...(existingServiceLocations.length ? { serviceLocations: existingServiceLocations } : {})
   };
   client.updatedAt = new Date().toISOString();
-}
-
-function canEditClientAgency(user) {
-  return user?.role === "admin";
 }
 
 function sanitizeClientProfile(payload) {

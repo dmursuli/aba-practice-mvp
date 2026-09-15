@@ -228,7 +228,7 @@
           <h2 id="user-management-title">User management</h2>
         </div>
 
-        <form id="new-user-form" class="session-form">
+        <form id="new-user-form" class="session-form" data-admin-user-management>
           <div class="block-heading">
             <h3>Create user</h3>
             <button type="submit" class="primary-button">Create user</button>
@@ -256,31 +256,41 @@
               </select>
             </label>
             <label>
-              Agency
-              <select name="agency" id="new-user-agency">
-                <option value="Triumph ABA">Triumph ABA</option>
-                <option value="One Clinical Care">One Clinical Care</option>
-              </select>
-            </label>
-            <label>
               Temporary password
               <input type="password" name="password" autocomplete="new-password" required>
             </label>
           </div>
-          <label class="hidden" data-master-admin-only>
-            <input type="checkbox" name="isMasterAdmin" value="true">
-            Master admin
-          </label>
           <p class="form-message" id="new-user-message" role="status"></p>
         </form>
 
-        <section class="report-form-section" aria-labelledby="existing-users-title">
+        <section class="report-form-section" aria-labelledby="existing-users-title" data-admin-user-management>
           <div class="block-heading">
             <h3 id="existing-users-title">Existing users</h3>
             <button type="button" class="secondary-button" id="refresh-users">Refresh users</button>
           </div>
           <p class="form-message" id="user-management-message" role="status"></p>
           <div id="user-list" class="user-list"></div>
+        </section>
+
+        <section class="report-form-section" id="rbt-fidelity-history-section" aria-labelledby="rbt-fidelity-history-title">
+          <div class="block-heading">
+            <div>
+              <h3 id="rbt-fidelity-history-title">RBT fidelity history</h3>
+              <p class="muted">Review completed supervision observations across authorized clients.</p>
+            </div>
+            <label>
+              RBT
+              <select id="rbt-fidelity-history-rbt"></select>
+            </label>
+          </div>
+          <p class="form-message" id="rbt-fidelity-history-message" role="status"></p>
+          <article class="chart-panel">
+            <h4 id="rbt-fidelity-chart-title">Fidelity over time</h4>
+            <div class="graph-canvas-scroll">
+              <canvas id="rbt-fidelity-history-chart" width="760" height="320"></canvas>
+            </div>
+          </article>
+          <div id="rbt-fidelity-history-list" class="history-list"></div>
         </section>
       </section>
     </main>
@@ -292,11 +302,41 @@
           <h2 id="client-management-title">Client management</h2>
         </div>
         <div class="button-row" id="client-admin-toolbar">
+          <button type="button" class="primary-button" id="toggle-new-client" aria-expanded="false" aria-controls="new-client-form">+ Add client</button>
           <button type="button" class="secondary-button" id="export-client-package">Export client package</button>
           <button type="button" class="secondary-button" id="download-practice-backup">Download practice backup</button>
           <button type="button" class="secondary-button danger-button" id="restore-practice-backup">Restore practice backup</button>
         </div>
         <div id="client-management-summary" class="summary-strip"></div>
+
+        <form id="new-client-form" class="session-form hidden" data-client-create>
+          <div class="block-heading">
+            <h3>Add new client</h3>
+            <div class="button-row">
+              <button type="button" class="secondary-button" id="cancel-new-client">Cancel</button>
+              <button type="submit" class="primary-button">Create client</button>
+            </div>
+          </div>
+          <div class="form-grid">
+            <label>
+              Client name
+              <input type="text" name="name" placeholder="Client name" required>
+            </label>
+            <label>
+              Date of birth
+              <input type="date" name="dob">
+            </label>
+            <label>
+              Default setting
+              <input type="text" name="defaultSetting" placeholder="Clinic, home, school">
+            </label>
+            <label>
+              Diagnosis
+              <input type="text" name="diagnosis" placeholder="Autism Spectrum Disorder">
+            </label>
+          </div>
+          <p class="form-message" id="new-client-message" role="status"></p>
+        </form>
 
         <form id="client-profile-form" class="session-form">
           <div class="block-heading">
@@ -321,13 +361,6 @@
             <label>
               Client name
               <input type="text" name="name" required>
-            </label>
-            <label class="hidden" data-admin-only>
-              Agency
-              <select name="agency" id="client-agency-select">
-                <option value="Triumph ABA">Triumph ABA</option>
-                <option value="One Clinical Care">One Clinical Care</option>
-              </select>
             </label>
             <label>
               Date of birth
@@ -598,6 +631,26 @@
           <p class="form-message" id="client-profile-message" role="status"></p>
         </form>
 
+        <section class="report-form-section" id="client-case-team" aria-labelledby="client-case-team-title">
+          <div class="block-heading">
+            <div>
+              <h3 id="client-case-team-title">Case team</h3>
+              <p class="muted">BCBAs and RBTs explicitly assigned to this client.</p>
+            </div>
+          </div>
+          <form id="client-assignment-form" class="form-grid">
+            <label>
+              Provider
+              <select name="userId" id="client-assignment-provider"></select>
+            </label>
+            <div class="button-row">
+              <button type="submit" class="secondary-button">Assign provider</button>
+            </div>
+          </form>
+          <p class="form-message" id="client-assignment-message" role="status"></p>
+          <div id="client-assignment-list" class="user-list"></div>
+        </section>
+
         <section class="report-form-section" aria-labelledby="client-documents-title">
           <div class="block-heading">
             <h3 id="client-documents-title">Documents</h3>
@@ -636,38 +689,6 @@
           <div id="client-document-list" class="document-list"></div>
         </section>
 
-        <form id="new-client-form" class="session-form" data-client-create>
-          <div class="block-heading">
-            <h3>Add new client</h3>
-            <button type="submit" class="primary-button">Create client</button>
-          </div>
-          <div class="form-grid">
-            <label>
-              Client name
-              <input type="text" name="name" placeholder="Client name" required>
-            </label>
-            <label>
-              Agency
-              <select name="agency" id="new-client-agency">
-                <option value="Triumph ABA">Triumph ABA</option>
-                <option value="One Clinical Care">One Clinical Care</option>
-              </select>
-            </label>
-            <label>
-              Date of birth
-              <input type="date" name="dob">
-            </label>
-            <label>
-              Default setting
-              <input type="text" name="defaultSetting" placeholder="Clinic, home, school">
-            </label>
-            <label>
-              Diagnosis
-              <input type="text" name="diagnosis" placeholder="Autism Spectrum Disorder">
-            </label>
-          </div>
-          <p class="form-message" id="new-client-message" role="status"></p>
-        </form>
       </section>
     </main>
 
@@ -1858,6 +1879,12 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
                 </select>
               </label>
               <label>
+                RBT supervised
+                <select name="rbtUserId" id="rbt-supervision-user" disabled>
+                  <option value="">Set RBT present to Yes</option>
+                </select>
+              </label>
+              <label>
                 Supervision focus
                 <select name="focus">
                   <option value="protocol modification">Protocol modification</option>
@@ -1913,7 +1940,7 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
               <p class="eyebrow">RBT supervision</p>
               <h3 id="rbt-feedback-title">Performance feedback</h3>
             </div>
-            <div class="metric-pill" id="rbt-fidelity-score">0% fidelity</div>
+            <div class="metric-pill" id="rbt-fidelity-score">Unscored</div>
           </div>
           <p class="muted" id="rbt-feedback-help">Set RBT present to Yes in the 97155 session entry when feedback is provided.</p>
           <div class="fidelity-table" role="table" aria-label="RBT performance fidelity checklist">
@@ -2014,6 +2041,10 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
         <div class="program-display-card">
           <span class="program-display-label">Program</span>
           <strong data-program-display></strong>
+          <details class="program-objective" data-program-objective-details hidden>
+            <summary>View objective</summary>
+            <p data-program-objective-text></p>
+          </details>
           <select data-field="programId" class="visually-hidden-control" tabindex="-1" aria-hidden="true" required></select>
           <input type="hidden" data-field="entryMode" value="active">
         </div>

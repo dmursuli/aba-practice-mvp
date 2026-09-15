@@ -215,6 +215,13 @@ export async function getUsers() {
   return parseResponse(response);
 }
 
+export async function getRbtFidelityHistory(rbtUserId = "") {
+  const url = new URL("/api/rbt-fidelity-history", window.location.origin);
+  if (rbtUserId) url.searchParams.set("rbtUserId", rbtUserId);
+  const response = await fetch(url.pathname + url.search);
+  return parseResponse(response);
+}
+
 export async function createUser(user) {
   const response = await fetch("/api/users", {
     method: "POST",
@@ -256,6 +263,36 @@ export async function updateClientProfile(clientId, profile) {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(profile)
+  });
+  return parseResponse(response);
+}
+
+export async function getClientAssignments(clientId) {
+  const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/assignments`);
+  return parseResponse(response);
+}
+
+export async function assignClientProvider(clientId, userId) {
+  const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/assignments`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId })
+  });
+  return parseResponse(response);
+}
+
+export async function removeClientProvider(clientId, userId) {
+  const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/assignments/${encodeURIComponent(userId)}`, {
+    method: "DELETE"
+  });
+  return parseResponse(response);
+}
+
+export async function createRbtFidelityObservation(clientId, observation) {
+  const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/rbt-fidelity-observations`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(observation)
   });
   return parseResponse(response);
 }
