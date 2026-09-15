@@ -67,19 +67,10 @@ test('graph resize redraws are throttled and limited to the active Graphs view',
 test('session data hydration rerenders only the active session-backed view', () => {
   const block = sourceBlock('rerenderSessionBackedView');
 
-  assert.match(block, /if \(view === "plan"\) renderPlanReview\(\);/);
   assert.match(block, /if \(view === "graphs"\) \{\s*renderGraphsSummary\(\);\s*renderCharts\(\);/s);
   assert.match(block, /if \(view === "report"\) \{\s*renderReportSummary\(\);\s*renderFunderReportPreview\(\);/s);
   assert.doesNotMatch(block, /renderSummary\(\);\s*renderGraphsSummary\(\);\s*renderHistoricalImport\(\);\s*renderReportSummary\(\);/s);
   assert.doesNotMatch(block, /renderSoapSummary\(\);\s*renderHistory\(\);\s*renderNote\(\);\s*renderParentSummary\(\);/s);
-});
-
-test('treatment planning hydrates full client sessions before classifying target progress', () => {
-  const needsSessionsBlock = sourceBlock('viewNeedsClientSessions');
-  const ensureBlock = asyncSourceBlock('ensureSessionDataForView');
-
-  assert.match(needsSessionsBlock, /\["session", "workflow", "plan", "parent", "graphs", "report", "soap"\]\.includes\(view\)/);
-  assert.match(ensureBlock, /if \(viewNeedsClientSessions\(view\)\) \{\s*await ensureClientSessionsLoaded\(clientId, \{ force \}\);/s);
 });
 
 test('bootstrap carries session summaries but not eager historical import batches', () => {

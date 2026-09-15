@@ -787,7 +787,7 @@ function ensureProgramGraphModalAnalysis() {
 }
 
 function viewNeedsClientSessions(view = currentView()) {
-  return ["session", "workflow", "plan", "parent", "graphs", "report", "soap"].includes(view);
+  return ["session", "workflow", "parent", "graphs", "report", "soap"].includes(view);
 }
 
 function viewNeedsAllVisibleSessions(view = currentView()) {
@@ -816,7 +816,6 @@ function loadedSessionPageMatches(clientId) {
 function rerenderSessionBackedView(view = currentView()) {
   if (view === "session") renderSummary();
   if (view === "workflow") renderWorkflowBoard();
-  if (view === "plan") renderPlanReview();
   if (view === "parent") renderParentSummary();
   if (view === "graphs") {
     renderGraphsSummary();
