@@ -195,7 +195,7 @@ test("Admin and BCBA can create series while RBT and read-only users cannot", as
   assert.equal((await createSeries(readOnlyCookie)).response.status, 403);
 });
 
-test("creation uses authoritative identity, role, agency, service-code, and location validation", async () => {
+test("creation uses organization-wide authoritative identity, role, service-code, and location validation", async () => {
   await resetDb();
   const cookie = await login();
   const initialized = await readDb();
@@ -214,9 +214,20 @@ test("creation uses authoritative identity, role, agency, service-code, and loca
   });
   await writeFile(dbPath, `${JSON.stringify(initialized, null, 2)}\n`, "utf8");
 
+  const organizationWide = await createSeries(cookie, {
+    requestId: "allow-legacy-agency-differences",
+    clientId: "other-client",
+    providerUserId: "other-rbt"
+  });
+  assert.equal(organizationWide.response.status, 201);
+  let persisted = await readDb();
+  assert.equal(persisted.recurringAppointmentSeries[0].agency, "Triumph ABA");
+  assert.equal(persisted.recurringAppointmentSeries[0].clientId, "other-client");
+  assert.equal(persisted.recurringAppointmentSeries[0].revisions[0].template.providerAssignments[0].userId, "other-rbt");
+  assert.equal(persisted.clients.find((item) => item.id === "other-client").agency, "One Clinical Care");
+  assert.equal(persisted.users.find((item) => item.id === "other-rbt").agency, "One Clinical Care");
+
   const cases = [
-    [{ requestId: "reject-cross-client", clientId: "other-client" }, /Client must belong/],
-    [{ requestId: "reject-cross-provider", providerUserId: "other-rbt" }, /Provider must belong/],
     [{ requestId: "reject-inactive-rbt", providerUserId: "inactive-rbt" }, /Provider must be active/],
     [{ requestId: "reject-role-service", providerUserId: "user-bcba" }, /role is not permitted/],
     [{ requestId: "reject-service-code", serviceCode: "parent-training" }, /97151, 97153, 97155, or 97156/],
@@ -336,6 +347,9 @@ test("stable occurrence identity and required request idempotency prevent duplic
   const cookie = await login();
   const payload = { requestId: "idempotent-series-request" };
   const first = await createSeries(cookie, payload);
+  const changedActorAgency = await readDb();
+  changedActorAgency.users.find((user) => user.id === "user-admin").agency = "One Clinical Care";
+  await writeFile(dbPath, `${JSON.stringify(changedActorAgency, null, 2)}\n`, "utf8");
   const retry = await createSeries(cookie, payload);
   assert.equal(first.response.status, 201);
   assert.equal(retry.response.status, 200);
@@ -411,6 +425,7 @@ test("practice backup and restore preserve superseded revision lifecycle history
       createdAt: supersededAt
     }
   ];
+  persisted.recurringAppointmentSeries[0].agency = "One Clinical Care";
   const expectedSeries = structuredClone(persisted.recurringAppointmentSeries[0]);
   await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
 
@@ -548,6 +563,7 @@ test("individual edits create protected modified and moved exceptions atomically
     email: "rbt-2@local.test",
     name: "Second RBT"
   });
+  persisted.recurringAppointmentSeries[0].agency = "One Clinical Care";
   await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
   persisted = await readDb();
   const appointmentId = persisted.appointments.find((item) => (
@@ -645,6 +661,9 @@ test("recurring confirmation requires both current versions and increments the p
   const cookie = await login();
   await createSeries(cookie, { requestId: "recurring-confirmation-versioning" });
   let persisted = await readDb();
+  persisted.recurringAppointmentSeries[0].agency = "One Clinical Care";
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+  persisted = await readDb();
   const appointment = persisted.appointments[0];
   const identityFields = [
     "recurrenceSeriesId", "recurrenceRevisionId", "recurrenceRowId", "recurrenceOccurrenceId",
@@ -705,6 +724,9 @@ test("recurring cancellation requires both current versions and preserves cancel
   const cookie = await login();
   await createSeries(cookie, { requestId: "recurring-cancellation-versioning" });
   let persisted = await readDb();
+  persisted.recurringAppointmentSeries[0].agency = "One Clinical Care";
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+  persisted = await readDb();
   const appointment = persisted.appointments[0];
   const identityFields = [
     "recurrenceSeriesId", "recurrenceRevisionId", "recurrenceRowId", "recurrenceOccurrenceId",
@@ -876,7 +898,7 @@ test("This and Future splits the governing revision and updates eligible future 
 test("This and Future protects represented exceptions and uses system-safe removal identities", async (t) => {
   useRecurrenceEditTestClock(t);
   await resetDb();
-  const cookie = await login();
+  const cookie = await login("bcba", "bcba123");
   await createSeries(cookie, {
     requestId: "this-and-future-protected-removals",
     startDate: "2026-09-07",
@@ -886,6 +908,8 @@ test("This and Future protects represented exceptions and uses system-safe remov
   const series = persisted.recurringAppointmentSeries[0];
   const selected = persisted.appointments.find((item) => item.originalOccurrenceLocalDate === "2026-09-14");
   const protectedAppointment = persisted.appointments.find((item) => item.originalOccurrenceLocalDate === "2026-09-21");
+  series.agency = "One Clinical Care";
+  persisted.appointments.forEach((appointment) => { appointment.agency = "One Clinical Care"; });
   protectedAppointment.status = "confirmed";
   protectedAppointment.version += 1;
   const protectedSnapshot = structuredClone(protectedAppointment);
@@ -1125,13 +1149,15 @@ test("Entire Series future uses the earliest boundary and replaces the complete 
 test("Entire Series future leaves past and protected appointments unchanged and retains removed slots", async (t) => {
   useRecurrenceEditTestClock(t);
   await resetDb();
-  const cookie = await login();
+  const cookie = await login("bcba", "bcba123");
   await createSeries(cookie, {
     requestId: "entire-series-protection",
     startDate: "2026-08-24",
     endDate: "2026-10-26"
   });
   let persisted = await readDb();
+  persisted.recurringAppointmentSeries[0].agency = "One Clinical Care";
+  persisted.appointments.forEach((appointment) => { appointment.agency = "One Clinical Care"; });
   const byDate = new Map(persisted.appointments.map((item) => [item.originalOccurrenceLocalDate, item]));
   const pastSnapshots = ["2026-08-24", "2026-08-31"].map((date) => structuredClone(byDate.get(date)));
   byDate.get("2026-09-07").status = "confirmed";

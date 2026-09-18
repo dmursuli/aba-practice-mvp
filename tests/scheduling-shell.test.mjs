@@ -46,7 +46,8 @@ test("Scheduling workspace has five subviews with Calendar active", () => {
   assert.equal(subviewPanels.length, 5);
   assert.match(htmlSource, /data-schedule-subview-button="calendar"[^>]*aria-selected="true"/);
   assert.match(htmlSource, /data-schedule-subview-panel="staffing"[\s\S]*No staffing business logic is active yet/);
-  assert.match(htmlSource, /data-schedule-subview-panel="availability"[\s\S]*No availability records or calculations are active yet/);
+  assert.match(htmlSource, /data-schedule-subview-panel="availability"[\s\S]*Provider Availability/);
+  assert.match(htmlSource, /id="provider-availability-provider"/);
   assert.match(htmlSource, /data-schedule-subview-panel="zones"[\s\S]*No zone configuration or assignment is active yet/);
   assert.match(htmlSource, /data-schedule-subview-panel="capacity"[\s\S]*No capacity calculations are active yet/);
 });
@@ -66,13 +67,14 @@ test("Scheduling is available only to admin and BCBA roles", () => {
   assert.match(switchBlock, /if \(view === "schedule"\) await switchScheduleSubview\(state\.activeScheduleSubview\);/);
 });
 
-test("workspace subnavigation changes panels and loads data only for Calendar", () => {
+test("workspace subnavigation changes panels and loads only the selected Scheduling data", () => {
   const block = asyncFunctionSource("switchScheduleSubview");
   assert.match(appSource, /activeScheduleSubview:\s*"calendar"/);
   assert.match(block, /\["calendar", "staffing", "availability", "zones", "capacity"\]/);
   assert.match(block, /button\.setAttribute\("aria-selected", String\(isActive\)\)/);
   assert.match(block, /panel\.classList\.toggle\("hidden"/);
   assert.match(block, /if \(selectedSubview === "calendar"\) await ensureScheduleWeekLoaded\(\);/);
+  assert.match(block, /if \(selectedSubview === "availability"\) await ensureProviderAvailabilityLoaded\(\);/);
 });
 
 test("week helpers render Monday through Sunday across month and year boundaries", () => {

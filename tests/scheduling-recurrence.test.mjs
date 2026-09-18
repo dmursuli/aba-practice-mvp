@@ -188,7 +188,7 @@ test("supersession metadata and references reject invalid, active, and circular 
   assert.match(sanitizeRecurringSeriesRecord(circular).errors.join(" "), /must not be circular/);
 });
 
-test("series sanitizer rejects invalid state, client, agency, provider, and location shapes", () => {
+test("series sanitizer rejects invalid state, client, provider, and location shapes", () => {
   const invalid = validSeries({
     agency: "Other Agency",
     status: "paused",
@@ -203,7 +203,6 @@ test("series sanitizer rejects invalid state, client, agency, provider, and loca
   assert.match(result.errors.join(" "), /endDate must be on or after/);
   assert.match(result.errors.join(" "), /status must be active or ended/);
   assert.match(result.errors.join(" "), /version must be a positive integer/);
-  assert.match(result.errors.join(" "), /agency must match the client agency/);
   assert.match(result.errors.join(" "), /exactly one primary provider/);
   assert.match(result.errors.join(" "), /locationId does not belong/);
 
@@ -211,6 +210,17 @@ test("series sanitizer rejects invalid state, client, agency, provider, and loca
     clients: [client], users, validateReferences: true
   });
   assert.match(missingClient.errors.join(" "), /does not exist/);
+});
+
+test("series sanitizer preserves legacy agency fields without using them as reference boundaries", () => {
+  const result = sanitizeRecurringSeriesRecord(validSeries({ agency: "One Clinical Care" }), {
+    clients: [client],
+    users: [{ ...users[0], agency: "Legacy Provider Agency" }],
+    validateReferences: true
+  });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.series.agency, "One Clinical Care");
+  assert.equal(client.agency, "Triumph ABA");
 });
 
 test("series revisions must cover the bounded series timeline without overlap or gaps", () => {

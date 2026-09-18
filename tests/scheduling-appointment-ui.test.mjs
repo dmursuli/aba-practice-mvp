@@ -227,16 +227,15 @@ test("selected service location is stored through the existing appointment snaps
   assert.equal(createdPayload.notes, "Use side gate.");
 });
 
-test("selectors use stable IDs from active same-agency authoritative records", () => {
+test("selectors use stable IDs from active organization-wide authoritative records", () => {
   const route = serverSource.slice(
     serverSource.indexOf('url.pathname === "/api/appointment-options"'),
     serverSource.indexOf("const appointmentMatch", serverSource.indexOf('url.pathname === "/api/appointment-options"'))
   );
   assert.match(route, /client\.status !== "archived"/);
-  assert.match(route, /normalizeAgency\(client\.agency\) === agency/);
   assert.match(route, /provider\.active !== false/);
   assert.match(route, /\["bcba", "rbt"\]\.includes\(provider\.role\)/);
-  assert.match(route, /userAgency\(provider\) === agency/);
+  assert.doesNotMatch(route, /client\.agency\).*===|provider\.agency\).*===|userAgency\(provider\)/);
   assert.match(functionSource("appointmentFormPayload"), /clientId: String\(formData\.get\("clientId"\)/);
   assert.match(functionSource("appointmentFormPayload"), /userId: String\(formData\.get\("providerUserId"\)/);
   assert.doesNotMatch(functionSource("appointmentFormPayload"), /clientName|providerName|therapist/);

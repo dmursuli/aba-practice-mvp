@@ -1469,12 +1469,41 @@
           </div>
         </section>
 
-        <section class="schedule-empty-state hidden" id="schedule-subview-availability" data-schedule-subview-panel="availability" role="tabpanel" aria-labelledby="schedule-tab-availability">
-          <div class="schedule-empty-state-content">
-            <p class="eyebrow">Planned workspace</p>
-            <h3>Availability</h3>
-            <p class="muted">Client and staff scheduling availability will be introduced in a future phase. No availability records or calculations are active yet.</p>
+        <section class="schedule-subview hidden" id="schedule-subview-availability" data-schedule-subview-panel="availability" role="tabpanel" aria-labelledby="schedule-tab-availability">
+          <div class="schedule-heading">
+            <div class="section-heading">
+              <p class="eyebrow">Provider schedule</p>
+              <h3>Provider Availability</h3>
+              <p class="muted">Set the provider’s recurring weekly availability for scheduling.</p>
+            </div>
           </div>
+          <div class="provider-availability-toolbar">
+            <label>
+              Provider
+              <select id="provider-availability-provider">
+                <option value="">Select a provider</option>
+              </select>
+            </label>
+            <p class="muted" id="provider-availability-status">Select an active BCBA or RBT provider.</p>
+          </div>
+          <form id="provider-availability-form" class="provider-availability-form">
+            <div class="form-grid">
+              <label>
+                Effective date
+                <input type="date" name="effectiveDate" required>
+              </label>
+              <label>
+                Timezone
+                <input name="timezone" value="America/New_York" autocomplete="off" required>
+              </label>
+            </div>
+            <div id="provider-availability-week" class="provider-availability-week" aria-label="Recurring weekly provider availability"></div>
+            <p class="form-message" id="provider-availability-message" role="status" aria-live="polite"></p>
+            <div class="button-row">
+              <button type="submit" class="primary-button" id="provider-availability-save">Save availability</button>
+              <button type="button" class="secondary-button hidden" id="provider-availability-deactivate">Deactivate availability</button>
+            </div>
+          </form>
         </section>
 
         <section class="schedule-empty-state hidden" id="schedule-subview-zones" data-schedule-subview-panel="zones" role="tabpanel" aria-labelledby="schedule-tab-zones">

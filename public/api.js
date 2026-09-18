@@ -117,6 +117,43 @@ export async function getAppointmentOptions({ timeoutMs = 15000 } = {}) {
   return fetchWithTimeout("/api/appointment-options", timeoutMs);
 }
 
+export async function getProviderAvailabilityProfiles() {
+  const response = await fetch("/api/provider-availability");
+  return parseResponse(response);
+}
+
+export async function getProviderAvailability(providerUserId) {
+  const response = await fetch(`/api/provider-availability/${encodeURIComponent(providerUserId)}`);
+  return parseResponse(response);
+}
+
+export async function createProviderAvailability(availability) {
+  const response = await fetch("/api/provider-availability", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(availability)
+  });
+  return parseResponse(response);
+}
+
+export async function updateProviderAvailability(providerUserId, availability) {
+  const response = await fetch(`/api/provider-availability/${encodeURIComponent(providerUserId)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(availability)
+  });
+  return parseResponse(response);
+}
+
+export async function deactivateProviderAvailability(providerUserId, expectedVersion) {
+  const response = await fetch(`/api/provider-availability/${encodeURIComponent(providerUserId)}/deactivate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedVersion })
+  });
+  return parseResponse(response);
+}
+
 export async function createAppointment(appointment) {
   const response = await fetch("/api/appointments", {
     method: "POST",

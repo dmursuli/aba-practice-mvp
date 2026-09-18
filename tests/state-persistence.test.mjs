@@ -54,6 +54,24 @@ test("PostgreSQL transaction state mutator locks and commits one state write", a
   assert.equal(fake.released, true);
 });
 
+test("PostgreSQL transaction state preserves provider availability profiles", async () => {
+  const initial = { clients: [], providerAvailabilityProfiles: [] };
+  const fake = fakePostgres(initial);
+  await mutateDbInPostgres(fake.config, (state) => {
+    state.providerAvailabilityProfiles.push({
+      id: "availability-1",
+      providerUserId: "user-rbt",
+      effectiveDate: "2026-09-21",
+      timezone: "America/New_York",
+      weeklyAvailability: { monday: [{ start: "09:00", end: "17:00" }] },
+      active: true,
+      version: 1
+    });
+  });
+  assert.equal(fake.state.providerAvailabilityProfiles.length, 1);
+  assert.equal(fake.state.providerAvailabilityProfiles[0].providerUserId, "user-rbt");
+});
+
 test("PostgreSQL transaction state mutator rolls back a complete recurring-series operation on error", async () => {
   const initial = { clients: [], recurringAppointmentSeries: [], appointments: [], auditLog: [] };
   const fake = fakePostgres(initial);

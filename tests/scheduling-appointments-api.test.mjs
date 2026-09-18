@@ -475,6 +475,56 @@ test("date-range and ID reads are lightweight and organization-wide", async () =
   assert.equal(organizationWide.response.status, 200);
 });
 
+test("Admin and BCBA mutate legacy differently-tagged appointments without weakening role checks", async () => {
+  await resetDb();
+  const adminCookie = await loginAs();
+  const created = await createAppointment(adminCookie);
+  assert.equal(created.response.status, 201);
+
+  const legacyDb = await readDbFile();
+  const admin = legacyDb.users.find((user) => user.id === "user-admin");
+  admin.isMasterAdmin = false;
+  legacyDb.users.push({
+    ...structuredClone(admin),
+    id: "user-master-sentinel",
+    username: "master-sentinel",
+    email: "master-sentinel@local.test",
+    name: "Master Sentinel",
+    isMasterAdmin: true
+  });
+  legacyDb.appointments[0].agency = "One Clinical Care";
+  await writeFile(dbPath, `${JSON.stringify(legacyDb, null, 2)}\n`, "utf8");
+
+  const confirmed = await request(`/api/appointments/${created.json.id}`, {
+    method: "PUT",
+    cookie: adminCookie,
+    body: { expectedVersion: 1, status: "confirmed" }
+  });
+  assert.equal(confirmed.response.status, 200);
+  assert.equal(confirmed.json.status, "confirmed");
+  assert.equal(confirmed.json.agency, "One Clinical Care");
+
+  const bcbaCookie = await loginAs("bcba", "bcba123");
+  const cancelled = await request(`/api/appointments/${created.json.id}/cancel`, {
+    method: "POST",
+    cookie: bcbaCookie,
+    body: {
+      expectedVersion: confirmed.json.version,
+      category: "provider",
+      reason: "provider_cancelled"
+    }
+  });
+  assert.equal(cancelled.response.status, 200);
+  assert.equal(cancelled.json.status, "cancelled");
+  assert.equal(cancelled.json.agency, "One Clinical Care");
+  assert.deepEqual(cancelled.json.cancellationActor, { name: "BCBA User" });
+
+  const rbtCookie = await loginAs("rbt", "rbt123");
+  assert.equal((await request(`/api/appointments/${created.json.id}`, { cookie: rbtCookie })).response.status, 403);
+  const readOnlyCookie = await loginAs("readonly", "readonly123");
+  assert.equal((await request(`/api/appointments/${created.json.id}`, { cookie: readOnlyCookie })).response.status, 403);
+});
+
 test("updates increment versions and reject stale or immutable linkage writes", async () => {
   await resetDb();
   const cookie = await loginAs();
@@ -904,7 +954,7 @@ test("cancellation note is optional and limited to the existing 360-character sh
   assert.equal(accepted.json.cancellation.note.length, 360);
 });
 
-test("legacy cancellation remains unchanged and safely resolves an inactive historical actor", async () => {
+test("legacy cancellation remains unchanged and safely resolves inactive historical actors organization-wide", async () => {
   await resetDb();
   const cookie = await loginAs();
   const created = await createAppointment(cookie);
@@ -948,7 +998,7 @@ test("legacy cancellation remains unchanged and safely resolves an inactive hist
   await writeFile(dbPath, `${JSON.stringify(crossAgencyDb, null, 2)}\n`, "utf8");
   const crossAgencyDetails = await request(`/api/appointments/${created.json.id}`, { cookie });
   assert.equal(crossAgencyDetails.response.status, 200);
-  assert.equal(crossAgencyDetails.json.cancellationActor, null);
+  assert.deepEqual(crossAgencyDetails.json.cancellationActor, { name: "Other Agency BCBA" });
 });
 
 test("cancellation persists history and all appointment mutations are audited without changing clinical records", async () => {
@@ -1006,16 +1056,20 @@ test("cancellation persists history and all appointment mutations are audited wi
 });
 
 test("backup and restore preserve scheduling collections and default legacy backups safely", async () => {
-  const series = { id: "series-1", agency: "Triumph ABA", clientId: "client-1", version: 1 };
+  const series = { id: "series-1", agency: "One Clinical Care", clientId: "client-1", version: 1 };
   await resetDb({ ...baseDb, recurringAppointmentSeries: [series] });
   const cookie = await loginAs();
   const created = await createAppointment(cookie);
   assert.equal(created.response.status, 201);
+  const legacyDb = await readDbFile();
+  legacyDb.appointments[0].agency = "One Clinical Care";
+  await writeFile(dbPath, `${JSON.stringify(legacyDb, null, 2)}\n`, "utf8");
 
   const backup = await request("/api/backup", { cookie });
   assert.equal(backup.response.status, 200);
   assert.equal(backup.json.data.appointments.length, 1);
   assert.equal(backup.json.data.appointments[0].id, created.json.id);
+  assert.equal(backup.json.data.appointments[0].agency, "One Clinical Care");
   assert.deepEqual(backup.json.data.recurringAppointmentSeries, [series]);
 
   const restore = await request("/api/backup/restore", {

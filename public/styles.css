@@ -880,6 +880,72 @@ button:focus-visible {
   margin: 0;
 }
 
+.provider-availability-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 360px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--brand-soft);
+}
+
+.provider-availability-toolbar p {
+  margin: 0 0 10px;
+  overflow-wrap: anywhere;
+}
+
+.provider-availability-form,
+.provider-availability-week,
+.provider-availability-blocks {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.provider-availability-day {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.provider-availability-day-heading {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.provider-availability-day-heading h4,
+.provider-availability-none {
+  margin: 0;
+}
+
+.provider-availability-blocks {
+  margin-top: 12px;
+}
+
+.provider-availability-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  min-width: 0;
+}
+
+.provider-availability-block label,
+.provider-availability-block input {
+  min-width: 0;
+}
+
+.provider-availability-block label span {
+  display: block;
+  margin-bottom: 6px;
+}
+
 .schedule-week-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -2566,6 +2632,21 @@ button:disabled {
 
   .schedule-week-grid {
     grid-template-columns: 1fr;
+  }
+
+  .provider-availability-toolbar,
+  .provider-availability-block {
+    grid-template-columns: 1fr;
+  }
+
+  .provider-availability-day-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .provider-availability-day-heading button,
+  .provider-availability-block button {
+    width: 100%;
   }
 
   .schedule-day {

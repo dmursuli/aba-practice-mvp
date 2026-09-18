@@ -13,6 +13,7 @@ import {
   sanitizeRecurrenceAppointmentIdentity,
   sanitizeRecurringSeriesRecord
 } from "./lib/scheduling-recurrence.mjs";
+import { sanitizeProviderAvailabilityInput } from "./lib/provider-availability.mjs";
 import {
   duplicateBehaviorIds,
   duplicateTargetIdsFromPrograms,
@@ -825,6 +826,10 @@ function ensureSchedulingState(db) {
     db.recurringAppointmentSeries = [];
     changed = true;
   }
+  if (!Array.isArray(db.providerAvailabilityProfiles)) {
+    db.providerAvailabilityProfiles = [];
+    changed = true;
+  }
   return changed;
 }
 
@@ -1181,6 +1186,166 @@ export function createAppServer() {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/provider-availability") {
+      const db = await readSchedulingDb();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      sendJson(res, 200, {
+        providers: eligibleAvailabilityProviders(db),
+        profiles: (db.providerAvailabilityProfiles || []).map(providerAvailabilityResponse)
+      });
+      return;
+    }
+
+    const providerAvailabilityMatch = url.pathname.match(/^\/api\/provider-availability\/([^/]+)$/);
+    if (req.method === "GET" && providerAvailabilityMatch) {
+      const db = await readSchedulingDb();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const provider = availabilityProvider(db, decodeURIComponent(providerAvailabilityMatch[1]));
+      if (!provider) {
+        sendJson(res, 404, { errors: ["Eligible provider not found."] });
+        return;
+      }
+      const profile = (db.providerAvailabilityProfiles || []).find((item) => item.providerUserId === provider.id) || null;
+      sendJson(res, 200, { provider: availabilityProviderSummary(provider), profile: profile ? providerAvailabilityResponse(profile) : null });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/provider-availability") {
+      const authDb = await readSchedulingDb();
+      if (!requireRole(req, res, authDb, ["admin", "bcba"])) return;
+      const payload = await readBody(req);
+      let result;
+      try {
+        await mutateSchedulingDb((db) => {
+          ensureSchedulingState(db);
+          db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
+          const state = sessionStatus(req, db);
+          if (state.status !== "ok") throw new ProviderAvailabilityRequestError(401, ["Authentication is required."]);
+          if (!["admin", "bcba"].includes(state.user.role)) {
+            throw new ProviderAvailabilityRequestError(403, ["Your role cannot perform this action."]);
+          }
+          const provider = availabilityProvider(db, payload.providerUserId);
+          if (!provider) throw new ProviderAvailabilityRequestError(400, ["Select an active BCBA or RBT provider."]);
+          if (db.providerAvailabilityProfiles.some((item) => item.providerUserId === provider.id)) {
+            throw new ProviderAvailabilityRequestError(409, ["Availability already exists for this provider. Update the existing profile."]);
+          }
+          const sanitized = sanitizeProviderAvailabilityInput(payload);
+          if (sanitized.errors.length) throw new ProviderAvailabilityRequestError(400, sanitized.errors);
+          const now = new Date().toISOString();
+          const profile = {
+            id: crypto.randomUUID(),
+            providerUserId: provider.id,
+            ...sanitized.availability,
+            active: true,
+            version: 1,
+            createdAt: now,
+            createdByUserId: state.user.id,
+            updatedAt: now,
+            updatedByUserId: state.user.id
+          };
+          db.providerAvailabilityProfiles.push(profile);
+          logAudit(db, req, state.user, "provider-availability-created", {
+            details: providerAvailabilityAuditDetails(profile)
+          });
+          result = providerAvailabilityResponse(profile);
+          return db;
+        });
+      } catch (error) {
+        if (error instanceof ProviderAvailabilityRequestError) {
+          sendJson(res, error.status, { errors: error.errors, ...error.extra });
+          return;
+        }
+        throw error;
+      }
+      sendJson(res, 201, result);
+      return;
+    }
+
+    if (req.method === "PUT" && providerAvailabilityMatch) {
+      const authDb = await readSchedulingDb();
+      if (!requireRole(req, res, authDb, ["admin", "bcba"])) return;
+      const payload = await readBody(req);
+      let result;
+      try {
+        await mutateSchedulingDb((db) => {
+          ensureSchedulingState(db);
+          db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
+          const state = sessionStatus(req, db);
+          if (state.status !== "ok") throw new ProviderAvailabilityRequestError(401, ["Authentication is required."]);
+          if (!["admin", "bcba"].includes(state.user.role)) {
+            throw new ProviderAvailabilityRequestError(403, ["Your role cannot perform this action."]);
+          }
+          const provider = availabilityProvider(db, decodeURIComponent(providerAvailabilityMatch[1]));
+          if (!provider) throw new ProviderAvailabilityRequestError(400, ["Select an active BCBA or RBT provider."]);
+          const profile = db.providerAvailabilityProfiles.find((item) => item.providerUserId === provider.id);
+          if (!profile) throw new ProviderAvailabilityRequestError(404, ["Provider availability not found."]);
+          requireProviderAvailabilityVersion(profile, payload.expectedVersion);
+          const sanitized = sanitizeProviderAvailabilityInput(payload);
+          if (sanitized.errors.length) throw new ProviderAvailabilityRequestError(400, sanitized.errors);
+          Object.assign(profile, sanitized.availability, {
+            active: true,
+            version: profile.version + 1,
+            updatedAt: new Date().toISOString(),
+            updatedByUserId: state.user.id
+          });
+          logAudit(db, req, state.user, "provider-availability-updated", {
+            details: providerAvailabilityAuditDetails(profile)
+          });
+          result = providerAvailabilityResponse(profile);
+          return db;
+        });
+      } catch (error) {
+        if (error instanceof ProviderAvailabilityRequestError) {
+          sendJson(res, error.status, { errors: error.errors, ...error.extra });
+          return;
+        }
+        throw error;
+      }
+      sendJson(res, 200, result);
+      return;
+    }
+
+    const providerAvailabilityDeactivateMatch = url.pathname.match(/^\/api\/provider-availability\/([^/]+)\/deactivate$/);
+    if (req.method === "POST" && providerAvailabilityDeactivateMatch) {
+      const authDb = await readSchedulingDb();
+      if (!requireRole(req, res, authDb, ["admin", "bcba"])) return;
+      const payload = await readBody(req);
+      let result;
+      try {
+        await mutateSchedulingDb((db) => {
+          ensureSchedulingState(db);
+          db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
+          const state = sessionStatus(req, db);
+          if (state.status !== "ok") throw new ProviderAvailabilityRequestError(401, ["Authentication is required."]);
+          if (!["admin", "bcba"].includes(state.user.role)) {
+            throw new ProviderAvailabilityRequestError(403, ["Your role cannot perform this action."]);
+          }
+          const providerUserId = decodeURIComponent(providerAvailabilityDeactivateMatch[1]);
+          const profile = db.providerAvailabilityProfiles.find((item) => item.providerUserId === providerUserId);
+          if (!profile) throw new ProviderAvailabilityRequestError(404, ["Provider availability not found."]);
+          requireProviderAvailabilityVersion(profile, payload.expectedVersion);
+          if (!profile.active) throw new ProviderAvailabilityRequestError(400, ["Provider availability is already inactive."]);
+          profile.active = false;
+          profile.version += 1;
+          profile.updatedAt = new Date().toISOString();
+          profile.updatedByUserId = state.user.id;
+          logAudit(db, req, state.user, "provider-availability-deactivated", {
+            details: providerAvailabilityAuditDetails(profile)
+          });
+          result = providerAvailabilityResponse(profile);
+          return db;
+        });
+      } catch (error) {
+        if (error instanceof ProviderAvailabilityRequestError) {
+          sendJson(res, error.status, { errors: error.errors, ...error.extra });
+          return;
+        }
+        throw error;
+      }
+      sendJson(res, 200, result);
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/recurring-series") {
       const authDb = await readSchedulingDb();
       if (!requireRole(req, res, authDb, ["admin", "bcba"])) return;
@@ -1300,9 +1465,6 @@ export function createAppServer() {
           }
           const appointment = (db.appointments || []).find((item) => item.id === appointmentThisAndFutureMatch[1]);
           if (!appointment) throw new AppointmentMutationRequestError(404, ["Appointment not found."]);
-          if (!canAccessAgency(state.user, appointment.agency)) {
-            throw new AppointmentMutationRequestError(403, ["You cannot update this appointment."]);
-          }
           const operation = updateRecurringSeriesThisAndFutureOperation(appointment, payload, db, state.user);
           if (operation.status) {
             throw new AppointmentMutationRequestError(operation.status, operation.errors, operation.extra);
@@ -1344,9 +1506,6 @@ export function createAppServer() {
           }
           const appointment = (db.appointments || []).find((item) => item.id === appointmentEntireSeriesFutureMatch[1]);
           if (!appointment) throw new AppointmentMutationRequestError(404, ["Appointment not found."]);
-          if (!canAccessAgency(state.user, appointment.agency)) {
-            throw new AppointmentMutationRequestError(403, ["You cannot update this appointment."]);
-          }
           const operation = updateRecurringEntireSeriesFutureOperation(appointment, payload, db, state.user);
           if (operation.status) {
             throw new AppointmentMutationRequestError(operation.status, operation.errors, operation.extra);
@@ -1414,9 +1573,6 @@ export function createAppServer() {
           if (!appointment) {
             throw new AppointmentMutationRequestError(404, ["Appointment not found."]);
           }
-          if (!canAccessAgency(actor, appointment.agency)) {
-            throw new AppointmentMutationRequestError(403, ["You cannot update this appointment."]);
-          }
 
           const recurringOccurrence = isRecurringOccurrence(appointment);
           const recurringEdit = recurringOccurrence && hasAppointmentSchedulingEditFields(payload);
@@ -1446,7 +1602,6 @@ export function createAppServer() {
             }
             series = (db.recurringAppointmentSeries || []).find((item) => (
               item.id === appointment.recurrenceSeriesId
-              && normalizeAgency(item.agency) === normalizeAgency(appointment.agency)
             ));
             if (!series) {
               throw new AppointmentMutationRequestError(409, [
@@ -1547,9 +1702,6 @@ export function createAppServer() {
           if (!appointment) {
             throw new AppointmentMutationRequestError(404, ["Appointment not found."]);
           }
-          if (!canAccessAgency(actor, appointment.agency)) {
-            throw new AppointmentMutationRequestError(403, ["You cannot cancel this appointment."]);
-          }
           const expectedVersion = appointmentExpectedVersion(payload);
           if (!expectedVersion) {
             throw new AppointmentMutationRequestError(400, [
@@ -1573,7 +1725,6 @@ export function createAppServer() {
             }
             series = (db.recurringAppointmentSeries || []).find((item) => (
               item.id === appointment.recurrenceSeriesId
-              && normalizeAgency(item.agency) === normalizeAgency(appointment.agency)
             ));
             if (!series) {
               throw new AppointmentMutationRequestError(409, [
@@ -3529,10 +3680,6 @@ function requireRole(req, res, db, roles) {
   return true;
 }
 
-function canAccessAgency(user, agency) {
-  return Boolean(user) && (isMasterAdmin(user) || userAgency(user) === normalizeAgency(agency));
-}
-
 function canAccessClient(user, client, db) {
   if (!user || !client) return false;
   if (user.role !== "rbt") return true;
@@ -3568,6 +3715,70 @@ class AppointmentMutationRequestError extends Error {
     this.status = status;
     this.errors = errors;
     this.extra = extra;
+  }
+}
+
+class ProviderAvailabilityRequestError extends Error {
+  constructor(status, errors, extra = {}) {
+    super(errors[0] || "Provider availability request failed.");
+    this.status = status;
+    this.errors = errors;
+    this.extra = extra;
+  }
+}
+
+function availabilityProviderSummary(provider) {
+  return {
+    id: provider.id,
+    name: provider.name,
+    role: provider.role
+  };
+}
+
+function availabilityProvider(db, providerUserId) {
+  return (db.users || []).find((user) => (
+    user.id === String(providerUserId || "").trim()
+    && user.active !== false
+    && ["bcba", "rbt"].includes(user.role)
+  )) || null;
+}
+
+function eligibleAvailabilityProviders(db) {
+  return (db.users || [])
+    .filter((user) => user.active !== false && ["bcba", "rbt"].includes(user.role))
+    .map(availabilityProviderSummary)
+    .sort((left, right) => (
+      String(left.name || "").localeCompare(String(right.name || ""))
+      || String(left.id || "").localeCompare(String(right.id || ""))
+    ));
+}
+
+function providerAvailabilityResponse(profile) {
+  return structuredClone(profile);
+}
+
+function providerAvailabilityAuditDetails(profile) {
+  return {
+    availabilityProfileId: profile.id,
+    providerUserId: profile.providerUserId,
+    effectiveDate: profile.effectiveDate,
+    timezone: profile.timezone,
+    active: profile.active,
+    version: profile.version,
+    weeklyBlockCount: Object.values(profile.weeklyAvailability || {})
+      .reduce((total, blocks) => total + (Array.isArray(blocks) ? blocks.length : 0), 0)
+  };
+}
+
+function requireProviderAvailabilityVersion(profile, expectedVersion) {
+  const version = Number(expectedVersion);
+  if (!Number.isInteger(version) || version < 1) {
+    throw new ProviderAvailabilityRequestError(400, ["expectedVersion is required and must be a positive integer."]);
+  }
+  if (version !== profile.version) {
+    throw new ProviderAvailabilityRequestError(409, [
+      "Provider availability has changed. Reload it and try again."
+    ], { currentVersion: profile.version });
   }
 }
 
@@ -3681,7 +3892,6 @@ function recurringThisAndFutureEligibility(db, appointment) {
   }
   const series = (db.recurringAppointmentSeries || []).find((item) => (
     item.id === appointment.recurrenceSeriesId
-    && normalizeAgency(item.agency) === normalizeAgency(appointment.agency)
   ));
   if (!series || series.status !== "active") {
     return { eligible: false, reason: "The recurring series is not available for future edits." };
@@ -4032,7 +4242,6 @@ function updateRecurringEntireSeriesFutureOperation(selected, payload, db, actor
   }
   const series = (db.recurringAppointmentSeries || []).find((item) => (
     item.id === selected.recurrenceSeriesId
-    && normalizeAgency(item.agency) === normalizeAgency(selected.agency)
   ));
   if (!series || series.status !== "active") {
     return { status: 409, errors: ["The recurring series is unavailable. Reload the appointment and try again."] };
@@ -4225,7 +4434,6 @@ function createRecurringSeriesOperation(payload, db, actor, { requestId } = {}) 
   const existingSeries = (db.recurringAppointmentSeries || []).find((series) => (
     series.creationRequestId === normalizedRequestId
     && series.createdBy === actor.id
-    && normalizeAgency(series.agency) === userAgency(actor)
   ));
   if (existingSeries) {
     if (existingSeries.creationRequestFingerprint !== fingerprint) {
@@ -4246,7 +4454,6 @@ function createRecurringSeriesOperation(payload, db, actor, { requestId } = {}) 
   if (!client) errors.push("An existing client is required.");
   else {
     if (client.status === "archived") errors.push("Client must be active.");
-    if (normalizeAgency(client.agency) !== userAgency(actor)) errors.push("Client must belong to your agency.");
   }
   if (!APPOINTMENT_SERVICE_CODES.has(fields.serviceCode)) {
     errors.push("Service code must be one of 97151, 97153, 97155, or 97156.");
@@ -4255,7 +4462,6 @@ function createRecurringSeriesOperation(payload, db, actor, { requestId } = {}) 
   if (!provider) errors.push("An existing provider user is required.");
   else {
     if (provider.active === false) errors.push("Provider must be active.");
-    if (userAgency(provider) !== userAgency(actor)) errors.push("Provider must belong to your agency.");
     const permittedRoles = APPOINTMENT_PROVIDER_ROLES[fields.serviceCode];
     if (permittedRoles && !permittedRoles.has(provider.role)) {
       errors.push(`Provider role is not permitted for service ${fields.serviceCode}.`);
@@ -4708,9 +4914,6 @@ function createAppointmentRecord(payload, db, actor) {
   if (payload.status && payload.status !== "scheduled") errors.push("New appointments must start as scheduled.");
 
   const client = (db.clients || []).find((item) => item.id === String(payload.clientId || "").trim());
-  if (payload.agency && client && String(payload.agency).trim() !== normalizeAgency(client.agency)) {
-    errors.push("Appointment agency must match the client agency.");
-  }
   const now = new Date().toISOString();
   const appointment = {
     id: crypto.randomUUID(),
@@ -4925,7 +5128,6 @@ function appointmentCancellationActorSummary(db, appointment) {
   if (!cancelledBy) return null;
   const actor = (db.users || []).find((user) => user.id === cancelledBy);
   if (!actor) return null;
-  if (!isMasterAdmin(actor) && userAgency(actor) !== normalizeAgency(appointment.agency)) return null;
   const name = String(actor.name || "").trim();
   return name ? { name } : null;
 }
@@ -4946,7 +5148,6 @@ function appointmentRecurrenceSummary(db, appointment) {
   }
   const series = (db.recurringAppointmentSeries || []).find((item) => (
     item.id === appointment.recurrenceSeriesId
-    && normalizeAgency(item.agency) === normalizeAgency(appointment.agency)
   ));
   const exceptionType = String(appointment.recurrenceException?.type || "").trim();
   const eligibility = recurringThisAndFutureEligibility(db, appointment);
@@ -5156,7 +5357,7 @@ function clientAssignmentProviders(db, clientId) {
 }
 
 function redactDb(db, user) {
-  const { users, auditLog, appointments, recurringAppointmentSeries, clientUserAssignments, ...publicDb } = db;
+  const { users, auditLog, appointments, recurringAppointmentSeries, providerAvailabilityProfiles, clientUserAssignments, ...publicDb } = db;
   return {
     ...publicDb,
     clients: visibleClients(db, user),
@@ -5166,7 +5367,7 @@ function redactDb(db, user) {
 }
 
 function bootstrapDb(db, user) {
-  const { users, auditLog, sessions, appointments, recurringAppointmentSeries, clientUserAssignments, ...publicDb } = db;
+  const { users, auditLog, sessions, appointments, recurringAppointmentSeries, providerAvailabilityProfiles, clientUserAssignments, ...publicDb } = db;
   return {
     ...publicDb,
     clients: visibleClients(db, user),
@@ -5188,6 +5389,7 @@ function practiceBackupPayload(db) {
       sessions: db.sessions || [],
       appointments: db.appointments || [],
       recurringAppointmentSeries: db.recurringAppointmentSeries || [],
+      providerAvailabilityProfiles: db.providerAvailabilityProfiles || [],
       clientUserAssignments: db.clientUserAssignments || [],
       historicalImportBatches: db.historicalImportBatches || [],
       auditLog: db.auditLog || [],
@@ -5200,7 +5402,7 @@ function restorePracticeBackup(currentDb, backup) {
   if (!backup || backup.app !== "ABA Practice MVP" || !backup.data) {
     throw new Error("That file is not a valid ABA Practice MVP backup.");
   }
-  const { clients, sessions, appointments, recurringAppointmentSeries, clientUserAssignments, historicalImportBatches, auditLog } = backup.data;
+  const { clients, sessions, appointments, recurringAppointmentSeries, providerAvailabilityProfiles, clientUserAssignments, historicalImportBatches, auditLog } = backup.data;
   if (!Array.isArray(clients) || !Array.isArray(sessions)) {
     throw new Error("Backup must include clients and sessions.");
   }
@@ -5210,6 +5412,7 @@ function restorePracticeBackup(currentDb, backup) {
     sessions,
     appointments: Array.isArray(appointments) ? appointments : [],
     recurringAppointmentSeries: Array.isArray(recurringAppointmentSeries) ? recurringAppointmentSeries : [],
+    providerAvailabilityProfiles: Array.isArray(providerAvailabilityProfiles) ? providerAvailabilityProfiles : [],
     clientUserAssignments: Array.isArray(clientUserAssignments) ? clientUserAssignments : (currentDb.clientUserAssignments || []),
     historicalImportBatches: Array.isArray(historicalImportBatches) ? historicalImportBatches : [],
     auditLog: Array.isArray(auditLog) ? auditLog : [],

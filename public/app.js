@@ -1,4 +1,4 @@
-import { assignClientProvider, cancelAppointment, createAppointment, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getRbtFidelityHistory, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { assignClientProvider, cancelAppointment, createAppointment, createProviderAvailability, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getRbtFidelityHistory, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -55,6 +55,14 @@ const state = {
   scheduleLoadError: "",
   scheduleRequestId: 0,
   activeScheduleSubview: "calendar",
+  providerAvailabilityProviders: [],
+  selectedProviderAvailabilityUserId: "",
+  providerAvailabilityProfile: null,
+  providerAvailabilityDraft: null,
+  providerAvailabilityLoaded: false,
+  providerAvailabilityLoading: false,
+  providerAvailabilitySaving: false,
+  providerAvailabilityMessage: "",
   clientSessionCounts: {},
   clientSessionSummaries: {},
   auditLog: [],
@@ -397,6 +405,13 @@ const scheduleMessage = document.querySelector("#schedule-message");
 const scheduleWeekGrid = document.querySelector("#schedule-week-grid");
 const scheduleSubviewButtons = document.querySelectorAll("[data-schedule-subview-button]");
 const scheduleAddAppointmentButton = document.querySelector("#schedule-add-appointment");
+const providerAvailabilityProvider = document.querySelector("#provider-availability-provider");
+const providerAvailabilityStatus = document.querySelector("#provider-availability-status");
+const providerAvailabilityForm = document.querySelector("#provider-availability-form");
+const providerAvailabilityWeek = document.querySelector("#provider-availability-week");
+const providerAvailabilityMessage = document.querySelector("#provider-availability-message");
+const providerAvailabilitySaveButton = document.querySelector("#provider-availability-save");
+const providerAvailabilityDeactivateButton = document.querySelector("#provider-availability-deactivate");
 const appointmentModal = document.querySelector("#appointment-modal");
 const appointmentForm = document.querySelector("#appointment-form");
 const appointmentFormFields = document.querySelector("#appointment-form-fields");
@@ -1409,6 +1424,11 @@ function bindEvents() {
   scheduleServiceFilter?.addEventListener("change", handleScheduleFilterChange);
   scheduleWeekGrid?.addEventListener("click", handleScheduleAppointmentSelection);
   scheduleAddAppointmentButton?.addEventListener("click", openAppointmentForm);
+  providerAvailabilityProvider?.addEventListener("change", handleProviderAvailabilityProviderChange);
+  providerAvailabilityForm?.addEventListener("submit", handleSaveProviderAvailability);
+  providerAvailabilityForm?.addEventListener("input", syncProviderAvailabilityDraftFromForm);
+  providerAvailabilityWeek?.addEventListener("click", handleProviderAvailabilityWeekClick);
+  providerAvailabilityDeactivateButton?.addEventListener("click", handleDeactivateProviderAvailability);
   appointmentForm?.elements?.clientId?.addEventListener("change", renderAppointmentServiceLocations);
   appointmentForm?.elements?.serviceCode?.addEventListener("change", renderAppointmentProviderOptions);
   appointmentForm?.elements?.serviceLocationIndex?.addEventListener("change", syncAppointmentSettingFromLocation);
@@ -1765,6 +1785,14 @@ function resetSensitiveState() {
   state.scheduleLoading = false;
   state.scheduleLoadError = "";
   state.scheduleRequestId += 1;
+  state.providerAvailabilityProviders = [];
+  state.selectedProviderAvailabilityUserId = "";
+  state.providerAvailabilityProfile = null;
+  state.providerAvailabilityDraft = null;
+  state.providerAvailabilityLoaded = false;
+  state.providerAvailabilityLoading = false;
+  state.providerAvailabilitySaving = false;
+  state.providerAvailabilityMessage = "";
   state.clientSessionCounts = {};
   state.clientSessionSummaries = {};
   state.auditLog = [];
@@ -4140,6 +4168,294 @@ async function switchScheduleSubview(subview) {
     panel.classList.toggle("hidden", panel.dataset.scheduleSubviewPanel !== selectedSubview);
   });
   if (selectedSubview === "calendar") await ensureScheduleWeekLoaded();
+  if (selectedSubview === "availability") await ensureProviderAvailabilityLoaded();
+}
+
+const providerAvailabilityWeekdays = [
+  ["monday", "Monday"],
+  ["tuesday", "Tuesday"],
+  ["wednesday", "Wednesday"],
+  ["thursday", "Thursday"],
+  ["friday", "Friday"],
+  ["saturday", "Saturday"],
+  ["sunday", "Sunday"]
+];
+
+function emptyProviderAvailabilityWeek() {
+  return Object.fromEntries(providerAvailabilityWeekdays.map(([day]) => [day, []]));
+}
+
+function newProviderAvailabilityDraft() {
+  return {
+    effectiveDate: scheduleDateValue(new Date()),
+    timezone: "America/New_York",
+    weeklyAvailability: emptyProviderAvailabilityWeek()
+  };
+}
+
+function providerAvailabilityDraftFromProfile(profile) {
+  if (!profile) return newProviderAvailabilityDraft();
+  return {
+    effectiveDate: String(profile.effectiveDate || ""),
+    timezone: String(profile.timezone || "America/New_York"),
+    weeklyAvailability: Object.fromEntries(providerAvailabilityWeekdays.map(([day]) => [
+      day,
+      Array.isArray(profile.weeklyAvailability?.[day])
+        ? profile.weeklyAvailability[day].map((block) => ({ start: String(block.start || ""), end: String(block.end || "") }))
+        : []
+    ]))
+  };
+}
+
+function renderProviderAvailability() {
+  if (!providerAvailabilityProvider || !providerAvailabilityForm || !providerAvailabilityWeek) return;
+  const currentSelection = state.selectedProviderAvailabilityUserId;
+  providerAvailabilityProvider.innerHTML = [
+    '<option value="">Select a provider</option>',
+    ...state.providerAvailabilityProviders.map((provider) => (
+      `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)} (${escapeHtml(String(provider.role || "").toUpperCase())})</option>`
+    ))
+  ].join("");
+  providerAvailabilityProvider.value = currentSelection;
+  providerAvailabilityProvider.disabled = state.providerAvailabilityLoading || state.providerAvailabilitySaving;
+
+  const draft = state.providerAvailabilityDraft || newProviderAvailabilityDraft();
+  providerAvailabilityForm.elements.effectiveDate.value = draft.effectiveDate;
+  providerAvailabilityForm.elements.timezone.value = draft.timezone;
+  providerAvailabilityWeek.innerHTML = providerAvailabilityWeekdays.map(([day, label]) => {
+    const blocks = draft.weeklyAvailability?.[day] || [];
+    const blockMarkup = blocks.length
+      ? blocks.map((block, index) => `
+          <div class="provider-availability-block" data-availability-block="${index}">
+            <label><span>Start</span><input type="time" value="${escapeHtml(block.start)}" data-availability-time="start" required></label>
+            <label><span>End</span><input type="time" value="${escapeHtml(block.end)}" data-availability-time="end" required></label>
+            <button type="button" class="secondary-button" data-availability-action="remove" data-day="${day}" data-index="${index}" aria-label="Remove ${label} availability block">Remove</button>
+          </div>`).join("")
+      : '<p class="muted provider-availability-none">No availability configured.</p>';
+    return `
+      <section class="provider-availability-day" data-availability-day="${day}">
+        <div class="provider-availability-day-heading">
+          <h4>${label}</h4>
+          <button type="button" class="secondary-button" data-availability-action="add" data-day="${day}">Add block</button>
+        </div>
+        <div class="provider-availability-blocks">${blockMarkup}</div>
+      </section>`;
+  }).join("");
+
+  const hasProvider = Boolean(currentSelection);
+  const profile = state.providerAvailabilityProfile;
+  if (state.providerAvailabilityLoading) {
+    providerAvailabilityStatus.textContent = "Loading provider availability...";
+  } else if (!hasProvider) {
+    providerAvailabilityStatus.textContent = state.providerAvailabilityProviders.length
+      ? "Select an active BCBA or RBT provider."
+      : "No active BCBA or RBT providers are available.";
+  } else if (!profile) {
+    providerAvailabilityStatus.textContent = "No availability is configured for this provider.";
+  } else if (!profile.active) {
+    providerAvailabilityStatus.textContent = `Availability is inactive. Saving will reactivate version ${profile.version + 1}.`;
+  } else {
+    providerAvailabilityStatus.textContent = `Active availability · version ${profile.version}`;
+  }
+  const controlsDisabled = !hasProvider || state.providerAvailabilityLoading || state.providerAvailabilitySaving;
+  Array.from(providerAvailabilityForm.elements).forEach((element) => { element.disabled = controlsDisabled; });
+  providerAvailabilitySaveButton.textContent = state.providerAvailabilitySaving ? "Saving..." : "Save availability";
+  providerAvailabilityDeactivateButton.classList.toggle("hidden", !profile?.active);
+  providerAvailabilityDeactivateButton.disabled = controlsDisabled;
+  providerAvailabilityMessage.textContent = state.providerAvailabilityMessage;
+}
+
+async function ensureProviderAvailabilityLoaded({ force = false } = {}) {
+  if (state.providerAvailabilityLoading) return;
+  if (state.providerAvailabilityLoaded && !force) {
+    renderProviderAvailability();
+    return;
+  }
+  state.providerAvailabilityLoading = true;
+  state.providerAvailabilityMessage = "";
+  renderProviderAvailability();
+  try {
+    const payload = await getProviderAvailabilityProfiles();
+    state.providerAvailabilityProviders = payload.providers || [];
+    if (!state.providerAvailabilityProviders.some((provider) => provider.id === state.selectedProviderAvailabilityUserId)) {
+      state.selectedProviderAvailabilityUserId = state.providerAvailabilityProviders[0]?.id || "";
+    }
+    state.providerAvailabilityLoaded = true;
+    await loadSelectedProviderAvailability();
+  } catch (error) {
+    state.providerAvailabilityMessage = error.message;
+    state.providerAvailabilityProfile = null;
+    state.providerAvailabilityDraft = newProviderAvailabilityDraft();
+  } finally {
+    state.providerAvailabilityLoading = false;
+    renderProviderAvailability();
+  }
+}
+
+async function loadSelectedProviderAvailability() {
+  const providerUserId = state.selectedProviderAvailabilityUserId;
+  if (!providerUserId) {
+    state.providerAvailabilityProfile = null;
+    state.providerAvailabilityDraft = newProviderAvailabilityDraft();
+    renderProviderAvailability();
+    return;
+  }
+  state.providerAvailabilityLoading = true;
+  state.providerAvailabilityMessage = "";
+  renderProviderAvailability();
+  try {
+    const payload = await getProviderAvailability(providerUserId);
+    if (providerUserId !== state.selectedProviderAvailabilityUserId) return;
+    state.providerAvailabilityProfile = payload.profile || null;
+    state.providerAvailabilityDraft = providerAvailabilityDraftFromProfile(payload.profile);
+  } catch (error) {
+    state.providerAvailabilityMessage = error.message;
+    state.providerAvailabilityProfile = null;
+    state.providerAvailabilityDraft = newProviderAvailabilityDraft();
+  } finally {
+    state.providerAvailabilityLoading = false;
+    renderProviderAvailability();
+  }
+}
+
+function syncProviderAvailabilityDraftFromForm() {
+  if (!providerAvailabilityForm || !providerAvailabilityWeek) return;
+  const weeklyAvailability = emptyProviderAvailabilityWeek();
+  providerAvailabilityWeek.querySelectorAll("[data-availability-day]").forEach((daySection) => {
+    const day = daySection.dataset.availabilityDay;
+    weeklyAvailability[day] = Array.from(daySection.querySelectorAll("[data-availability-block]")).map((block) => ({
+      start: block.querySelector('[data-availability-time="start"]')?.value || "",
+      end: block.querySelector('[data-availability-time="end"]')?.value || ""
+    }));
+  });
+  state.providerAvailabilityDraft = {
+    effectiveDate: providerAvailabilityForm.elements.effectiveDate.value,
+    timezone: providerAvailabilityForm.elements.timezone.value.trim(),
+    weeklyAvailability
+  };
+}
+
+function validateProviderAvailabilityDraft(draft) {
+  const errors = [];
+  const dateMatch = String(draft?.effectiveDate || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!dateMatch) {
+    errors.push("Enter a valid effective date.");
+  } else {
+    const [, year, month, day] = dateMatch.map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+      errors.push("Enter a valid effective date.");
+    }
+  }
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: String(draft?.timezone || "") }).format(new Date());
+  } catch {
+    errors.push("Enter a valid IANA timezone, such as America/New_York.");
+  }
+  const timePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+  const weeklyAvailability = emptyProviderAvailabilityWeek();
+  providerAvailabilityWeekdays.forEach(([day, label]) => {
+    const blocks = Array.isArray(draft?.weeklyAvailability?.[day]) ? draft.weeklyAvailability[day] : [];
+    weeklyAvailability[day] = blocks.map((block) => ({
+      start: String(block.start || "").trim(),
+      end: String(block.end || "").trim()
+    })).sort((left, right) => left.start.localeCompare(right.start) || left.end.localeCompare(right.end));
+    const seen = new Set();
+    weeklyAvailability[day].forEach((block) => {
+      if (!timePattern.test(block.start) || !timePattern.test(block.end)) {
+        errors.push(`${label} blocks require valid start and end times.`);
+      } else if (block.start >= block.end) {
+        errors.push(`${label} end time must be after start time; cross-midnight blocks are not supported.`);
+      }
+      const key = `${block.start}-${block.end}`;
+      if (seen.has(key)) errors.push(`${label} contains a duplicate availability block.`);
+      seen.add(key);
+    });
+    for (let index = 1; index < weeklyAvailability[day].length; index += 1) {
+      if (weeklyAvailability[day][index].start < weeklyAvailability[day][index - 1].end) {
+        errors.push(`${label} availability blocks must not overlap.`);
+        break;
+      }
+    }
+  });
+  return {
+    payload: {
+      effectiveDate: String(draft?.effectiveDate || ""),
+      timezone: String(draft?.timezone || "").trim(),
+      weeklyAvailability
+    },
+    errors: [...new Set(errors)]
+  };
+}
+
+async function handleProviderAvailabilityProviderChange() {
+  state.selectedProviderAvailabilityUserId = providerAvailabilityProvider.value;
+  await loadSelectedProviderAvailability();
+}
+
+function handleProviderAvailabilityWeekClick(event) {
+  const button = event.target.closest("[data-availability-action]");
+  if (!button || state.providerAvailabilitySaving) return;
+  syncProviderAvailabilityDraftFromForm();
+  const day = button.dataset.day;
+  const blocks = state.providerAvailabilityDraft?.weeklyAvailability?.[day];
+  if (!Array.isArray(blocks)) return;
+  if (button.dataset.availabilityAction === "add") blocks.push({ start: "09:00", end: "17:00" });
+  if (button.dataset.availabilityAction === "remove") blocks.splice(Number(button.dataset.index), 1);
+  state.providerAvailabilityMessage = "";
+  renderProviderAvailability();
+}
+
+async function handleSaveProviderAvailability(event) {
+  event.preventDefault();
+  if (!state.selectedProviderAvailabilityUserId || state.providerAvailabilitySaving) return;
+  syncProviderAvailabilityDraftFromForm();
+  const validation = validateProviderAvailabilityDraft(state.providerAvailabilityDraft);
+  if (validation.errors.length) {
+    state.providerAvailabilityMessage = validation.errors.join(" ");
+    renderProviderAvailability();
+    return;
+  }
+  state.providerAvailabilitySaving = true;
+  state.providerAvailabilityMessage = "";
+  renderProviderAvailability();
+  try {
+    const profile = state.providerAvailabilityProfile
+      ? await updateProviderAvailability(state.selectedProviderAvailabilityUserId, {
+          ...validation.payload,
+          expectedVersion: state.providerAvailabilityProfile.version
+        })
+      : await createProviderAvailability({
+          providerUserId: state.selectedProviderAvailabilityUserId,
+          ...validation.payload
+        });
+    state.providerAvailabilityProfile = profile;
+    state.providerAvailabilityDraft = providerAvailabilityDraftFromProfile(profile);
+    state.providerAvailabilityMessage = "Provider availability saved.";
+  } catch (error) {
+    state.providerAvailabilityMessage = error.message;
+  } finally {
+    state.providerAvailabilitySaving = false;
+    renderProviderAvailability();
+  }
+}
+
+async function handleDeactivateProviderAvailability() {
+  const profile = state.providerAvailabilityProfile;
+  if (!profile?.active || state.providerAvailabilitySaving) return;
+  if (!window.confirm("Deactivate this provider's recurring availability? The saved history will be retained.")) return;
+  state.providerAvailabilitySaving = true;
+  state.providerAvailabilityMessage = "";
+  renderProviderAvailability();
+  try {
+    state.providerAvailabilityProfile = await deactivateProviderAvailability(profile.providerUserId, profile.version);
+    state.providerAvailabilityMessage = "Provider availability deactivated.";
+  } catch (error) {
+    state.providerAvailabilityMessage = error.message;
+  } finally {
+    state.providerAvailabilitySaving = false;
+    renderProviderAvailability();
+  }
 }
 
 function scheduleMonday(date = new Date()) {
