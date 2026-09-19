@@ -416,12 +416,12 @@ test("requestId remains stable for an unchanged retry and changes after a materi
   assert.notEqual(edited.requestId, first.requestId);
 });
 
-test("recurring success reports appointment counts and non-blocking overlap review without raw IDs", () => {
+test("recurring success reports appointment counts, client overlap review, and availability warnings without raw IDs", () => {
   const success = functionSource("recurringSeriesSuccessMessage");
   assert.match(success, /appointmentCount/);
   assert.match(success, /scheduling overlap/);
-  assert.match(success, /provider_overlap/);
   assert.match(success, /client_overlap/);
+  assert.match(success, /schedulingWarningsMessage/);
   assert.match(success, /review is needed/);
   assert.doesNotMatch(success, /existingAppointmentId|occurrenceId/);
 });

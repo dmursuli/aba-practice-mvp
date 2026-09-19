@@ -14,6 +14,7 @@ import {
   sanitizeRecurringSeriesRecord
 } from "./lib/scheduling-recurrence.mjs";
 import { sanitizeProviderAvailabilityInput } from "./lib/provider-availability.mjs";
+import { appointmentStatusBlocksScheduling, validateProviderScheduling } from "./lib/scheduling-conflicts.mjs";
 import {
   duplicateBehaviorIds,
   duplicateTargetIdsFromPrograms,
@@ -1534,7 +1535,7 @@ export function createAppServer() {
       if (!requireRole(req, res, db, ["admin", "bcba"])) return;
       const actor = currentUser(req, db);
       const payload = await readBody(req);
-      const { appointment, errors } = createAppointmentRecord(payload, db, actor);
+      const { appointment, errors, warnings } = createAppointmentRecord(payload, db, actor);
       if (errors.length) {
         sendJson(res, 400, { errors });
         return;
@@ -1546,7 +1547,7 @@ export function createAppServer() {
         details: appointmentAuditDetails(appointment)
       });
       await writeDb(db);
-      sendJson(res, 201, appointment);
+      sendJson(res, 201, { ...appointment, schedulingWarnings: warnings });
       return;
       });
       return;
@@ -1615,7 +1616,7 @@ export function createAppServer() {
             }
           }
 
-          const { appointment: updatedAppointment, errors } = updateAppointmentRecord(appointment, payload, db, actor);
+          const { appointment: updatedAppointment, errors, warnings } = updateAppointmentRecord(appointment, payload, db, actor);
           if (errors.length) throw new AppointmentMutationRequestError(400, errors);
           const materiallyChanged = recurringEdit
             && appointmentSchedulingMateriallyChanged(appointment, updatedAppointment);
@@ -1666,7 +1667,7 @@ export function createAppServer() {
               }
             });
           }
-          result = appointmentDetailsResponse(db, appointment);
+          result = { ...appointmentDetailsResponse(db, appointment), schedulingWarnings: warnings };
           return db;
         });
       } catch (error) {
@@ -3853,6 +3854,7 @@ function recurringSeriesResponse(db, series, appointments, { replayed = false } 
     appointmentCount: appointments.length,
     appointmentIds: appointments.map((appointment) => appointment.id),
     collisionWarnings: series.creationCollisionWarnings || [],
+    schedulingWarnings: series.creationSchedulingWarnings || [],
     createdAt: series.createdAt,
     replayed
   };
@@ -3924,10 +3926,9 @@ function recurringSeriesAppointmentIsProtected(appointment) {
 }
 
 function safeRecurringCollisionWarnings(warnings) {
-  return (warnings || []).map(({ type, occurrenceLocalDate, existingAppointmentId }) => ({
+  return (warnings || []).map(({ type, occurrenceLocalDate }) => ({
     type,
-    occurrenceLocalDate,
-    existingAppointmentId
+    occurrenceLocalDate
   }));
 }
 
@@ -4064,13 +4065,20 @@ function reconcileRecurringSeriesFutureAppointments({
   }
 
   const impactedIds = new Set(impactedAppointments.map((appointment) => appointment.id));
+  const scheduling = appointmentSchedulingValidation(
+    db,
+    impactedAppointments.filter((appointment) => appointmentStatusBlocksScheduling(appointment.status)),
+    { excludedAppointmentIds: [...impactedIds] }
+  );
+  if (scheduling.errors.length) return { status: 400, errors: scheduling.errors };
   const collisionWarnings = safeRecurringCollisionWarnings(recurringSeriesCollisionWarnings(
     impactedAppointments.filter((appointment) => !["cancelled", "no_show"].includes(appointment.status)),
     (db.appointments || []).filter((appointment) => !impactedIds.has(appointment.id))
   ));
   return {
     counts: { updatedCount, createdCount, cancelledCount, protectedCount },
-    collisionWarnings
+    collisionWarnings,
+    schedulingWarnings: scheduling.warnings
   };
 }
 
@@ -4107,7 +4115,7 @@ function updateRecurringSeriesThisAndFutureOperation(selected, payload, db, acto
     return { status: 400, errors: ["The recurring series time zone cannot be changed."] };
   }
 
-  const candidateResult = updateAppointmentRecord(selected, payload, db, actor);
+  const candidateResult = updateAppointmentRecord(selected, payload, db, actor, { skipSchedulingValidation: true });
   if (candidateResult.errors.length) return { status: 400, errors: candidateResult.errors };
   const candidate = candidateResult.appointment;
   const selectedLocalDate = appointmentLocalDate(candidate.scheduledStartAt, series.timeZone);
@@ -4170,13 +4178,14 @@ function updateRecurringSeriesThisAndFutureOperation(selected, payload, db, acto
   });
   if (reconciliation.status) return reconciliation;
   Object.assign(series, revisedSeries);
-  const { counts, collisionWarnings } = reconciliation;
+  const { counts, collisionWarnings, schedulingWarnings } = reconciliation;
   return {
     response: {
       seriesVersion: series.version,
       effectiveDate,
       ...counts,
-      collisionWarnings
+      collisionWarnings,
+      schedulingWarnings
     },
     auditDetails: {
       seriesId: series.id,
@@ -4265,7 +4274,7 @@ function updateRecurringEntireSeriesFutureOperation(selected, payload, db, actor
     return { status: 400, errors: ["The active recurring-series timeline does not cover the future boundary."] };
   }
 
-  const candidateResult = updateAppointmentRecord(selected, payload, db, actor);
+  const candidateResult = updateAppointmentRecord(selected, payload, db, actor, { skipSchedulingValidation: true });
   if (candidateResult.errors.length) return { status: 400, errors: candidateResult.errors };
   const candidate = candidateResult.appointment;
   if (!Array.isArray(payload.recurrenceRows) || !payload.recurrenceRows.length) {
@@ -4364,13 +4373,14 @@ function updateRecurringEntireSeriesFutureOperation(selected, payload, db, actor
   });
   if (reconciliation.status) return reconciliation;
   Object.assign(series, revisedSeries);
-  const { counts, collisionWarnings } = reconciliation;
+  const { counts, collisionWarnings, schedulingWarnings } = reconciliation;
   return {
     response: {
       seriesVersion: series.version,
       effectiveDate,
       ...counts,
-      collisionWarnings
+      collisionWarnings,
+      schedulingWarnings
     },
     auditDetails: {
       seriesId: series.id,
@@ -4388,26 +4398,14 @@ function updateRecurringEntireSeriesFutureOperation(selected, payload, db, actor
 function recurringSeriesCollisionWarnings(appointments, existingAppointments) {
   const warnings = [];
   for (const appointment of appointments) {
-    const providerIds = new Set((appointment.providerAssignments || []).map((item) => item.userId));
     for (const existing of existingAppointments || []) {
       if (["cancelled", "no_show"].includes(existing.status)) continue;
       if (Date.parse(existing.scheduledStartAt) >= Date.parse(appointment.scheduledEndAt)
         || Date.parse(existing.scheduledEndAt) <= Date.parse(appointment.scheduledStartAt)) continue;
-      const existingProviderIds = (existing.providerAssignments || []).map((item) => item.userId);
-      if (existingProviderIds.some((id) => providerIds.has(id))) {
-        warnings.push({
-          type: "provider_overlap",
-          occurrenceId: appointment.recurrenceOccurrenceId,
-          occurrenceLocalDate: appointment.originalOccurrenceLocalDate,
-          existingAppointmentId: existing.id
-        });
-      }
       if (existing.clientId === appointment.clientId) {
         warnings.push({
           type: "client_overlap",
-          occurrenceId: appointment.recurrenceOccurrenceId,
-          occurrenceLocalDate: appointment.originalOccurrenceLocalDate,
-          existingAppointmentId: existing.id
+          occurrenceLocalDate: appointment.originalOccurrenceLocalDate
         });
       }
     }
@@ -4589,13 +4587,20 @@ function createRecurringSeriesOperation(payload, db, actor, { requestId } = {}) 
   }
   if (errors.length) return { errors: [...new Set(errors)] };
 
-  const collisionWarnings = recurringSeriesCollisionWarnings(appointments, db.appointments || []);
+  const scheduling = appointmentSchedulingValidation(db, appointments);
+  errors.push(...scheduling.errors);
+  if (errors.length) return { errors: [...new Set(errors)] };
+
+  const collisionWarnings = safeRecurringCollisionWarnings(
+    recurringSeriesCollisionWarnings(appointments, db.appointments || [])
+  );
   const series = {
     ...sanitized.series,
     creationRequestId: normalizedRequestId,
     creationRequestFingerprint: fingerprint,
     creationOperationId: operationId,
-    creationCollisionWarnings: collisionWarnings
+    creationCollisionWarnings: collisionWarnings,
+    creationSchedulingWarnings: scheduling.warnings
   };
   const appointmentIds = appointments.map((appointment) => appointment.id);
   const auditAppointmentIds = appointmentIds.slice(0, RECURRING_SERIES_MAX_APPOINTMENT_IDS_IN_AUDIT);
@@ -4888,6 +4893,16 @@ function validateAppointmentRecord(appointment, db, actor) {
   return errors;
 }
 
+function appointmentSchedulingValidation(db, proposedAppointments, { excludedAppointmentIds = [] } = {}) {
+  return validateProviderScheduling({
+    appointments: db.appointments || [],
+    proposedAppointments,
+    providerAvailabilityProfiles: db.providerAvailabilityProfiles || [],
+    users: db.users || [],
+    excludedAppointmentIds
+  });
+}
+
 function createAppointmentRecord(payload, db, actor) {
   const errors = [];
   if (payload.id) errors.push("Appointment ID is server-managed.");
@@ -4943,10 +4958,14 @@ function createAppointmentRecord(payload, db, actor) {
   };
   if (client) errors.push(...applyStructuredServiceLocationToAppointment(appointment, client));
   errors.push(...validateAppointmentRecord(appointment, db, actor));
-  return { appointment, errors: [...new Set(errors)] };
+  const scheduling = errors.length
+    ? { errors: [], warnings: [] }
+    : appointmentSchedulingValidation(db, [appointment]);
+  errors.push(...scheduling.errors);
+  return { appointment, errors: [...new Set(errors)], warnings: scheduling.warnings };
 }
 
-function updateAppointmentRecord(current, payload, db, actor) {
+function updateAppointmentRecord(current, payload, db, actor, { skipSchedulingValidation = false } = {}) {
   const errors = [];
   if (current.status === "cancelled") errors.push("Cancelled appointments cannot be updated.");
   if (payload.id !== undefined && payload.id !== current.id) errors.push("Appointment ID is immutable.");
@@ -5026,7 +5045,11 @@ function updateAppointmentRecord(current, payload, db, actor) {
     appointment.locationSnapshot = current.locationSnapshot || sanitizeAppointmentLocationSnapshot();
   }
   errors.push(...validateAppointmentRecord(appointment, db, actor));
-  return { appointment, errors: [...new Set(errors)] };
+  const scheduling = errors.length || skipSchedulingValidation || !hasAppointmentSchedulingEditFields(payload)
+    ? { errors: [], warnings: [] }
+    : appointmentSchedulingValidation(db, [appointment], { excludedAppointmentIds: [current.id] });
+  errors.push(...scheduling.errors);
+  return { appointment, errors: [...new Set(errors)], warnings: scheduling.warnings };
 }
 
 function canTransitionAppointmentStatus(fromStatus, toStatus) {

@@ -319,6 +319,7 @@ test("create validates canonical service codes, providers, timestamps, timezone,
     "replacesAppointmentId",
     "scheduledEndAt",
     "scheduledStartAt",
+    "schedulingWarnings",
     "serviceCode",
     "sessionId",
     "settingType",
@@ -473,6 +474,152 @@ test("date-range and ID reads are lightweight and organization-wide", async () =
   assert.equal(byId.json.notes, "Operational scheduling note");
   const organizationWide = await request(`/api/appointments/${otherAppointment.json.id}`, { cookie: bcbaCookie });
   assert.equal(organizationWide.response.status, 200);
+});
+
+test("provider conflicts block overlaps while allowing back-to-back, cancellation reuse, and different providers", async () => {
+  await resetDb();
+  const cookie = await loginAs();
+  const first = await createAppointment(cookie);
+  assert.equal(first.response.status, 201);
+  assert.equal(first.json.schedulingWarnings[0].message, "Availability has not been configured for this provider.");
+
+  for (const times of [
+    ["2026-08-03T09:00:00-04:00", "2026-08-03T10:00:00-04:00"],
+    ["2026-08-03T08:30:00-04:00", "2026-08-03T09:30:00-04:00"],
+    ["2026-08-03T09:15:00-04:00", "2026-08-03T09:45:00-04:00"],
+    ["2026-08-03T08:30:00-04:00", "2026-08-03T10:30:00-04:00"]
+  ]) {
+    const blocked = await createAppointment(cookie, { scheduledStartAt: times[0], scheduledEndAt: times[1] });
+    assert.equal(blocked.response.status, 400);
+    assert.match(blocked.json.errors.join(" "), /RBT User is already scheduled/);
+    assert.doesNotMatch(blocked.json.errors.join(" "), /appointment-|user-rbt/);
+  }
+
+  const backToBack = await createAppointment(cookie, {
+    scheduledStartAt: "2026-08-03T10:00:00-04:00",
+    scheduledEndAt: "2026-08-03T11:00:00-04:00"
+  });
+  assert.equal(backToBack.response.status, 201);
+
+  let persisted = await readDbFile();
+  const secondRbt = {
+    ...structuredClone(persisted.users.find((user) => user.id === "user-rbt")),
+    id: "user-rbt-2",
+    username: "rbt-2",
+    email: "rbt-2@local.test",
+    name: "Second RBT"
+  };
+  persisted.users.push(secondRbt);
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+  const differentProvider = await createAppointment(cookie, {
+    providerAssignments: [{ userId: "user-rbt-2", assignmentRole: "primary" }]
+  });
+  assert.equal(differentProvider.response.status, 201);
+
+  const cancelled = await request(`/api/appointments/${first.json.id}/cancel`, {
+    method: "POST",
+    cookie,
+    body: { expectedVersion: first.json.version, category: "provider", reason: "provider_cancelled" }
+  });
+  assert.equal(cancelled.response.status, 200);
+  persisted = await readDbFile();
+  persisted.appointments = persisted.appointments.filter((appointment) => appointment.id !== differentProvider.json.id);
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+  const reused = await createAppointment(cookie);
+  assert.equal(reused.response.status, 201);
+});
+
+test("appointment edits exclude themselves and reject moving onto another provider appointment", async () => {
+  await resetDb();
+  const cookie = await loginAs();
+  let persisted = await readDbFile();
+  persisted.users.push({
+    ...structuredClone(persisted.users.find((user) => user.id === "user-rbt")),
+    id: "user-rbt-2",
+    username: "rbt-2",
+    email: "rbt-2@local.test",
+    name: "Second RBT"
+  });
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+
+  const occupied = await createAppointment(cookie);
+  const editable = await createAppointment(cookie, {
+    providerAssignments: [{ userId: "user-rbt-2", assignmentRole: "primary" }],
+    scheduledStartAt: "2026-08-03T10:00:00-04:00",
+    scheduledEndAt: "2026-08-03T11:00:00-04:00"
+  });
+  assert.equal(occupied.response.status, 201);
+  assert.equal(editable.response.status, 201);
+
+  const selfEdit = await request(`/api/appointments/${editable.json.id}`, {
+    method: "PUT",
+    cookie,
+    body: { expectedVersion: 1, notes: "Self-exclusion check", scheduledStartAt: editable.json.scheduledStartAt, scheduledEndAt: editable.json.scheduledEndAt }
+  });
+  assert.equal(selfEdit.response.status, 200);
+
+  const blocked = await request(`/api/appointments/${editable.json.id}`, {
+    method: "PUT",
+    cookie,
+    body: {
+      expectedVersion: selfEdit.json.version,
+      providerAssignments: [{ userId: "user-rbt", assignmentRole: "primary" }],
+      scheduledStartAt: "2026-08-03T09:30:00-04:00",
+      scheduledEndAt: "2026-08-03T10:30:00-04:00"
+    }
+  });
+  assert.equal(blocked.response.status, 400);
+  assert.match(blocked.json.errors.join(" "), /RBT User is already scheduled/);
+  assert.equal((await readDbFile()).appointments.find((item) => item.id === editable.json.id).version, 2);
+});
+
+test("active provider availability blocks outside times while missing or inactive profiles only warn", async () => {
+  await resetDb();
+  const cookie = await loginAs();
+  let persisted = await readDbFile();
+  persisted.providerAvailabilityProfiles = [{
+    id: "availability-1",
+    providerUserId: "user-rbt",
+    effectiveDate: "2026-08-01",
+    timezone: "America/New_York",
+    weeklyAvailability: {
+      monday: [{ start: "08:00", end: "12:00" }, { start: "13:00", end: "17:00" }],
+      tuesday: [], wednesday: [], thursday: [], friday: [], saturday: [], sunday: []
+    },
+    active: true,
+    version: 1
+  }];
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+
+  const inside = await createAppointment(cookie, {
+    scheduledStartAt: "2026-08-03T09:00:00-04:00",
+    scheduledEndAt: "2026-08-03T11:00:00-04:00"
+  });
+  assert.equal(inside.response.status, 201);
+  assert.deepEqual(inside.json.schedulingWarnings, []);
+
+  persisted = await readDbFile();
+  persisted.appointments = [];
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+  for (const times of [
+    ["2026-08-03T07:30:00-04:00", "2026-08-03T09:00:00-04:00"],
+    ["2026-08-03T11:00:00-04:00", "2026-08-03T12:30:00-04:00"],
+    ["2026-08-03T11:00:00-04:00", "2026-08-03T13:30:00-04:00"]
+  ]) {
+    const blocked = await createAppointment(cookie, { scheduledStartAt: times[0], scheduledEndAt: times[1] });
+    assert.equal(blocked.response.status, 400);
+    assert.match(blocked.json.errors.join(" "), /falls outside RBT User’s configured availability/);
+  }
+
+  persisted = await readDbFile();
+  persisted.providerAvailabilityProfiles[0].active = false;
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+  const inactive = await createAppointment(cookie, {
+    scheduledStartAt: "2026-08-03T07:30:00-04:00",
+    scheduledEndAt: "2026-08-03T08:00:00-04:00"
+  });
+  assert.equal(inactive.response.status, 201);
+  assert.equal(inactive.json.schedulingWarnings[0].message, "Availability has not been configured for this provider.");
 });
 
 test("Admin and BCBA mutate legacy differently-tagged appointments without weakening role checks", async () => {

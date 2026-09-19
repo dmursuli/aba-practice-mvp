@@ -446,7 +446,7 @@ test("practice backup and restore preserve superseded revision lifecycle history
   assert.deepEqual(persisted.recurringAppointmentSeries[0], expectedSeries);
 });
 
-test("overlaps return warnings without moving or blocking existing appointments", async () => {
+test("provider overlaps block recurring creation atomically without moving existing appointments", async () => {
   await resetDb();
   const cookie = await login();
   const standalone = await request("/api/appointments", {
@@ -464,14 +464,101 @@ test("overlaps return warnings without moving or blocking existing appointments"
   });
   assert.equal(standalone.response.status, 201);
   const created = await createSeries(cookie, { requestId: "collision-warning-series" });
-  assert.equal(created.response.status, 201);
-  assert.deepEqual(created.json.collisionWarnings.map((warning) => warning.type).sort(), [
-    "client_overlap", "provider_overlap"
-  ]);
+  assert.equal(created.response.status, 400);
+  assert.match(created.json.errors.join(" "), /RBT User is already scheduled/);
+  assert.doesNotMatch(created.json.errors.join(" "), /appointment-|series-|user-rbt/);
   const persisted = await readDb();
+  assert.equal(persisted.recurringAppointmentSeries.length, 0);
+  assert.equal(persisted.appointments.length, 1);
   const original = persisted.appointments.find((item) => item.id === standalone.json.id);
   assert.equal(original.scheduledStartAt, "2026-08-03T09:30:00-04:00");
   assert.equal(original.status, "scheduled");
+});
+
+test("recurring creation permits back-to-back times and simultaneous appointments for different providers", async () => {
+  await resetDb();
+  const cookie = await login();
+  const standalone = await request("/api/appointments", {
+    method: "POST",
+    cookie,
+    body: {
+      clientId: "client-1",
+      serviceCode: "97153",
+      providerAssignments: [{ userId: "user-rbt", assignmentRole: "primary" }],
+      scheduledStartAt: "2026-08-03T09:00:00-04:00",
+      scheduledEndAt: "2026-08-03T10:00:00-04:00",
+      timeZone: "America/New_York",
+      locationId: "location-home"
+    }
+  });
+  assert.equal(standalone.response.status, 201);
+  const backToBack = await createSeries(cookie, {
+    requestId: "back-to-back-series",
+    recurrenceRows: [{ weekday: 1, startLocalTime: "10:00", endLocalTime: "10:30" }]
+  });
+  assert.equal(backToBack.response.status, 201);
+
+  const persisted = await readDb();
+  persisted.users.push({
+    ...structuredClone(persisted.users.find((user) => user.id === "user-rbt")),
+    id: "user-rbt-2",
+    username: "rbt-2",
+    email: "rbt-2@local.test",
+    name: "Second RBT"
+  });
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+  const differentProvider = await createSeries(cookie, {
+    requestId: "different-provider-series",
+    providerUserId: "user-rbt-2",
+    recurrenceRows: [{ weekday: 1, startLocalTime: "09:00", endLocalTime: "10:00" }]
+  });
+  assert.equal(differentProvider.response.status, 201);
+});
+
+test("recurring creation validates availability for every occurrence and persists nothing on one violation", async () => {
+  await resetDb();
+  const cookie = await login();
+  const persisted = await readDb();
+  persisted.providerAvailabilityProfiles = [{
+    id: "availability-rbt",
+    providerUserId: "user-rbt",
+    effectiveDate: "2026-08-01",
+    timezone: "America/New_York",
+    weeklyAvailability: {
+      monday: [{ start: "09:00", end: "10:30" }],
+      tuesday: [], wednesday: [], thursday: [], friday: [], saturday: [], sunday: []
+    },
+    active: true,
+    version: 1
+  }];
+  await writeFile(dbPath, `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+
+  const blocked = await createSeries(cookie, {
+    requestId: "availability-every-occurrence",
+    recurrenceRows: [
+      { weekday: 1, startLocalTime: "09:00", endLocalTime: "10:30" },
+      { weekday: 3, startLocalTime: "11:00", endLocalTime: "12:00" }
+    ]
+  });
+  assert.equal(blocked.response.status, 400);
+  assert.match(blocked.json.errors.join(" "), /falls outside RBT User’s configured availability/);
+  assert.match(blocked.json.errors.join(" "), /Wednesday, Aug 5, 2026/);
+  const after = await readDb();
+  assert.equal(after.recurringAppointmentSeries.length, 0);
+  assert.equal(after.appointments.length, 0);
+});
+
+test("recurring creation permits missing availability with readable non-blocking warnings", async () => {
+  await resetDb();
+  const cookie = await login();
+  const created = await createSeries(cookie, { requestId: "availability-warning-series" });
+  assert.equal(created.response.status, 201);
+  assert.equal(created.json.appointmentCount, 2);
+  assert.ok(created.json.schedulingWarnings.length >= 1);
+  assert.ok(created.json.schedulingWarnings.every((warning) => (
+    warning.message === "Availability has not been configured for this provider."
+    && !JSON.stringify(warning).includes("user-rbt")
+  )));
 });
 
 test("recurring occurrence details expose a safe recurrence summary without raw identity", async () => {
@@ -893,6 +980,51 @@ test("This and Future splits the governing revision and updates eligible future 
   assert.equal(serializedAudit.includes("Future scheduling logistics."), false);
   assert.equal(serializedAudit.includes("123 Authoritative Way"), false);
   assert.equal(serializedAudit.includes("Recurring Client"), false);
+});
+
+test("This and Future ignores replaced occurrences but blocks an external provider conflict atomically", async (t) => {
+  useRecurrenceEditTestClock(t);
+  await resetDb();
+  const cookie = await login();
+  await createSeries(cookie, {
+    requestId: "this-future-provider-conflict",
+    startDate: "2026-09-07",
+    endDate: "2026-10-05"
+  });
+  let persisted = await readDb();
+  const selected = persisted.appointments.find((item) => item.originalOccurrenceLocalDate === "2026-09-14");
+  const series = persisted.recurringAppointmentSeries[0];
+  const standalone = await request("/api/appointments", {
+    method: "POST",
+    cookie,
+    body: {
+      clientId: "client-1",
+      serviceCode: "97153",
+      providerAssignments: [{ userId: "user-rbt", assignmentRole: "primary" }],
+      scheduledStartAt: "2026-09-21T12:00:00-04:00",
+      scheduledEndAt: "2026-09-21T13:00:00-04:00",
+      timeZone: "America/New_York",
+      locationId: "location-home"
+    }
+  });
+  assert.equal(standalone.response.status, 201);
+  persisted = await readDb();
+  const beforeSeries = structuredClone(persisted.recurringAppointmentSeries);
+  const beforeAppointments = structuredClone(persisted.appointments);
+
+  const blocked = await request(`/api/appointments/${selected.id}/this-and-future`, {
+    method: "POST",
+    cookie,
+    body: thisAndFuturePayload(selected, series, {
+      scheduledStartAt: "2026-09-14T12:00:00-04:00",
+      scheduledEndAt: "2026-09-14T13:00:00-04:00"
+    })
+  });
+  assert.equal(blocked.response.status, 400);
+  assert.match(blocked.json.errors.join(" "), /RBT User is already scheduled/);
+  persisted = await readDb();
+  assert.deepEqual(persisted.recurringAppointmentSeries, beforeSeries);
+  assert.deepEqual(persisted.appointments, beforeAppointments);
 });
 
 test("This and Future protects represented exceptions and uses system-safe removal identities", async (t) => {

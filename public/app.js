@@ -5085,16 +5085,20 @@ function recurringSeriesSuccessMessage(result) {
   const appointmentCount = Number(result?.appointmentCount || 0);
   const warnings = Array.isArray(result?.collisionWarnings) ? result.collisionWarnings : [];
   const base = `Recurring series created — ${appointmentCount} appointment${appointmentCount === 1 ? "" : "s"} scheduled.`;
-  if (!warnings.length) return base;
-  const providerCount = warnings.filter((warning) => warning.type === "provider_overlap").length;
+  const availabilityWarning = schedulingWarningsMessage(result);
+  if (!warnings.length) return `${base}${availabilityWarning}`;
   const clientCount = warnings.filter((warning) => warning.type === "client_overlap").length;
   const dates = [...new Set(warnings.map((warning) => warning.occurrenceLocalDate).filter(Boolean))];
   const breakdown = [
-    providerCount ? `${providerCount} provider` : "",
     clientCount ? `${clientCount} client` : ""
   ].filter(Boolean).join(", ");
   const dateSummary = dates.length ? ` across ${dates.length} date${dates.length === 1 ? "" : "s"}` : "";
-  return `${base} ${warnings.length} scheduling overlap${warnings.length === 1 ? " was" : "s were"} detected${breakdown ? ` (${breakdown}${dateSummary})` : dateSummary}; review is needed.`;
+  return `${base} ${warnings.length} client scheduling overlap${warnings.length === 1 ? " was" : "s were"} detected${breakdown ? ` (${breakdown}${dateSummary})` : dateSummary}; review is needed.${availabilityWarning}`;
+}
+
+function schedulingWarningsMessage(result) {
+  const messages = [...new Set((result?.schedulingWarnings || []).map((warning) => warning?.message).filter(Boolean))];
+  return messages.length ? ` Warning: ${messages.join(" ")}` : "";
 }
 
 function validateAppointmentForm(formData) {
@@ -5190,8 +5194,8 @@ async function handleCreateAppointment(event) {
       const result = await createRecurringSeries(recurringSeriesSubmissionPayload(formData));
       state.scheduleSuccessMessage = recurringSeriesSuccessMessage(result);
     } else {
-      await createAppointment(appointmentFormPayload(formData));
-      state.scheduleSuccessMessage = "Appointment created successfully.";
+      const result = await createAppointment(appointmentFormPayload(formData));
+      state.scheduleSuccessMessage = `Appointment created successfully.${schedulingWarningsMessage(result)}`;
     }
     state.appointmentSubmitting = false;
     closeAppointmentForm();
@@ -6339,11 +6343,12 @@ async function handleUpdateAppointment(event) {
     const overlapWarning = recurringSeriesOperation && operation.collisionWarnings?.length
       ? ` Review ${operation.collisionWarnings.length} scheduling overlap warning${operation.collisionWarnings.length === 1 ? "" : "s"}.`
       : "";
+    const availabilityWarning = schedulingWarningsMessage(operation);
     const successMessage = recurringSeriesOperation
-      ? `${entireSeriesFuture ? "Future recurring series" : "This and future appointments"} updated: ${operation.updatedCount} updated, ${operation.createdCount} created, ${operation.cancelledCount} removed from the schedule, and ${operation.protectedCount} protected.${overlapWarning}`
+      ? `${entireSeriesFuture ? "Future recurring series" : "This and future appointments"} updated: ${operation.updatedCount} updated, ${operation.createdCount} created, ${operation.cancelledCount} removed from the schedule, and ${operation.protectedCount} protected.${overlapWarning}${availabilityWarning}`
       : movedOutsideWeek
-        ? `Appointment updated successfully and moved to ${formatDate(scheduleAppointmentDate(appointment))}, outside the visible week.`
-        : "Appointment updated successfully.";
+        ? `Appointment updated successfully and moved to ${formatDate(scheduleAppointmentDate(appointment))}, outside the visible week.${availabilityWarning}`
+        : `Appointment updated successfully.${availabilityWarning}`;
     state.scheduleSuccessMessage = successMessage;
     state.appointmentDetailsNotice = successMessage;
     state.preserveAppointmentDetailsOnScheduleRefresh = true;
