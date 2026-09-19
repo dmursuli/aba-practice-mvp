@@ -1,4 +1,4 @@
-import { assignClientProvider, cancelAppointment, createAppointment, createProviderAvailability, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getRbtFidelityHistory, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { assignClientProvider, cancelAppointment, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -63,6 +63,15 @@ const state = {
   providerAvailabilityLoading: false,
   providerAvailabilitySaving: false,
   providerAvailabilityMessage: "",
+  providerZoneProviders: [],
+  providerZoneValues: [],
+  selectedProviderZoneUserId: "",
+  providerZoneProfile: null,
+  providerZoneDraft: null,
+  providerZonesLoaded: false,
+  providerZonesLoading: false,
+  providerZonesSaving: false,
+  providerZoneMessage: "",
   clientSessionCounts: {},
   clientSessionSummaries: {},
   auditLog: [],
@@ -412,6 +421,14 @@ const providerAvailabilityWeek = document.querySelector("#provider-availability-
 const providerAvailabilityMessage = document.querySelector("#provider-availability-message");
 const providerAvailabilitySaveButton = document.querySelector("#provider-availability-save");
 const providerAvailabilityDeactivateButton = document.querySelector("#provider-availability-deactivate");
+const providerZoneProvider = document.querySelector("#provider-zone-provider");
+const providerZoneStatus = document.querySelector("#provider-zone-status");
+const providerZoneForm = document.querySelector("#provider-zone-form");
+const providerZonePrimary = document.querySelector("#provider-zone-primary");
+const providerZoneAcceptable = document.querySelector("#provider-zone-acceptable");
+const providerZoneMessage = document.querySelector("#provider-zone-message");
+const providerZoneSaveButton = document.querySelector("#provider-zone-save");
+const providerZoneDeactivateButton = document.querySelector("#provider-zone-deactivate");
 const appointmentModal = document.querySelector("#appointment-modal");
 const appointmentForm = document.querySelector("#appointment-form");
 const appointmentFormFields = document.querySelector("#appointment-form-fields");
@@ -1429,6 +1446,10 @@ function bindEvents() {
   providerAvailabilityForm?.addEventListener("input", syncProviderAvailabilityDraftFromForm);
   providerAvailabilityWeek?.addEventListener("click", handleProviderAvailabilityWeekClick);
   providerAvailabilityDeactivateButton?.addEventListener("click", handleDeactivateProviderAvailability);
+  providerZoneProvider?.addEventListener("change", handleProviderZoneProviderChange);
+  providerZonePrimary?.addEventListener("change", handleProviderZonePrimaryChange);
+  providerZoneForm?.addEventListener("submit", handleSaveProviderZones);
+  providerZoneDeactivateButton?.addEventListener("click", handleDeactivateProviderZones);
   appointmentForm?.elements?.clientId?.addEventListener("change", renderAppointmentServiceLocations);
   appointmentForm?.elements?.serviceCode?.addEventListener("change", renderAppointmentProviderOptions);
   appointmentForm?.elements?.serviceLocationIndex?.addEventListener("change", syncAppointmentSettingFromLocation);
@@ -1793,6 +1814,15 @@ function resetSensitiveState() {
   state.providerAvailabilityLoading = false;
   state.providerAvailabilitySaving = false;
   state.providerAvailabilityMessage = "";
+  state.providerZoneProviders = [];
+  state.providerZoneValues = [];
+  state.selectedProviderZoneUserId = "";
+  state.providerZoneProfile = null;
+  state.providerZoneDraft = null;
+  state.providerZonesLoaded = false;
+  state.providerZonesLoading = false;
+  state.providerZonesSaving = false;
+  state.providerZoneMessage = "";
   state.clientSessionCounts = {};
   state.clientSessionSummaries = {};
   state.auditLog = [];
@@ -4169,6 +4199,7 @@ async function switchScheduleSubview(subview) {
   });
   if (selectedSubview === "calendar") await ensureScheduleWeekLoaded();
   if (selectedSubview === "availability") await ensureProviderAvailabilityLoaded();
+  if (selectedSubview === "zones") await ensureProviderZonesLoaded();
 }
 
 const providerAvailabilityWeekdays = [
@@ -4455,6 +4486,138 @@ async function handleDeactivateProviderAvailability() {
   } finally {
     state.providerAvailabilitySaving = false;
     renderProviderAvailability();
+  }
+}
+
+function providerZoneDraftFromProfile(profile) {
+  return { primaryZone: profile?.primaryZone || "", acceptableZones: [...(profile?.acceptableZones || [])] };
+}
+
+function syncProviderZoneDraft() {
+  state.providerZoneDraft = {
+    primaryZone: providerZonePrimary?.value || "",
+    acceptableZones: Array.from(providerZoneAcceptable?.querySelectorAll('input[type="checkbox"]:checked') || []).map((input) => input.value)
+  };
+}
+
+function renderProviderZones() {
+  if (!providerZoneProvider || !providerZoneForm) return;
+  const draft = state.providerZoneDraft || providerZoneDraftFromProfile(null);
+  providerZoneProvider.innerHTML = ['<option value="">Select a provider</option>', ...state.providerZoneProviders.map((provider) => `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)} (${escapeHtml(provider.role.toUpperCase())})</option>`)].join("");
+  providerZoneProvider.value = state.selectedProviderZoneUserId;
+  providerZonePrimary.innerHTML = ['<option value="">Select a primary zone</option>', ...state.providerZoneValues.map((zone) => `<option value="${escapeHtml(zone)}">${escapeHtml(zone)}</option>`)].join("");
+  providerZonePrimary.value = draft.primaryZone;
+  providerZoneAcceptable.innerHTML = state.providerZoneValues.map((zone) => `
+    <label class="provider-zone-option"><input type="checkbox" value="${escapeHtml(zone)}" ${draft.acceptableZones.includes(zone) ? "checked" : ""} ${zone === draft.primaryZone ? "disabled" : ""}><span>${escapeHtml(zone)}</span></label>
+  `).join("");
+  const profile = state.providerZoneProfile;
+  const hasProvider = Boolean(state.selectedProviderZoneUserId);
+  providerZoneStatus.textContent = state.providerZonesLoading ? "Loading provider zones..." : !hasProvider
+    ? (state.providerZoneProviders.length ? "Select an active BCBA or RBT provider." : "No active BCBA or RBT providers are available.")
+    : !profile ? "No zone preferences are configured for this provider."
+      : profile.active ? `Active zone preferences · version ${profile.version}` : `Zone preferences are inactive. Saving will reactivate version ${profile.version + 1}.`;
+  const disabled = !hasProvider || state.providerZonesLoading || state.providerZonesSaving;
+  providerZoneProvider.disabled = state.providerZonesLoading || state.providerZonesSaving;
+  Array.from(providerZoneForm.elements).forEach((element) => { element.disabled = disabled || (element.type === "checkbox" && element.value === draft.primaryZone); });
+  providerZoneSaveButton.textContent = state.providerZonesSaving ? "Saving..." : "Save zone preferences";
+  providerZoneDeactivateButton.classList.toggle("hidden", !profile?.active);
+  providerZoneMessage.textContent = state.providerZoneMessage;
+}
+
+async function ensureProviderZonesLoaded({ force = false } = {}) {
+  if (state.providerZonesLoading) return;
+  if (state.providerZonesLoaded && !force) return renderProviderZones();
+  state.providerZonesLoading = true;
+  renderProviderZones();
+  try {
+    const payload = await getProviderZoneProfiles();
+    state.providerZoneProviders = payload.providers || [];
+    state.providerZoneValues = payload.zones || [];
+    if (!state.providerZoneProviders.some((provider) => provider.id === state.selectedProviderZoneUserId)) state.selectedProviderZoneUserId = state.providerZoneProviders[0]?.id || "";
+    state.providerZonesLoaded = true;
+    await loadSelectedProviderZones();
+  } catch (error) {
+    state.providerZoneMessage = error.message;
+  } finally {
+    state.providerZonesLoading = false;
+    renderProviderZones();
+  }
+}
+
+async function loadSelectedProviderZones() {
+  const providerUserId = state.selectedProviderZoneUserId;
+  if (!providerUserId) {
+    state.providerZoneProfile = null;
+    state.providerZoneDraft = providerZoneDraftFromProfile(null);
+    return renderProviderZones();
+  }
+  state.providerZonesLoading = true;
+  state.providerZoneMessage = "";
+  renderProviderZones();
+  try {
+    const payload = await getProviderZones(providerUserId);
+    if (providerUserId !== state.selectedProviderZoneUserId) return;
+    state.providerZoneProfile = payload.profile || null;
+    state.providerZoneDraft = providerZoneDraftFromProfile(payload.profile);
+  } catch (error) {
+    state.providerZoneMessage = error.message;
+  } finally {
+    state.providerZonesLoading = false;
+    renderProviderZones();
+  }
+}
+
+async function handleProviderZoneProviderChange() {
+  state.selectedProviderZoneUserId = providerZoneProvider.value;
+  await loadSelectedProviderZones();
+}
+
+function handleProviderZonePrimaryChange() {
+  syncProviderZoneDraft();
+  state.providerZoneDraft.acceptableZones = state.providerZoneDraft.acceptableZones.filter((zone) => zone !== state.providerZoneDraft.primaryZone);
+  renderProviderZones();
+}
+
+async function handleSaveProviderZones(event) {
+  event.preventDefault();
+  if (!state.selectedProviderZoneUserId || state.providerZonesSaving) return;
+  syncProviderZoneDraft();
+  if (!state.providerZoneDraft.primaryZone) {
+    state.providerZoneMessage = "Choose a primary zone.";
+    return renderProviderZones();
+  }
+  state.providerZonesSaving = true;
+  state.providerZoneMessage = "";
+  renderProviderZones();
+  try {
+    const profile = state.providerZoneProfile
+      ? await updateProviderZones(state.selectedProviderZoneUserId, { ...state.providerZoneDraft, expectedVersion: state.providerZoneProfile.version })
+      : await createProviderZones({ providerUserId: state.selectedProviderZoneUserId, ...state.providerZoneDraft });
+    state.providerZoneProfile = profile;
+    state.providerZoneDraft = providerZoneDraftFromProfile(profile);
+    state.providerZoneMessage = "Provider zone preferences saved.";
+  } catch (error) {
+    state.providerZoneMessage = error.message;
+  } finally {
+    state.providerZonesSaving = false;
+    renderProviderZones();
+  }
+}
+
+async function handleDeactivateProviderZones() {
+  const profile = state.providerZoneProfile;
+  if (!profile?.active || state.providerZonesSaving) return;
+  if (!window.confirm("Deactivate this provider's zone preferences? The saved profile will be retained.")) return;
+  state.providerZonesSaving = true;
+  renderProviderZones();
+  try {
+    state.providerZoneProfile = await deactivateProviderZones(profile.providerUserId, profile.version);
+    state.providerZoneMessage = "Provider zone preferences deactivated.";
+  } catch (error) {
+    state.providerZoneMessage = error.message;
+  } finally {
+    state.providerZonesSaving = false;
+    renderProviderZones();
   }
 }
 

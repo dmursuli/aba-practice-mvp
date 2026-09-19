@@ -72,6 +72,14 @@ test("PostgreSQL transaction state preserves provider availability profiles", as
   assert.equal(fake.state.providerAvailabilityProfiles[0].providerUserId, "user-rbt");
 });
 
+test("PostgreSQL transaction state preserves provider zone profiles", async () => {
+  const fake = fakePostgres({ clients: [], providerZoneProfiles: [] });
+  await mutateDbInPostgres(fake.config, (state) => {
+    state.providerZoneProfiles.push({ id: "zones-1", providerUserId: "user-rbt", primaryZone: "West Kendall", acceptableZones: ["Doral"], active: true, version: 1 });
+  });
+  assert.deepEqual(fake.state.providerZoneProfiles[0].acceptableZones, ["Doral"]);
+});
+
 test("PostgreSQL transaction state mutator rolls back a complete recurring-series operation on error", async () => {
   const initial = { clients: [], recurringAppointmentSeries: [], appointments: [], auditLog: [] };
   const fake = fakePostgres(initial);

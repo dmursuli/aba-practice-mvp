@@ -1506,12 +1506,15 @@
           </form>
         </section>
 
-        <section class="schedule-empty-state hidden" id="schedule-subview-zones" data-schedule-subview-panel="zones" role="tabpanel" aria-labelledby="schedule-tab-zones">
-          <div class="schedule-empty-state-content">
-            <p class="eyebrow">Planned workspace</p>
-            <h3>Zones</h3>
-            <p class="muted">Configurable service zones will be introduced in the dedicated Zone Management phase. No zone configuration or assignment is active yet.</p>
-          </div>
+        <section class="schedule-subview hidden" id="schedule-subview-zones" data-schedule-subview-panel="zones" role="tabpanel" aria-labelledby="schedule-tab-zones">
+          <div class="schedule-heading"><div class="section-heading"><p class="eyebrow">Provider service areas</p><h3>Provider Zones</h3><p class="muted">Set each provider’s preferred and additional acceptable service zones.</p></div></div>
+          <div class="provider-zone-toolbar"><label>Provider<select id="provider-zone-provider"><option value="">Select a provider</option></select></label><p class="muted" id="provider-zone-status">Select an active BCBA or RBT provider.</p></div>
+          <form id="provider-zone-form" class="provider-zone-form">
+            <label>Primary zone<select name="primaryZone" id="provider-zone-primary"><option value="">Select a primary zone</option></select></label>
+            <fieldset class="provider-zone-fieldset"><legend>Additional acceptable zones</legend><div id="provider-zone-acceptable" class="provider-zone-options"></div></fieldset>
+            <p class="form-message" id="provider-zone-message" role="status" aria-live="polite"></p>
+            <div class="button-row"><button type="submit" class="primary-button" id="provider-zone-save">Save zone preferences</button><button type="button" class="secondary-button hidden" id="provider-zone-deactivate">Deactivate zone preferences</button></div>
+          </form>
         </section>
 
         <section class="schedule-empty-state hidden" id="schedule-subview-capacity" data-schedule-subview-panel="capacity" role="tabpanel" aria-labelledby="schedule-tab-capacity">

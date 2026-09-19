@@ -15,6 +15,7 @@ import {
 } from "./lib/scheduling-recurrence.mjs";
 import { sanitizeProviderAvailabilityInput } from "./lib/provider-availability.mjs";
 import { appointmentStatusBlocksScheduling, validateProviderScheduling } from "./lib/scheduling-conflicts.mjs";
+import { SERVICE_ZONE_SET, SERVICE_ZONE_VALUES, sanitizeProviderZoneInput } from "./lib/service-zones.mjs";
 import {
   duplicateBehaviorIds,
   duplicateTargetIdsFromPrograms,
@@ -88,15 +89,7 @@ let emailTransportPromise = null;
 let appointmentMutationQueue = Promise.resolve();
 const verificationDebugDeliveries = [];
 const CLIENT_SERVICE_LOCATION_SETTING_TYPES = new Set(["home", "school", "clinic", "community", "other"]);
-const CLIENT_SERVICE_LOCATION_ZONES = new Set([
-  "Homestead", "Florida City", "Princeton", "Goulds", "Cutler Bay", "Palmetto Bay",
-  "Kendall", "West Kendall", "Tamiami", "Fontainebleau",
-  "Coral Gables", "South Miami", "Westchester", "Flagami", "Little Havana",
-  "Hialeah", "Hialeah Gardens", "Miami Lakes", "Doral", "Medley",
-  "North Miami", "North Miami Beach", "Aventura", "Sunny Isles Beach", "Bal Harbour",
-  "Bay Harbor Islands", "Surfside", "Downtown Miami", "Brickell", "Edgewater", "Wynwood",
-  "Midtown", "Design District", "Miami Beach", "Key Biscayne"
-]);
+const CLIENT_SERVICE_LOCATION_ZONES = SERVICE_ZONE_SET;
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -831,6 +824,10 @@ function ensureSchedulingState(db) {
     db.providerAvailabilityProfiles = [];
     changed = true;
   }
+  if (!Array.isArray(db.providerZoneProfiles)) {
+    db.providerZoneProfiles = [];
+    changed = true;
+  }
   return changed;
 }
 
@@ -1341,6 +1338,128 @@ export function createAppServer() {
           sendJson(res, error.status, { errors: error.errors, ...error.extra });
           return;
         }
+        throw error;
+      }
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/provider-zones") {
+      const db = await readSchedulingDb();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      sendJson(res, 200, {
+        providers: eligibleAvailabilityProviders(db),
+        zones: SERVICE_ZONE_VALUES,
+        profiles: (db.providerZoneProfiles || []).map(providerZoneResponse)
+      });
+      return;
+    }
+
+    const providerZoneMatch = url.pathname.match(/^\/api\/provider-zones\/([^/]+)$/);
+    if (req.method === "GET" && providerZoneMatch) {
+      const db = await readSchedulingDb();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const provider = availabilityProvider(db, decodeURIComponent(providerZoneMatch[1]));
+      if (!provider) return sendJson(res, 404, { errors: ["Eligible provider not found."] });
+      const profile = db.providerZoneProfiles.find((item) => item.providerUserId === provider.id) || null;
+      sendJson(res, 200, { provider: availabilityProviderSummary(provider), profile: profile ? providerZoneResponse(profile) : null });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/provider-zones") {
+      const authDb = await readSchedulingDb();
+      if (!requireRole(req, res, authDb, ["admin", "bcba"])) return;
+      const payload = await readBody(req);
+      let result;
+      try {
+        await mutateSchedulingDb((db) => {
+          ensureSchedulingState(db);
+          db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
+          const state = sessionStatus(req, db);
+          if (state.status !== "ok") throw new ProviderZoneRequestError(401, ["Authentication is required."]);
+          if (!["admin", "bcba"].includes(state.user.role)) throw new ProviderZoneRequestError(403, ["Your role cannot perform this action."]);
+          const provider = availabilityProvider(db, payload.providerUserId);
+          if (!provider) throw new ProviderZoneRequestError(400, ["Select an active BCBA or RBT provider."]);
+          if (db.providerZoneProfiles.some((item) => item.providerUserId === provider.id)) {
+            throw new ProviderZoneRequestError(409, ["Zone preferences already exist for this provider. Update the existing profile."]);
+          }
+          const sanitized = sanitizeProviderZoneInput(payload);
+          if (sanitized.errors.length) throw new ProviderZoneRequestError(400, sanitized.errors);
+          const now = new Date().toISOString();
+          const profile = {
+            id: crypto.randomUUID(), providerUserId: provider.id, ...sanitized.profile,
+            active: true, version: 1, createdAt: now, createdByUserId: state.user.id,
+            updatedAt: now, updatedByUserId: state.user.id
+          };
+          db.providerZoneProfiles.push(profile);
+          logAudit(db, req, state.user, "provider-zones-created", { details: providerZoneAuditDetails(profile) });
+          result = providerZoneResponse(profile);
+          return db;
+        });
+      } catch (error) {
+        if (error instanceof ProviderZoneRequestError) return sendJson(res, error.status, { errors: error.errors, ...error.extra });
+        throw error;
+      }
+      sendJson(res, 201, result);
+      return;
+    }
+
+    if (req.method === "PUT" && providerZoneMatch) {
+      const authDb = await readSchedulingDb();
+      if (!requireRole(req, res, authDb, ["admin", "bcba"])) return;
+      const payload = await readBody(req);
+      let result;
+      try {
+        await mutateSchedulingDb((db) => {
+          ensureSchedulingState(db);
+          db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
+          const state = sessionStatus(req, db);
+          if (state.status !== "ok") throw new ProviderZoneRequestError(401, ["Authentication is required."]);
+          if (!["admin", "bcba"].includes(state.user.role)) throw new ProviderZoneRequestError(403, ["Your role cannot perform this action."]);
+          const provider = availabilityProvider(db, decodeURIComponent(providerZoneMatch[1]));
+          if (!provider) throw new ProviderZoneRequestError(400, ["Select an active BCBA or RBT provider."]);
+          const profile = db.providerZoneProfiles.find((item) => item.providerUserId === provider.id);
+          if (!profile) throw new ProviderZoneRequestError(404, ["Provider zone preferences not found."]);
+          requireProviderZoneVersion(profile, payload.expectedVersion);
+          const sanitized = sanitizeProviderZoneInput(payload);
+          if (sanitized.errors.length) throw new ProviderZoneRequestError(400, sanitized.errors);
+          Object.assign(profile, sanitized.profile, { active: true, version: profile.version + 1, updatedAt: new Date().toISOString(), updatedByUserId: state.user.id });
+          logAudit(db, req, state.user, "provider-zones-updated", { details: providerZoneAuditDetails(profile) });
+          result = providerZoneResponse(profile);
+          return db;
+        });
+      } catch (error) {
+        if (error instanceof ProviderZoneRequestError) return sendJson(res, error.status, { errors: error.errors, ...error.extra });
+        throw error;
+      }
+      sendJson(res, 200, result);
+      return;
+    }
+
+    const providerZoneDeactivateMatch = url.pathname.match(/^\/api\/provider-zones\/([^/]+)\/deactivate$/);
+    if (req.method === "POST" && providerZoneDeactivateMatch) {
+      const authDb = await readSchedulingDb();
+      if (!requireRole(req, res, authDb, ["admin", "bcba"])) return;
+      const payload = await readBody(req);
+      let result;
+      try {
+        await mutateSchedulingDb((db) => {
+          ensureSchedulingState(db);
+          db.auditLog = Array.isArray(db.auditLog) ? db.auditLog : [];
+          const state = sessionStatus(req, db);
+          if (state.status !== "ok") throw new ProviderZoneRequestError(401, ["Authentication is required."]);
+          if (!["admin", "bcba"].includes(state.user.role)) throw new ProviderZoneRequestError(403, ["Your role cannot perform this action."]);
+          const profile = db.providerZoneProfiles.find((item) => item.providerUserId === decodeURIComponent(providerZoneDeactivateMatch[1]));
+          if (!profile) throw new ProviderZoneRequestError(404, ["Provider zone preferences not found."]);
+          requireProviderZoneVersion(profile, payload.expectedVersion);
+          if (!profile.active) throw new ProviderZoneRequestError(400, ["Provider zone preferences are already inactive."]);
+          Object.assign(profile, { active: false, version: profile.version + 1, updatedAt: new Date().toISOString(), updatedByUserId: state.user.id });
+          logAudit(db, req, state.user, "provider-zones-deactivated", { details: providerZoneAuditDetails(profile) });
+          result = providerZoneResponse(profile);
+          return db;
+        });
+      } catch (error) {
+        if (error instanceof ProviderZoneRequestError) return sendJson(res, error.status, { errors: error.errors, ...error.extra });
         throw error;
       }
       sendJson(res, 200, result);
@@ -3728,6 +3847,15 @@ class ProviderAvailabilityRequestError extends Error {
   }
 }
 
+class ProviderZoneRequestError extends Error {
+  constructor(status, errors, extra = {}) {
+    super(errors[0] || "Provider zone request failed.");
+    this.status = status;
+    this.errors = errors;
+    this.extra = extra;
+  }
+}
+
 function availabilityProviderSummary(provider) {
   return {
     id: provider.id,
@@ -3780,6 +3908,31 @@ function requireProviderAvailabilityVersion(profile, expectedVersion) {
     throw new ProviderAvailabilityRequestError(409, [
       "Provider availability has changed. Reload it and try again."
     ], { currentVersion: profile.version });
+  }
+}
+
+function providerZoneResponse(profile) {
+  return structuredClone(profile);
+}
+
+function providerZoneAuditDetails(profile) {
+  return {
+    providerZoneProfileId: profile.id,
+    providerUserId: profile.providerUserId,
+    primaryZone: profile.primaryZone,
+    acceptableZoneCount: profile.acceptableZones.length,
+    active: profile.active,
+    version: profile.version
+  };
+}
+
+function requireProviderZoneVersion(profile, expectedVersion) {
+  const version = Number(expectedVersion);
+  if (!Number.isInteger(version) || version < 1) {
+    throw new ProviderZoneRequestError(400, ["expectedVersion is required and must be a positive integer."]);
+  }
+  if (version !== profile.version) {
+    throw new ProviderZoneRequestError(409, ["Provider zone preferences have changed. Reload them and try again."], { currentVersion: profile.version });
   }
 }
 
@@ -5380,7 +5533,7 @@ function clientAssignmentProviders(db, clientId) {
 }
 
 function redactDb(db, user) {
-  const { users, auditLog, appointments, recurringAppointmentSeries, providerAvailabilityProfiles, clientUserAssignments, ...publicDb } = db;
+  const { users, auditLog, appointments, recurringAppointmentSeries, providerAvailabilityProfiles, providerZoneProfiles, clientUserAssignments, ...publicDb } = db;
   return {
     ...publicDb,
     clients: visibleClients(db, user),
@@ -5390,7 +5543,7 @@ function redactDb(db, user) {
 }
 
 function bootstrapDb(db, user) {
-  const { users, auditLog, sessions, appointments, recurringAppointmentSeries, providerAvailabilityProfiles, clientUserAssignments, ...publicDb } = db;
+  const { users, auditLog, sessions, appointments, recurringAppointmentSeries, providerAvailabilityProfiles, providerZoneProfiles, clientUserAssignments, ...publicDb } = db;
   return {
     ...publicDb,
     clients: visibleClients(db, user),
@@ -5413,6 +5566,7 @@ function practiceBackupPayload(db) {
       appointments: db.appointments || [],
       recurringAppointmentSeries: db.recurringAppointmentSeries || [],
       providerAvailabilityProfiles: db.providerAvailabilityProfiles || [],
+      providerZoneProfiles: db.providerZoneProfiles || [],
       clientUserAssignments: db.clientUserAssignments || [],
       historicalImportBatches: db.historicalImportBatches || [],
       auditLog: db.auditLog || [],
@@ -5425,7 +5579,7 @@ function restorePracticeBackup(currentDb, backup) {
   if (!backup || backup.app !== "ABA Practice MVP" || !backup.data) {
     throw new Error("That file is not a valid ABA Practice MVP backup.");
   }
-  const { clients, sessions, appointments, recurringAppointmentSeries, providerAvailabilityProfiles, clientUserAssignments, historicalImportBatches, auditLog } = backup.data;
+  const { clients, sessions, appointments, recurringAppointmentSeries, providerAvailabilityProfiles, providerZoneProfiles, clientUserAssignments, historicalImportBatches, auditLog } = backup.data;
   if (!Array.isArray(clients) || !Array.isArray(sessions)) {
     throw new Error("Backup must include clients and sessions.");
   }
@@ -5436,6 +5590,7 @@ function restorePracticeBackup(currentDb, backup) {
     appointments: Array.isArray(appointments) ? appointments : [],
     recurringAppointmentSeries: Array.isArray(recurringAppointmentSeries) ? recurringAppointmentSeries : [],
     providerAvailabilityProfiles: Array.isArray(providerAvailabilityProfiles) ? providerAvailabilityProfiles : [],
+    providerZoneProfiles: Array.isArray(providerZoneProfiles) ? providerZoneProfiles : [],
     clientUserAssignments: Array.isArray(clientUserAssignments) ? clientUserAssignments : (currentDb.clientUserAssignments || []),
     historicalImportBatches: Array.isArray(historicalImportBatches) ? historicalImportBatches : [],
     auditLog: Array.isArray(auditLog) ? auditLog : [],

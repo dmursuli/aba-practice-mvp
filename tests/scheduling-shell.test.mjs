@@ -48,7 +48,7 @@ test("Scheduling workspace has five subviews with Calendar active", () => {
   assert.match(htmlSource, /data-schedule-subview-panel="staffing"[\s\S]*No staffing business logic is active yet/);
   assert.match(htmlSource, /data-schedule-subview-panel="availability"[\s\S]*Provider Availability/);
   assert.match(htmlSource, /id="provider-availability-provider"/);
-  assert.match(htmlSource, /data-schedule-subview-panel="zones"[\s\S]*No zone configuration or assignment is active yet/);
+  assert.match(htmlSource, /data-schedule-subview-panel="zones"[\s\S]*Provider Zones/);
   assert.match(htmlSource, /data-schedule-subview-panel="capacity"[\s\S]*No capacity calculations are active yet/);
 });
 
@@ -75,6 +75,7 @@ test("workspace subnavigation changes panels and loads only the selected Schedul
   assert.match(block, /panel\.classList\.toggle\("hidden"/);
   assert.match(block, /if \(selectedSubview === "calendar"\) await ensureScheduleWeekLoaded\(\);/);
   assert.match(block, /if \(selectedSubview === "availability"\) await ensureProviderAvailabilityLoaded\(\);/);
+  assert.match(block, /if \(selectedSubview === "zones"\) await ensureProviderZonesLoaded\(\);/);
 });
 
 test("week helpers render Monday through Sunday across month and year boundaries", () => {

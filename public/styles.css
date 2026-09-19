@@ -946,6 +946,24 @@ button:focus-visible {
   margin-bottom: 6px;
 }
 
+.provider-zone-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 360px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--brand-soft);
+}
+
+.provider-zone-toolbar p { margin: 0 0 10px; }
+.provider-zone-form { display: grid; gap: 16px; min-width: 0; }
+.provider-zone-fieldset { min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; }
+.provider-zone-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 14px; }
+.provider-zone-option { display: flex; gap: 8px; align-items: center; min-width: 0; font-weight: 600; }
+.provider-zone-option span { overflow-wrap: anywhere; }
+
 .schedule-week-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -2635,7 +2653,9 @@ button:disabled {
   }
 
   .provider-availability-toolbar,
-  .provider-availability-block {
+  .provider-availability-block,
+  .provider-zone-toolbar,
+  .provider-zone-options {
     grid-template-columns: 1fr;
   }
 

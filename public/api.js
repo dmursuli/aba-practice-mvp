@@ -154,6 +154,31 @@ export async function deactivateProviderAvailability(providerUserId, expectedVer
   return parseResponse(response);
 }
 
+export async function getProviderZoneProfiles() {
+  const response = await fetch("/api/provider-zones");
+  return parseResponse(response);
+}
+
+export async function getProviderZones(providerUserId) {
+  const response = await fetch(`/api/provider-zones/${encodeURIComponent(providerUserId)}`);
+  return parseResponse(response);
+}
+
+export async function createProviderZones(profile) {
+  const response = await fetch("/api/provider-zones", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(profile) });
+  return parseResponse(response);
+}
+
+export async function updateProviderZones(providerUserId, profile) {
+  const response = await fetch(`/api/provider-zones/${encodeURIComponent(providerUserId)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(profile) });
+  return parseResponse(response);
+}
+
+export async function deactivateProviderZones(providerUserId, expectedVersion) {
+  const response = await fetch(`/api/provider-zones/${encodeURIComponent(providerUserId)}/deactivate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion }) });
+  return parseResponse(response);
+}
+
 export async function createAppointment(appointment) {
   const response = await fetch("/api/appointments", {
     method: "POST",
