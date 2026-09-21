@@ -50,7 +50,9 @@ test("Scheduling workspace has five subviews with Calendar active", () => {
   assert.match(htmlSource, /data-schedule-subview-panel="availability"[\s\S]*Provider Availability/);
   assert.match(htmlSource, /id="provider-availability-provider"/);
   assert.match(htmlSource, /data-schedule-subview-panel="zones"[\s\S]*Provider Zones/);
-  assert.match(htmlSource, /data-schedule-subview-panel="capacity"[\s\S]*Coming later\. No capacity calculations are active/);
+  assert.match(htmlSource, /data-schedule-subview-panel="capacity"[\s\S]*Capacity &amp; Caseload/);
+  assert.match(htmlSource, /id="capacity-provider-list"/);
+  assert.match(htmlSource, /id="capacity-client-list"/);
 });
 
 test("Scheduling is available only to admin and BCBA roles", () => {
@@ -78,6 +80,7 @@ test("workspace subnavigation changes panels and loads only the selected Schedul
   assert.match(block, /if \(selectedSubview === "staffing"\) renderStaffing\(\);/);
   assert.match(block, /if \(selectedSubview === "availability"\) await ensureProviderAvailabilityLoaded\(\);/);
   assert.match(block, /if \(selectedSubview === "zones"\) await ensureProviderZonesLoaded\(\);/);
+  assert.match(block, /if \(selectedSubview === "capacity"\) await loadSchedulingCapacity\(\);/);
 });
 
 test("week helpers render Monday through Sunday across month and year boundaries", () => {

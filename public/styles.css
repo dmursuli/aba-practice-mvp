@@ -1123,6 +1123,39 @@ button:focus-visible {
   min-width: 0;
 }
 
+.capacity-workspace { display: grid; gap: 18px; min-width: 0; }
+.capacity-heading { align-items: end; }
+.capacity-controls { display: grid; grid-template-columns: repeat(2, minmax(150px, 1fr)); gap: 10px; }
+.capacity-controls label { min-width: 0; }
+.capacity-range { margin: -8px 0 0; color: var(--muted); font-size: 0.86rem; }
+.capacity-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.capacity-summary-card { display: grid; gap: 3px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 9px; background: #f8fbff; }
+.capacity-summary-card strong { color: var(--navy); font-size: 1.4rem; }
+.capacity-summary-card span { color: var(--muted); font-size: 0.8rem; font-weight: 700; }
+.capacity-section { display: grid; gap: 10px; }
+.capacity-section-heading h4 { margin: 0 0 3px; }
+.capacity-section-heading p { margin: 0; }
+.capacity-provider-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.capacity-card { display: grid; gap: 12px; min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
+.capacity-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.capacity-card-heading > div { display: grid; gap: 2px; }
+.capacity-card-heading > div > strong { color: var(--navy); }
+.capacity-card-heading > div > span { color: var(--muted); font-size: 0.76rem; font-weight: 800; }
+.capacity-status, .capacity-coverage-status { display: inline-flex; width: fit-content; padding: 4px 8px; border-radius: 999px; font-size: 0.74rem; font-weight: 800; }
+.capacity-status.is-configured, .capacity-coverage-status.is-scheduled { background: #e8f6ed; color: #276238; }
+.capacity-status.is-unconfigured, .capacity-coverage-status.is-assigned_no_97153_scheduled { background: #fff7ed; color: #9a3412; }
+.capacity-coverage-status.is-no_rbt_assigned { background: #fdecec; color: #9f2d2d; }
+.capacity-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.capacity-metrics > div { display: grid; gap: 2px; padding: 8px; border-radius: 7px; background: #f7f9fc; }
+.capacity-metrics span, .capacity-card-meta, .capacity-client-row span { color: var(--muted); font-size: 0.78rem; }
+.capacity-metrics strong { color: var(--text); }
+.capacity-card-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; padding-top: 2px; border-top: 1px solid var(--line); }
+.capacity-client-list { display: grid; gap: 8px; }
+.capacity-client-row { display: grid; grid-template-columns: minmax(180px, 1.5fr) minmax(90px, 0.6fr) minmax(150px, 0.9fr) minmax(180px, auto); align-items: center; gap: 12px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.capacity-client-row > div { display: grid; gap: 2px; min-width: 0; }
+.capacity-empty-state { grid-column: 1 / -1; padding: 16px; border: 1px dashed var(--line); border-radius: 9px; background: #fbfdff; color: var(--muted); }
+.capacity-note { margin: 0; color: var(--muted); font-size: 0.82rem; line-height: 1.45; }
+
 .staffing-match-form {
   display: grid;
   gap: 14px;
@@ -3110,6 +3143,10 @@ button:disabled {
 
   .staffing-form-grid,
   .staffing-candidate-list { grid-template-columns: minmax(0, 1fr); }
+  .capacity-controls,
+  .capacity-summary,
+  .capacity-provider-list { grid-template-columns: minmax(0, 1fr); }
+  .capacity-client-row { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
   .staffing-schedule-summary { grid-template-columns: minmax(0, 1fr); }
   .staffing-recurring-fields,
   #staffing-recurring-rows .appointment-recurrence-row { grid-template-columns: minmax(0, 1fr); }
@@ -3371,6 +3408,8 @@ button:disabled {
 
 @media (max-width: 520px) {
   .provider-zone-options { grid-template-columns: minmax(0, 1fr); }
+  .capacity-client-row,
+  .capacity-metrics { grid-template-columns: minmax(0, 1fr); }
   .staffing-candidate-actions,
   .staffing-candidate-actions > * { width: 100%; }
 }

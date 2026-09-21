@@ -1,4 +1,4 @@
-import { assignClientProvider, cancelAppointment, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { assignClientProvider, cancelAppointment, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getSchedulingCapacity, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -88,6 +88,12 @@ const state = {
   providerZonesLoading: false,
   providerZonesSaving: false,
   providerZoneMessage: "",
+  schedulingCapacity: null,
+  schedulingCapacityLoading: false,
+  schedulingCapacityError: "",
+  schedulingCapacityWindow: "this_week",
+  schedulingCapacityRole: "all",
+  schedulingCapacityRequestId: 0,
   clientSessionCounts: {},
   clientSessionSummaries: {},
   auditLog: [],
@@ -471,6 +477,13 @@ const providerZoneLegacy = document.querySelector("#provider-zone-legacy");
 const providerZoneMessage = document.querySelector("#provider-zone-message");
 const providerZoneSaveButton = document.querySelector("#provider-zone-save");
 const providerZoneDeactivateButton = document.querySelector("#provider-zone-deactivate");
+const capacityWindowSelect = document.querySelector("#capacity-window");
+const capacityRoleSelect = document.querySelector("#capacity-role");
+const capacityRangeLabel = document.querySelector("#capacity-range-label");
+const capacityMessage = document.querySelector("#capacity-message");
+const capacitySummary = document.querySelector("#capacity-summary");
+const capacityProviderList = document.querySelector("#capacity-provider-list");
+const capacityClientList = document.querySelector("#capacity-client-list");
 const appointmentModal = document.querySelector("#appointment-modal");
 const appointmentForm = document.querySelector("#appointment-form");
 const appointmentFormFields = document.querySelector("#appointment-form-fields");
@@ -1505,6 +1518,8 @@ function bindEvents() {
   providerZonePrimary?.addEventListener("change", handleProviderZonePrimaryChange);
   providerZoneForm?.addEventListener("submit", handleSaveProviderZones);
   providerZoneDeactivateButton?.addEventListener("click", handleDeactivateProviderZones);
+  capacityWindowSelect?.addEventListener("change", handleCapacityWindowChange);
+  capacityRoleSelect?.addEventListener("change", handleCapacityRoleChange);
   appointmentForm?.elements?.clientId?.addEventListener("change", renderAppointmentServiceLocations);
   appointmentForm?.elements?.serviceCode?.addEventListener("change", renderAppointmentProviderOptions);
   appointmentForm?.elements?.serviceLocationIndex?.addEventListener("change", syncAppointmentSettingFromLocation);
@@ -1903,6 +1918,12 @@ function resetSensitiveState() {
   state.providerZonesLoading = false;
   state.providerZonesSaving = false;
   state.providerZoneMessage = "";
+  state.schedulingCapacity = null;
+  state.schedulingCapacityLoading = false;
+  state.schedulingCapacityError = "";
+  state.schedulingCapacityWindow = "this_week";
+  state.schedulingCapacityRole = "all";
+  state.schedulingCapacityRequestId += 1;
   state.clientSessionCounts = {};
   state.clientSessionSummaries = {};
   state.auditLog = [];
@@ -4296,6 +4317,121 @@ async function switchScheduleSubview(subview) {
   if (selectedSubview === "staffing") renderStaffing();
   if (selectedSubview === "availability") await ensureProviderAvailabilityLoaded();
   if (selectedSubview === "zones") await ensureProviderZonesLoaded();
+  if (selectedSubview === "capacity") await loadSchedulingCapacity();
+}
+
+function capacityRange(windowValue = state.schedulingCapacityWindow, today = new Date()) {
+  const currentMonday = scheduleMonday(today);
+  const start = windowValue === "next_week" || windowValue === "next_four_weeks"
+    ? addScheduleDays(currentMonday, 7)
+    : currentMonday;
+  const days = windowValue === "next_four_weeks" ? 28 : 7;
+  return { startDate: scheduleDateValue(start), endDate: scheduleDateValue(addScheduleDays(start, days - 1)) };
+}
+
+function capacityHours(value) {
+  return `${Number(value || 0).toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1")}h`;
+}
+
+function capacityCoverageLabel(status) {
+  if (status === "no_rbt_assigned") return "No RBT assigned";
+  if (status === "assigned_no_97153_scheduled") return "Assigned — no 97153 scheduled";
+  return "Scheduled";
+}
+
+function renderSchedulingCapacity() {
+  if (!capacityProviderList || !capacityClientList) return;
+  const payload = state.schedulingCapacity;
+  const range = capacityRange();
+  if (capacityWindowSelect) capacityWindowSelect.value = state.schedulingCapacityWindow;
+  if (capacityRoleSelect) capacityRoleSelect.value = state.schedulingCapacityRole;
+  if (capacityRangeLabel) capacityRangeLabel.textContent = `${range.startDate} – ${range.endDate}`;
+  setSchedulingFeedback(capacityMessage, state.schedulingCapacityError, "error");
+  if (state.schedulingCapacityLoading) {
+    capacitySummary.innerHTML = "";
+    capacityProviderList.innerHTML = '<div class="capacity-empty-state">Loading provider capacity…</div>';
+    capacityClientList.innerHTML = '<div class="capacity-empty-state">Loading client coverage…</div>';
+    return;
+  }
+  if (!payload) {
+    capacitySummary.innerHTML = "";
+    capacityProviderList.innerHTML = '<div class="capacity-empty-state">Capacity data is unavailable.</div>';
+    capacityClientList.innerHTML = '<div class="capacity-empty-state">Client coverage data is unavailable.</div>';
+    return;
+  }
+  const providers = (payload.providerCapacity || []).filter((item) => (
+    state.schedulingCapacityRole === "all" || item.provider.role === state.schedulingCapacityRole
+  ));
+  const providersWithCapacity = providers.filter((item) => item.availability?.remainingHours > 0).length;
+  const missingAvailability = providers.filter((item) => !item.availabilityConfigured).length;
+  capacitySummary.innerHTML = [
+    ["Providers", providers.length],
+    ["With remaining capacity", providersWithCapacity],
+    ["Availability not configured", missingAvailability],
+    ["Clients without an RBT", payload.summary.clientsWithoutAssignedRbts],
+    ["Assigned without 97153", payload.summary.clientsAssignedWithout97153]
+  ].map(([label, value]) => `<div class="capacity-summary-card"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`).join("");
+  capacityProviderList.innerHTML = providers.length ? providers.map((item) => {
+    const availability = item.availability;
+    const zoneText = item.zone
+      ? [item.zone.primaryZone, ...(item.zone.acceptableZones || [])].filter(Boolean).join(" · ")
+      : "Zones not configured";
+    const assignmentText = item.provider.role === "rbt"
+      ? `${item.assignedClientCount} assigned client${item.assignedClientCount === 1 ? "" : "s"}`
+      : "BCBA clinical access";
+    return `<article class="capacity-card">
+      <div class="capacity-card-heading"><div><strong>${escapeHtml(item.provider.name)}</strong><span>${escapeHtml(item.provider.role.toUpperCase())}</span></div><span class="capacity-status ${availability ? "is-configured" : "is-unconfigured"}">${availability ? "Availability configured" : "Not configured"}</span></div>
+      <div class="capacity-metrics">
+        <div><span>Scheduled</span><strong>${capacityHours(item.scheduledHours)}</strong></div>
+        <div><span>Confirmed</span><strong>${capacityHours(item.confirmedHours)}</strong></div>
+        <div><span>Blocking total</span><strong>${capacityHours(item.totalBlockingHours)}</strong></div>
+        <div><span>Available</span><strong>${availability ? capacityHours(availability.availableHours) : "—"}</strong></div>
+        <div><span>Remaining</span><strong>${availability ? capacityHours(availability.remainingHours) : "—"}</strong></div>
+        <div><span>Utilization</span><strong>${availability?.utilizationPercent === null || !availability ? "—" : `${escapeHtml(availability.utilizationPercent)}%`}</strong></div>
+      </div>
+      <div class="capacity-card-meta"><span>${escapeHtml(assignmentText)}</span><span>${escapeHtml(zoneText)}</span></div>
+    </article>`;
+  }).join("") : '<div class="capacity-empty-state">No active providers match this role filter.</div>';
+  const clients = payload.clientCoverage || [];
+  capacityClientList.innerHTML = clients.length ? clients.map((item) => `<article class="capacity-client-row">
+    <div><strong>${escapeHtml(item.client.name)}</strong><span>${escapeHtml(item.serviceLocationZone || "Zone not configured")}</span></div>
+    <div><strong>${escapeHtml(item.activeRbtAssignmentCount)}</strong><span>Active RBT${item.multipleRbtsAssigned ? "s" : ""}</span></div>
+    <div><strong>${capacityHours(item.scheduled97153Hours)}</strong><span>97153 scheduled + confirmed</span></div>
+    <span class="capacity-coverage-status is-${escapeHtml(item.coverageStatus)}">${escapeHtml(capacityCoverageLabel(item.coverageStatus))}</span>
+  </article>`).join("") : '<div class="capacity-empty-state">No active clients.</div>';
+}
+
+async function loadSchedulingCapacity() {
+  const requestId = ++state.schedulingCapacityRequestId;
+  const range = capacityRange();
+  state.schedulingCapacityLoading = true;
+  state.schedulingCapacityError = "";
+  renderSchedulingCapacity();
+  try {
+    const payload = await getSchedulingCapacity(range);
+    if (requestId !== state.schedulingCapacityRequestId) return;
+    state.schedulingCapacity = payload;
+  } catch (error) {
+    if (requestId !== state.schedulingCapacityRequestId) return;
+    state.schedulingCapacity = null;
+    state.schedulingCapacityError = error.message;
+  } finally {
+    if (requestId === state.schedulingCapacityRequestId) {
+      state.schedulingCapacityLoading = false;
+      renderSchedulingCapacity();
+    }
+  }
+}
+
+function handleCapacityWindowChange() {
+  state.schedulingCapacityWindow = capacityWindowSelect?.value || "this_week";
+  state.schedulingCapacity = null;
+  void loadSchedulingCapacity();
+}
+
+function handleCapacityRoleChange() {
+  state.schedulingCapacityRole = capacityRoleSelect?.value || "all";
+  renderSchedulingCapacity();
 }
 
 function staffingActiveClients() {

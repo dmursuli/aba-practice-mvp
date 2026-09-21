@@ -1499,12 +1499,26 @@
           </div>
         </section>
 
-        <section class="schedule-empty-state hidden" id="schedule-subview-capacity" data-schedule-subview-panel="capacity" role="tabpanel" aria-labelledby="schedule-tab-capacity">
-          <div class="schedule-empty-state-content">
-            <p class="eyebrow">Planned workspace</p>
-            <h3>Capacity</h3>
-            <p class="muted">Coming later. No capacity calculations are active.</p>
+        <section class="schedule-subview capacity-workspace hidden" id="schedule-subview-capacity" data-schedule-subview-panel="capacity" role="tabpanel" aria-labelledby="schedule-tab-capacity">
+          <div class="schedule-heading capacity-heading">
+            <div class="section-heading"><p class="eyebrow">Operational overview</p><h3>Capacity &amp; Caseload</h3><p class="muted">Review scheduled provider time and current client coverage. This dashboard is read-only.</p></div>
+            <div class="capacity-controls">
+              <label>Reporting window<select id="capacity-window"><option value="this_week">This week</option><option value="next_week">Next week</option><option value="next_four_weeks">Next 4 weeks</option></select></label>
+              <label>Provider role<select id="capacity-role"><option value="all">All providers</option><option value="rbt">RBT</option><option value="bcba">BCBA</option></select></label>
+            </div>
           </div>
+          <p class="capacity-range">Reporting period: <strong id="capacity-range-label"></strong></p>
+          <p class="form-message" id="capacity-message" role="status" aria-live="polite"></p>
+          <div class="capacity-summary" id="capacity-summary" aria-label="Capacity summary"></div>
+          <section class="capacity-section" aria-labelledby="capacity-provider-title">
+            <div class="capacity-section-heading"><div><h4 id="capacity-provider-title">Provider capacity</h4><p class="muted">Scheduled and confirmed appointments are the only blocking time.</p></div></div>
+            <div class="capacity-provider-list" id="capacity-provider-list"></div>
+          </section>
+          <section class="capacity-section" aria-labelledby="capacity-client-title">
+            <div class="capacity-section-heading"><div><h4 id="capacity-client-title">Client coverage</h4><p class="muted">Assignment and 97153 scheduling signals for active clients.</p></div></div>
+            <div class="capacity-client-list" id="capacity-client-list"></div>
+          </section>
+          <p class="capacity-note">Coverage uses scheduled and confirmed 97153 hours. Authorized or expected weekly hours are not shown because the current client authorization data does not define an authoritative weekly target.</p>
         </section>
       </section>
     </main>

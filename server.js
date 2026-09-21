@@ -23,6 +23,7 @@ import {
   SCHEDULING_SERVICE_CODES
 } from "./lib/scheduling-provider-eligibility.mjs";
 import { SERVICE_ZONE_SET, SERVICE_ZONE_VALUES, sanitizeProviderZoneInput } from "./lib/service-zones.mjs";
+import { calculateSchedulingCapacity, validateSchedulingCapacityRange } from "./lib/scheduling-capacity.mjs";
 import {
   duplicateBehaviorIds,
   duplicateTargetIdsFromPrograms,
@@ -1225,6 +1226,29 @@ export function createAppServer() {
         },
         groups: matches.groups
       });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/scheduling/capacity") {
+      const db = await readDb();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const startDate = String(url.searchParams.get("start") || "").trim();
+      const endDate = String(url.searchParams.get("end") || "").trim();
+      const errors = validateSchedulingCapacityRange(startDate, endDate);
+      if (errors.length) {
+        sendJson(res, 400, { errors });
+        return;
+      }
+      sendJson(res, 200, calculateSchedulingCapacity({
+        users: db.users || [],
+        clients: db.clients || [],
+        appointments: db.appointments || [],
+        providerAvailabilityProfiles: db.providerAvailabilityProfiles || [],
+        providerZoneProfiles: db.providerZoneProfiles || [],
+        clientUserAssignments: db.clientUserAssignments || [],
+        startDate,
+        endDate
+      }));
       return;
     }
 
