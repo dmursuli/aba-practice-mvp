@@ -33,6 +33,25 @@ export function parentTrainingGoalIdentity(goal = {}) {
     || parentTrainingGoalKey(goal);
 }
 
+export function explicitParentTrainingGoalState(goal = {}) {
+  const status = cleanParentText(goal.status).toLowerCase();
+  if (status === "mastered") return "mastered";
+  if (status === "active") return "active";
+  if (goal.mastered === true || cleanParentText(goal.masteredAt) || cleanParentText(goal.masteredDate)) return "mastered";
+  if (goal.mastered === false || goal.active === true) return "active";
+  if (goal.active === false) return "mastered";
+  return "";
+}
+
+export function parentTrainingGoalLifecycleState(goal = {}, { legacyMastered = false } = {}) {
+  return explicitParentTrainingGoalState(goal) || (legacyMastered ? "mastered" : "active");
+}
+
+export function parentTrainingGoalMasteryDate(goal = {}) {
+  const value = cleanParentText(goal.masteredDate || goal.masteredAt);
+  return /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : "";
+}
+
 export function filterMasteredGoalsForPeriod(goals = [], startDate = "", endDate = "") {
   const seen = new Set();
   return goals.filter((goal) => {

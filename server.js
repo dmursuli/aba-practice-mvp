@@ -6618,14 +6618,28 @@ function sanitizeParentGoals(goals) {
       const independent = Number(goal.independent || 0);
       const prompted = Number(goal.prompted || 0);
       const denominator = opportunities || independent + prompted;
+      const status = ["active", "mastered"].includes(String(goal.status || "").toLowerCase())
+        ? String(goal.status).toLowerCase()
+        : "";
+      const masteredDate = String(goal.masteredDate || "").trim();
+      const masteredAt = String(goal.masteredAt || "").trim();
       return {
+        ...(goal.id ? { id: String(goal.id) } : {}),
+        ...(goal.parentTrainingGoalId ? { parentTrainingGoalId: String(goal.parentTrainingGoalId) } : {}),
+        ...(goal.goalId ? { goalId: String(goal.goalId) } : {}),
+        ...(goal.targetId ? { targetId: String(goal.targetId) } : {}),
         goalName: String(goal.goalName || "").trim(),
         targetName: String(goal.targetName || "").trim(),
         opportunities,
         independent,
         prompted,
         promptLevel: String(goal.promptLevel || "verbal"),
-        fidelity: denominator > 0 ? Math.round((independent / denominator) * 100) : 0
+        fidelity: denominator > 0 ? Math.round((independent / denominator) * 100) : 0,
+        ...(status ? { status } : {}),
+        ...(masteredDate ? { masteredDate } : {}),
+        ...(masteredAt ? { masteredAt } : {}),
+        ...(typeof goal.mastered === "boolean" ? { mastered: goal.mastered } : {}),
+        ...(typeof goal.active === "boolean" ? { active: goal.active } : {})
       };
     })
     .filter((goal) => goal.goalName && goal.targetName);

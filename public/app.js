@@ -2,7 +2,7 @@ import { assignClientProvider, cancelAppointment, createAppointment, createProvi
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
-import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from "./parent-training-report.js";
+import { buildEditableParentTrainingSummary, explicitParentTrainingGoalState, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingGoalKey, parentTrainingGoalLabel, parentTrainingGoalLifecycleState, parentTrainingGoalMasteryDate, summarizeParentTrainingReport } from "./parent-training-report.js";
 import { calculateRbtFidelity, setRbtFidelityResponse } from "./rbt-fidelity.js";
 import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, isLegacyGeneratedSkillAcquisitionSummary, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, summarizeSkillAcquisitionReport } from "./report-utils.js";
 import { format97155TargetChangeSummary, generateSoapNote, planChangesFor97155Session, summarize97155TargetChanges } from "./soap.js";
@@ -288,6 +288,7 @@ const programList = document.querySelector("#program-list");
 const targetStatusTabs = document.querySelector("#target-status-tabs");
 const parentGoalList = document.querySelector("#parent-goal-list");
 const parentGoalTabs = document.querySelector("#parent-goal-tabs");
+const parentGoalEmpty = document.querySelector("#parent-goal-empty");
 const domainTabs = document.querySelector("#domain-tabs");
 const behaviorList = document.querySelector("#behavior-list");
 const skillCharts = document.querySelector("#skill-charts");
@@ -1308,7 +1309,10 @@ function bindEvents() {
   document.querySelector("#add-program").addEventListener("click", () => addFirstAvailableTargetRow());
   document.querySelector("#add-maintenance-target").addEventListener("click", () => addFirstAvailableTargetRow("maintenance"));
   document.querySelector("#add-behavior").addEventListener("click", () => addFirstAvailableBehaviorRow());
-  document.querySelector("#add-parent-goal").addEventListener("click", () => addParentGoalRow());
+  document.querySelector("#add-parent-goal").addEventListener("click", () => {
+    state.activeParentGoalTab = "active";
+    addParentGoalRow();
+  });
   workspaceClientSelect.addEventListener("change", () => setActiveClient(workspaceClientSelect.value));
   managementClientSelect.addEventListener("change", () => setActiveClient(managementClientSelect.value));
   clientSelect.addEventListener("change", () => setActiveClient(clientSelect.value));
@@ -2224,6 +2228,7 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
     state.activePlanDomain = "";
     state.activePlanReviewFilter = "";
     state.activeGraphDomain = "";
+    state.activeParentGoalTab = "active";
     state.historicalImportRows = [];
     state.historicalImportPreview = null;
     state.historicalImportDuplicateSessions = [];
@@ -2384,9 +2389,31 @@ function addFirstAvailableBehaviorRow() {
   addBehaviorRow(available.id);
 }
 
-function addParentGoalRow(goal = {}) {
+function addParentGoalRow(goal = {}, { goalIndex = "" } = {}) {
+  const normalizedGoal = normalizeParentGoal(goal);
+  if (parentGoalLifecycle(normalizedGoal) === "mastered") {
+    const row = document.createElement("article");
+    const masteryDate = parentTrainingGoalMasteryDate(normalizedGoal);
+    row.className = "data-row parent-goal-row parent-goal-mastered-row mastered-target";
+    row.dataset.parentGoalState = "mastered";
+    row.dataset.parentGoalIndex = String(goalIndex);
+    row.innerHTML = `
+      <div class="parent-goal-mastered-heading">
+        <div><span class="eyebrow">Mastered parent-training goal</span><strong>${escapeHtml(normalizedGoal.goalName)}</strong></div>
+        <span class="parent-goal-status">Mastered</span>
+      </div>
+      <div class="parent-goal-mastered-target"><span>Target</span><strong>${escapeHtml(normalizedGoal.targetName)}</strong></div>
+      ${masteryDate ? `<p class="parent-goal-mastered-date">Mastered ${escapeHtml(formatDate(masteryDate))}</p>` : ""}
+    `;
+    parentGoalList.append(row);
+    renderParentGoalTabs();
+    return row;
+  }
   const node = document.querySelector("#parent-goal-template").content.cloneNode(true);
   const row = node.querySelector(".parent-goal-row");
+  row.dataset.parentGoalState = "active";
+  row.dataset.parentGoalEditable = "true";
+  row.dataset.parentGoalIndex = String(goalIndex);
   row.querySelector('[data-field="goalName"]').value = goal.goalName || "";
   row.querySelector('[data-field="targetName"]').value = goal.targetName || "";
   row.querySelector('[data-field="opportunities"]').value = goal.opportunities ?? 5;
@@ -2397,6 +2424,9 @@ function addParentGoalRow(goal = {}) {
     row.remove();
     renderParentGoalTabs();
   });
+  row.querySelector("[data-mark-parent-goal-mastered]")?.addEventListener("click", () => {
+    void handleMarkParentGoalMastered(row);
+  });
   row.querySelectorAll("input, select").forEach((input) => {
     input.addEventListener("input", () => updateParentGoalScore(row));
     input.addEventListener("change", () => updateParentGoalScore(row));
@@ -2404,18 +2434,18 @@ function addParentGoalRow(goal = {}) {
   parentGoalList.append(row);
   updateParentGoalScore(row);
   renderParentGoalTabs();
+  return row;
 }
 
 function preloadParentRows() {
   parentGoalList.innerHTML = "";
-  state.activeParentGoalTab = "active";
   const goals = currentParentTrainingGoals();
   if (goals.length) {
-    goals.forEach((goal) => addParentGoalRow(goal));
+    goals.forEach((goal, goalIndex) => addParentGoalRow(goal, { goalIndex }));
     renderParentGoalTabs();
     return;
   }
-  addParentGoalRow();
+  renderParentGoalTabs();
 }
 
 function addFadePlanRow(rowData = {}) {
@@ -2467,6 +2497,7 @@ function preloadServiceHourRows() {
 }
 
 function updateParentGoalScore(row) {
+  if (row.dataset.parentGoalEditable !== "true") return;
   const opportunities = Number(row.querySelector('[data-field="opportunities"]').value || 0);
   const independent = Number(row.querySelector('[data-field="independent"]').value || 0);
   const prompted = Number(row.querySelector('[data-field="prompted"]').value || 0);
@@ -2476,35 +2507,73 @@ function updateParentGoalScore(row) {
   const goal = normalizeParentGoal(readDataRow(row));
   const review = parentGoalReview(goal);
   row.classList.remove("mastered-target", "mastery-ready-target", "mastery-close-target", "stagnant-target");
-  if (review.className) row.classList.add(review.className);
+  if (review.className) row.classList.add(review.state === "mastered" ? "mastery-ready-target" : review.className);
   const reviewBox = row.querySelector("[data-parent-goal-review]");
   if (reviewBox) reviewBox.innerHTML = review.message;
-  row.dataset.parentGoalState = review.state || "none";
+  row.dataset.parentGoalState = "active";
   applyParentGoalFilter();
 }
 
-function parentGoalTabState(goal) {
-  return parentGoalReview(goal).state === "mastered" ? "mastered" : "active";
+function parentGoalLifecycle(goal) {
+  const explicitState = explicitParentTrainingGoalState(goal);
+  if (explicitState) return explicitState;
+  return parentTrainingGoalLifecycleState(goal, { legacyMastered: parentGoalReview(goal).state === "mastered" });
+}
+
+function parentTrainingGoalsFromRows() {
+  const storedGoals = currentParentTrainingGoals();
+  return [...parentGoalList.querySelectorAll(".parent-goal-row")].map((row) => {
+    const storedIndex = row.dataset.parentGoalIndex === "" ? -1 : Number(row.dataset.parentGoalIndex);
+    const storedGoal = Number.isInteger(storedIndex) && storedIndex >= 0 ? storedGoals[storedIndex] : null;
+    if (row.dataset.parentGoalEditable !== "true") return normalizeParentGoal(storedGoal || {});
+    return normalizeParentGoal({ ...(storedGoal || {}), ...readDataRow(row), status: "active" });
+  });
+}
+
+async function handleMarkParentGoalMastered(row) {
+  const rows = [...parentGoalList.querySelectorAll(".parent-goal-row")];
+  const rowIndex = rows.indexOf(row);
+  const goals = parentTrainingGoalsFromRows();
+  const goal = goals[rowIndex];
+  if (!goal || parentGoalLifecycle(goal) === "mastered") return;
+  const label = parentTrainingGoalLabel(goal);
+  if (!window.confirm(`Mark this parent-training goal as mastered?\n\n${label}`)) return;
+  const client = currentClient();
+  if (!client) return;
+  const button = row.querySelector("[data-mark-parent-goal-mastered]");
+  if (button) button.disabled = true;
+  try {
+    goals[rowIndex] = {
+      ...goal,
+      status: "mastered",
+      masteredDate: new Date().toISOString().slice(0, 10)
+    };
+    const updated = await updateClientProfile(client.id, {
+      ...currentClientProfilePayload(client),
+      parentTrainingGoals: goals
+    });
+    replaceClient(updated);
+    preloadParentRows();
+    parentMessage.textContent = `${label} marked mastered.`;
+  } catch (error) {
+    if (button) button.disabled = false;
+    parentMessage.textContent = error.message;
+  }
 }
 
 function renderParentGoalTabs() {
   if (!parentGoalTabs || !parentGoalList) return;
   const counts = { active: 0, mastered: 0 };
   [...parentGoalList.querySelectorAll(".parent-goal-row")].forEach((row) => {
-    const goal = normalizeParentGoal(readDataRow(row));
-    counts[parentGoalTabState(goal)] += 1;
+    const rowState = row.dataset.parentGoalState === "mastered" ? "mastered" : "active";
+    counts[rowState] += 1;
   });
 
-  if (!counts[state.activeParentGoalTab]) {
-    state.activeParentGoalTab = counts.active ? "active" : "mastered";
-  }
-  if (!counts.active && !counts.mastered) {
-    state.activeParentGoalTab = "active";
-  }
+  if (!["active", "mastered"].includes(state.activeParentGoalTab)) state.activeParentGoalTab = "active";
 
   parentGoalTabs.innerHTML = ["active", "mastered"].map((tab) => `
     <button type="button" class="domain-tab ${tab === state.activeParentGoalTab ? "active" : ""}" data-parent-goal-tab="${tab}">
-      ${tab === "active" ? "Active" : "Mastered"}${counts[tab] ? ` (${counts[tab]})` : ""}
+      ${tab === "active" ? "Active" : "Mastered"} (${counts[tab]})
     </button>
   `).join("");
 
@@ -2524,6 +2593,13 @@ function applyParentGoalFilter() {
     const rowState = row.dataset.parentGoalState === "mastered" ? "mastered" : "active";
     row.classList.toggle("hidden", rowState !== state.activeParentGoalTab);
   });
+  const visibleCount = [...parentGoalList.querySelectorAll(".parent-goal-row")]
+    .filter((row) => !row.classList.contains("hidden")).length;
+  if (parentGoalEmpty) {
+    parentGoalEmpty.textContent = visibleCount
+      ? ""
+      : state.activeParentGoalTab === "mastered" ? "No mastered parent-training goals." : "No active parent-training goals.";
+  }
 }
 
 function updateProgramIndependence(row) {
@@ -3481,14 +3557,7 @@ async function handleParentTrainingSubmit(event) {
     if (client) {
       const updatedClient = await updateClientProfile(client.id, {
         ...currentClientProfilePayload(client),
-        parentTrainingGoals: payload.parentGoals.map((goal) => ({
-          goalName: goal.goalName,
-          targetName: goal.targetName,
-          opportunities: goal.opportunities,
-          independent: goal.independent,
-          prompted: goal.prompted,
-          promptLevel: goal.promptLevel
-        }))
+        parentTrainingGoals: parentTrainingGoalsFromRows()
       });
       replaceClient(updatedClient);
     }
@@ -3506,7 +3575,8 @@ async function handleParentTrainingSubmit(event) {
 
 function buildParentTrainingPayload() {
   const values = new FormData(parentTrainingForm);
-  const parentGoals = [...parentGoalList.querySelectorAll(".parent-goal-row")].map((row) => normalizeParentGoal(readDataRow(row)));
+  const parentGoals = [...parentGoalList.querySelectorAll('.parent-goal-row[data-parent-goal-editable="true"]')]
+    .map((row) => normalizeParentGoal(readDataRow(row)));
   if (!parentGoals.length) throw new Error("At least one parent training goal is required.");
   return {
     clientId: clientSelect.value,
@@ -3541,13 +3611,22 @@ function normalizeParentGoal(goal) {
   const prompted = Number(goal.prompted || 0);
   const denominator = opportunities || independent + prompted;
   return {
+    ...(goal.id ? { id: String(goal.id) } : {}),
+    ...(goal.parentTrainingGoalId ? { parentTrainingGoalId: String(goal.parentTrainingGoalId) } : {}),
+    ...(goal.goalId ? { goalId: String(goal.goalId) } : {}),
+    ...(goal.targetId ? { targetId: String(goal.targetId) } : {}),
     goalName: goal.goalName?.trim() || "Parent training goal",
     targetName: goal.targetName?.trim() || "Caregiver target",
     opportunities,
     independent,
     prompted,
     promptLevel: goal.promptLevel || "verbal",
-    fidelity: denominator > 0 ? Math.round((independent / denominator) * 100) : 0
+    fidelity: denominator > 0 ? Math.round((independent / denominator) * 100) : 0,
+    ...(["active", "mastered"].includes(String(goal.status || "").toLowerCase()) ? { status: String(goal.status).toLowerCase() } : {}),
+    ...(goal.masteredDate ? { masteredDate: String(goal.masteredDate) } : {}),
+    ...(goal.masteredAt ? { masteredAt: String(goal.masteredAt) } : {}),
+    ...(typeof goal.mastered === "boolean" ? { mastered: goal.mastered } : {}),
+    ...(typeof goal.active === "boolean" ? { active: goal.active } : {})
   };
 }
 
@@ -10013,11 +10092,18 @@ function setGeneratedReportField(name, value, force = false) {
 function parentTrainingReportModel(startDate, endDate) {
   const parentSessions = parentTrainingSessionsForRange(startDate, endDate);
   const criteria = currentMasteryCriteria();
+  const currentGoals = currentParentTrainingGoals();
   const goalReviewsByKey = Object.fromEntries(
-    currentParentTrainingGoals().map((goal) => [parentTrainingGoalKey(goal), parentGoalReview(goal).state])
+    currentGoals.map((goal) => [parentTrainingGoalKey(goal), parentGoalLifecycle(goal)])
   );
   const masteredGoalsDuringPeriod = filterMasteredGoalsForPeriod(
-    currentParentTrainingGoals().flatMap((goal) => {
+    currentGoals.flatMap((goal) => {
+      if (parentGoalLifecycle(goal) !== "mastered") return [];
+      const explicitState = explicitParentTrainingGoalState(goal);
+      const explicitDate = parentTrainingGoalMasteryDate(goal);
+      if (explicitState === "mastered") {
+        return [{ ...goal, ...(explicitDate ? { masteredDate: explicitDate } : {}) }];
+      }
       const history = parentGoalSessionHistory(goal);
       const fidelitySessions = history.map((item) => ({
         session: item.session,
@@ -10037,7 +10123,7 @@ function parentTrainingReportModel(startDate, endDate) {
   );
   return summarizeParentTrainingReport({
     parentSessions,
-    currentGoals: currentParentTrainingGoals(),
+    currentGoals,
     goalReviewsByKey,
     masteredGoalsDuringPeriod
   });

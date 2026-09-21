@@ -1,7 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildEditableParentTrainingSummary, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingGoalIdentity, parentTrainingGoalKey, parentTrainingGoalLabel, summarizeParentTrainingReport } from '../public/parent-training-report.js';
+import { buildEditableParentTrainingSummary, explicitParentTrainingGoalState, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingGoalIdentity, parentTrainingGoalKey, parentTrainingGoalLabel, parentTrainingGoalLifecycleState, parentTrainingGoalMasteryDate, summarizeParentTrainingReport } from '../public/parent-training-report.js';
 import { removeParentGoalPointFromSession } from '../public/session-utils.js';
+
+test('parent-training lifecycle supports canonical and legacy mastery without inventing dates', () => {
+  assert.equal(explicitParentTrainingGoalState({ status: 'mastered' }), 'mastered');
+  assert.equal(explicitParentTrainingGoalState({ status: 'active', masteredDate: '2026-09-01' }), 'active');
+  assert.equal(explicitParentTrainingGoalState({ mastered: true }), 'mastered');
+  assert.equal(explicitParentTrainingGoalState({ masteredAt: '2026-09-02T12:00:00.000Z' }), 'mastered');
+  assert.equal(explicitParentTrainingGoalState({ active: false }), 'mastered');
+  assert.equal(parentTrainingGoalLifecycleState({}, { legacyMastered: true }), 'mastered');
+  assert.equal(parentTrainingGoalLifecycleState({}, { legacyMastered: false }), 'active');
+  assert.equal(parentTrainingGoalMasteryDate({ masteredAt: '2026-09-02T12:00:00.000Z' }), '2026-09-02');
+  assert.equal(parentTrainingGoalMasteryDate({ status: 'mastered' }), '');
+});
 
 test('parent-training summary deduplicates goals and caregivers across sessions', () => {
   const model = summarizeParentTrainingReport({
