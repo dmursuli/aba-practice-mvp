@@ -64,6 +64,13 @@ const state = {
   staffingAssignmentError: "",
   staffingScheduleCandidateId: "",
   staffingScheduleSubmitting: false,
+  staffingRecurringCandidateId: "",
+  staffingRecurringDraft: null,
+  staffingRecurringStage: "edit",
+  staffingRecurringSubmitting: false,
+  staffingRecurringError: "",
+  staffingRecurringRequestId: "",
+  staffingRecurringRequestSignature: "",
   providerAvailabilityProviders: [],
   selectedProviderAvailabilityUserId: "",
   providerAvailabilityProfile: null,
@@ -440,6 +447,14 @@ const staffingScheduleTitle = document.querySelector("#staffing-schedule-title")
 const staffingScheduleContent = document.querySelector("#staffing-schedule-content");
 const staffingScheduleSubmit = document.querySelector("#staffing-schedule-submit");
 const staffingScheduleCloseButtons = document.querySelectorAll("[data-close-staffing-schedule]");
+const staffingRecurringModal = document.querySelector("#staffing-recurring-modal");
+const staffingRecurringTitle = document.querySelector("#staffing-recurring-title");
+const staffingRecurringForm = document.querySelector("#staffing-recurring-form");
+const staffingRecurringContent = document.querySelector("#staffing-recurring-content");
+const staffingRecurringMessage = document.querySelector("#staffing-recurring-message");
+const staffingRecurringBack = document.querySelector("#staffing-recurring-back");
+const staffingRecurringSubmit = document.querySelector("#staffing-recurring-submit");
+const staffingRecurringCloseButtons = document.querySelectorAll("[data-close-staffing-recurring]");
 const providerAvailabilityProvider = document.querySelector("#provider-availability-provider");
 const providerAvailabilityStatus = document.querySelector("#provider-availability-status");
 const providerAvailabilityForm = document.querySelector("#provider-availability-form");
@@ -1476,6 +1491,11 @@ function bindEvents() {
   staffingConfirmationCloseButtons.forEach((button) => button.addEventListener("click", closeStaffingConfirmation));
   staffingScheduleSubmit?.addEventListener("click", handleConfirmStaffingSchedule);
   staffingScheduleCloseButtons.forEach((button) => button.addEventListener("click", closeStaffingSchedule));
+  staffingRecurringForm?.addEventListener("submit", handleStaffingRecurringSubmit);
+  staffingRecurringForm?.addEventListener("input", handleStaffingRecurringInput);
+  staffingRecurringContent?.addEventListener("click", handleStaffingRecurringContentClick);
+  staffingRecurringBack?.addEventListener("click", returnToStaffingRecurringEditor);
+  staffingRecurringCloseButtons.forEach((button) => button.addEventListener("click", closeStaffingRecurring));
   providerAvailabilityProvider?.addEventListener("change", handleProviderAvailabilityProviderChange);
   providerAvailabilityForm?.addEventListener("submit", handleSaveProviderAvailability);
   providerAvailabilityForm?.addEventListener("input", syncProviderAvailabilityDraftFromForm);
@@ -1520,6 +1540,7 @@ function bindEvents() {
   window.addEventListener("keydown", handleAppointmentDetailsKeydown);
   window.addEventListener("keydown", handleStaffingConfirmationKeydown);
   window.addEventListener("keydown", handleStaffingScheduleKeydown);
+  window.addEventListener("keydown", handleStaffingRecurringKeydown);
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) {
       if (!state.currentUser && !state.authChallenge) showLogin();
@@ -1852,10 +1873,19 @@ function resetSensitiveState() {
   state.staffingAssignmentError = "";
   state.staffingScheduleCandidateId = "";
   state.staffingScheduleSubmitting = false;
+  state.staffingRecurringCandidateId = "";
+  state.staffingRecurringDraft = null;
+  state.staffingRecurringStage = "edit";
+  state.staffingRecurringSubmitting = false;
+  state.staffingRecurringError = "";
+  state.staffingRecurringRequestId = "";
+  state.staffingRecurringRequestSignature = "";
   staffingConfirmationModal?.classList.add("hidden");
   staffingConfirmationModal?.setAttribute("aria-hidden", "true");
   staffingScheduleModal?.classList.add("hidden");
   staffingScheduleModal?.setAttribute("aria-hidden", "true");
+  staffingRecurringModal?.classList.add("hidden");
+  staffingRecurringModal?.setAttribute("aria-hidden", "true");
   state.providerAvailabilityProviders = [];
   state.selectedProviderAvailabilityUserId = "";
   state.providerAvailabilityProfile = null;
@@ -4356,11 +4386,34 @@ function staffingSchedulingReadiness(candidate) {
   };
 }
 
+function staffingRecurringReadiness(candidate) {
+  const result = state.staffingMatchResult;
+  const request = result?.request;
+  const client = (state.clients || []).find((item) => item.id === request?.clientId && item.status !== "archived");
+  const hasLocation = activeStructuredClientServiceLocations(request?.clientId).some((location) => (
+    location.id === request?.serviceLocationId
+  ));
+  const reasons = [];
+  if (!candidate || !request || !result?.permissions?.canCreateAppointments) {
+    reasons.push("Recurring scheduling is not available.");
+  } else {
+    if (!client) reasons.push("Choose an active client.");
+    if (!hasLocation) reasons.push("Choose an active structured service location.");
+    if (candidate.provider?.role === "rbt"
+      && request.cptCode === "97153"
+      && candidate.caseAssignment?.status !== "assigned") {
+      reasons.push("Staff this case before recurring scheduling.");
+    }
+  }
+  return { ready: reasons.length === 0, reasons };
+}
+
 function staffingCandidateCard(candidate) {
   const showCaseStatus = state.staffingMatchResult?.request?.cptCode === "97153"
     && candidate.provider?.role === "rbt"
     && candidate.caseAssignment;
   const readiness = staffingSchedulingReadiness(candidate);
+  const recurringReadiness = staffingRecurringReadiness(candidate);
   const canStaff = canStaffCandidate(candidate);
   return `
     <article class="staffing-candidate-card">
@@ -4381,10 +4434,11 @@ function staffingCandidateCard(candidate) {
       ` : ""}
       ${readiness.missingAvailability ? '<p class="staffing-schedule-note is-warning">Availability is not configured; scheduling is permitted under the current transitional rule.</p>' : ""}
       ${readiness.reasons.map((reason) => `<p class="staffing-schedule-note is-blocked">${escapeHtml(reason)}</p>`).join("")}
-      ${(canStaff || readiness.ready) ? `
+      ${(canStaff || readiness.ready || recurringReadiness.ready) ? `
         <div class="staffing-candidate-actions">
           ${canStaff ? `<button type="button" class="secondary-button staffing-case-action" data-staff-case-provider-id="${escapeHtml(candidate.provider.userId)}">Staff this case</button>` : ""}
           ${readiness.ready ? `<button type="button" class="primary-button staffing-case-action" data-schedule-provider-id="${escapeHtml(candidate.provider.userId)}">Schedule this provider</button>` : ""}
+          ${recurringReadiness.ready ? `<button type="button" class="secondary-button staffing-case-action" data-recurring-provider-id="${escapeHtml(candidate.provider.userId)}">Create recurring schedule</button>` : ""}
         </div>
       ` : ""}
     </article>
@@ -4451,7 +4505,12 @@ function handleStaffingResultClick(event) {
     return;
   }
   const scheduleButton = event.target.closest("[data-schedule-provider-id]");
-  if (scheduleButton) openStaffingSchedule(scheduleButton.dataset.scheduleProviderId);
+  if (scheduleButton) {
+    openStaffingSchedule(scheduleButton.dataset.scheduleProviderId);
+    return;
+  }
+  const recurringButton = event.target.closest("[data-recurring-provider-id]");
+  if (recurringButton) openStaffingRecurring(recurringButton.dataset.recurringProviderId);
 }
 
 function handleStaffingConfirmationKeydown(event) {
@@ -4601,6 +4660,349 @@ async function handleConfirmStaffingSchedule() {
   staffingMessage.textContent = `Appointment scheduled with ${candidate.provider.name}.`;
 }
 
+function staffingRecurringDefaultDraft(candidate, result = state.staffingMatchResult) {
+  const request = result.request;
+  return {
+    clientId: request.clientId,
+    providerUserId: candidate.provider.userId,
+    serviceCode: request.cptCode,
+    serviceLocationId: request.serviceLocationId,
+    timeZone: request.timezone,
+    startDate: request.date,
+    endDate: "",
+    recurrenceRows: [{
+      weekday: appointmentWeekdayForDate(request.date),
+      startLocalTime: request.startTime,
+      endLocalTime: request.endTime
+    }],
+    operationalNote: ""
+  };
+}
+
+function staffingRecurringUnsignedPayload(draft = state.staffingRecurringDraft) {
+  return {
+    clientId: String(draft?.clientId || ""),
+    serviceCode: String(draft?.serviceCode || ""),
+    providerUserId: String(draft?.providerUserId || ""),
+    serviceLocationId: String(draft?.serviceLocationId || ""),
+    timeZone: String(draft?.timeZone || ""),
+    startDate: String(draft?.startDate || ""),
+    endDate: String(draft?.endDate || ""),
+    recurrenceRows: (draft?.recurrenceRows || []).map((row) => ({
+      weekday: Number(row.weekday),
+      startLocalTime: String(row.startLocalTime || ""),
+      endLocalTime: String(row.endLocalTime || "")
+    })),
+    operationalNote: String(draft?.operationalNote || "").trim()
+  };
+}
+
+function staffingRecurringSubmissionPayload(draft = state.staffingRecurringDraft) {
+  const unsignedPayload = staffingRecurringUnsignedPayload(draft);
+  const signature = JSON.stringify(unsignedPayload);
+  if (!state.staffingRecurringRequestId || state.staffingRecurringRequestSignature !== signature) {
+    state.staffingRecurringRequestId = recurringSeriesRequestId();
+    state.staffingRecurringRequestSignature = signature;
+  }
+  return { requestId: state.staffingRecurringRequestId, ...unsignedPayload };
+}
+
+function syncStaffingRecurringDraftFromForm() {
+  if (!staffingRecurringForm || state.staffingRecurringStage !== "edit" || !state.staffingRecurringDraft) return;
+  const formData = new FormData(staffingRecurringForm);
+  state.staffingRecurringDraft = {
+    ...state.staffingRecurringDraft,
+    startDate: String(formData.get("recurrenceStartDate") || ""),
+    endDate: String(formData.get("recurrenceEndDate") || ""),
+    recurrenceRows: appointmentRecurrenceRowValues(formData),
+    operationalNote: String(formData.get("notes") || "").trim()
+  };
+  const signature = JSON.stringify(staffingRecurringUnsignedPayload());
+  if (state.staffingRecurringRequestSignature && state.staffingRecurringRequestSignature !== signature) {
+    state.staffingRecurringRequestId = "";
+    state.staffingRecurringRequestSignature = "";
+  }
+}
+
+function validStaffingRecurringDate(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const [, year, month, day] = match.map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function staffingRecurringMaximumEndDate(startDate) {
+  if (!validStaffingRecurringDate(startDate)) return "";
+  const [year, month, day] = startDate.split("-").map(Number);
+  const anniversary = new Date(Date.UTC(year + 1, month - 1, day));
+  anniversary.setUTCDate(anniversary.getUTCDate() - 1);
+  return anniversary.toISOString().slice(0, 10);
+}
+
+function validateStaffingRecurringDraft(draft = state.staffingRecurringDraft) {
+  const errors = [];
+  if (!validStaffingRecurringDate(draft?.startDate)) errors.push("Start date is required.");
+  if (!validStaffingRecurringDate(draft?.endDate)) errors.push("End date is required.");
+  if (validStaffingRecurringDate(draft?.startDate) && validStaffingRecurringDate(draft?.endDate)) {
+    if (draft.endDate < draft.startDate) errors.push("End date must be on or after start date.");
+    const maximumEndDate = staffingRecurringMaximumEndDate(draft.startDate);
+    if (maximumEndDate && draft.endDate > maximumEndDate) {
+      errors.push(`Recurring series may cover at most 12 months (through ${formatDate(maximumEndDate)}).`);
+    }
+  }
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: String(draft?.timeZone || "") }).format(new Date());
+  } catch {
+    errors.push("A valid IANA timezone is required.");
+  }
+  const rows = Array.isArray(draft?.recurrenceRows) ? draft.recurrenceRows : [];
+  if (!rows.length) errors.push("At least one recurrence day is required.");
+  if (rows.length > 7) errors.push("At most seven recurrence days are allowed.");
+  const weekdays = rows.map((row) => Number(row.weekday));
+  if (new Set(weekdays).size !== weekdays.length) errors.push("Each recurrence weekday may be used only once.");
+  rows.forEach((row, index) => {
+    if (!Number.isInteger(row.weekday) || row.weekday < 0 || row.weekday > 6) errors.push(`Recurrence day ${index + 1} requires a weekday.`);
+    if (!/^\d{2}:\d{2}$/.test(row.startLocalTime)) errors.push(`Recurrence day ${index + 1} requires a start time.`);
+    if (!/^\d{2}:\d{2}$/.test(row.endLocalTime)) errors.push(`Recurrence day ${index + 1} requires an end time.`);
+    if (row.startLocalTime && row.endLocalTime && row.endLocalTime <= row.startLocalTime) {
+      errors.push(`Recurrence day ${index + 1} end time must be after its start time; cross-midnight appointments are not supported.`);
+    }
+  });
+  if (!activeStructuredClientServiceLocations(draft?.clientId).some((location) => location.id === draft?.serviceLocationId)) {
+    errors.push("Choose an active structured service location.");
+  }
+  return [...new Set(errors)];
+}
+
+function staffingRecurringTimeLabel(value) {
+  const [hour, minute] = String(value || "").split(":").map(Number);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return String(value || "");
+  return new Date(2000, 0, 1, hour, minute).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function staffingRecurringRowsSummary(rows) {
+  const weekdayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  return (rows || []).map((row) => `
+    <li><strong>${escapeHtml(weekdayNames[row.weekday] || "Weekday")}</strong> ${escapeHtml(staffingRecurringTimeLabel(row.startLocalTime))}–${escapeHtml(staffingRecurringTimeLabel(row.endLocalTime))}</li>
+  `).join("");
+}
+
+function updateStaffingRecurringControls() {
+  const rowsContainer = staffingRecurringContent?.querySelector("#staffing-recurring-rows");
+  const rows = [...(rowsContainer?.querySelectorAll("[data-appointment-recurrence-row]") || [])];
+  const selectedWeekdays = rows.map((row) => row.querySelector('[name="recurrenceWeekday"]')?.value || "");
+  rows.forEach((row, rowIndex) => {
+    const select = row.querySelector('[name="recurrenceWeekday"]');
+    [...(select?.options || [])].forEach((option) => {
+      option.disabled = selectedWeekdays.some((value, index) => index !== rowIndex && value === option.value);
+    });
+    const remove = row.querySelector("[data-remove-recurrence-day]");
+    if (remove) remove.disabled = rows.length === 1;
+  });
+  const add = staffingRecurringContent?.querySelector("#staffing-recurring-add-day");
+  if (add) {
+    add.disabled = rows.length >= 7;
+    add.classList.toggle("hidden", rows.length >= 7);
+  }
+}
+
+function renderStaffingRecurring() {
+  if (!staffingRecurringContent || !staffingRecurringSubmit || !staffingRecurringTitle || !staffingRecurringMessage) return;
+  const candidate = staffingCandidate(state.staffingRecurringCandidateId);
+  const result = state.staffingMatchResult;
+  const request = result?.request;
+  const client = (state.clients || []).find((item) => item.id === request?.clientId);
+  const draft = state.staffingRecurringDraft;
+  if (!candidate || !client || !request || !draft || !staffingRecurringReadiness(candidate).ready) {
+    closeStaffingRecurring();
+    return;
+  }
+  const location = activeStructuredClientServiceLocations(draft.clientId).find((item) => item.id === draft.serviceLocationId);
+  const accessLabel = candidate.provider.role === "rbt"
+    ? candidate.caseAssignment?.label || "Assigned to this client"
+    : "BCBA clinical access";
+  const contextMarkup = `
+    <div class="staffing-schedule-summary">
+      <div><span>Client</span><strong>${escapeHtml(client.name)}</strong></div>
+      <div><span>Provider</span><strong>${escapeHtml(candidate.provider.name)}, ${escapeHtml(String(candidate.provider.role || "").toUpperCase())}</strong></div>
+      <div><span>Service</span><strong>${escapeHtml(draft.serviceCode)} — ${escapeHtml(staffingServiceLabel(draft.serviceCode))}</strong></div>
+      <div><span>Location</span><strong>${escapeHtml(location?.label || "Service location")}${location?.zone ? ` — ${escapeHtml(location.zone)}` : ""}</strong></div>
+      <div><span>Time zone</span><strong>${escapeHtml(draft.timeZone)}</strong></div>
+      <div><span>Access</span><strong>${escapeHtml(accessLabel)}</strong></div>
+    </div>`;
+  if (state.staffingRecurringStage === "confirm") {
+    staffingRecurringTitle.textContent = `Create recurring schedule for ${candidate.provider.name}?`;
+    staffingRecurringContent.innerHTML = `
+      ${contextMarkup}
+      <div class="staffing-candidate-factors">
+        <span class="staffing-factor zone-${escapeHtml(candidate.zone.status)}">${escapeHtml(candidate.zone.label)}</span>
+        <span class="staffing-factor">${escapeHtml(accessLabel)}</span>
+      </div>
+      <div class="staffing-recurring-confirmation">
+        <p><strong>${escapeHtml(formatDate(draft.startDate))}</strong> through <strong>${escapeHtml(formatDate(draft.endDate))}</strong></p>
+        <ul>${staffingRecurringRowsSummary(draft.recurrenceRows)}</ul>
+      </div>
+      ${candidate.availability?.status === "not_configured" ? '<p class="staffing-schedule-note is-warning">Provider Availability is not configured. Scheduling is permitted under the current transitional rule.</p>' : ""}
+      <p class="muted">The server will check every occurrence for provider eligibility, availability, scheduling conflicts, timezone validity, and recurrence limits. If any occurrence is invalid, nothing will be created.</p>
+    `;
+    staffingRecurringBack?.classList.remove("hidden");
+    staffingRecurringSubmit.textContent = state.staffingRecurringSubmitting ? "Creating…" : "Confirm recurring schedule";
+  } else {
+    staffingRecurringTitle.textContent = `Create recurring schedule with ${candidate.provider.name}`;
+    staffingRecurringContent.innerHTML = `
+      ${contextMarkup}
+      <div class="staffing-recurring-fields">
+        <label>Start date<input type="date" name="recurrenceStartDate" value="${escapeHtml(draft.startDate)}" required></label>
+        <label>End date<input type="date" name="recurrenceEndDate" value="${escapeHtml(draft.endDate)}" required><span class="field-help">Required. Series may cover at most 12 months.</span></label>
+        <section class="staffing-recurring-schedule" aria-labelledby="staffing-recurring-pattern-heading">
+          <div class="appointment-recurrence-heading">
+            <strong id="staffing-recurring-pattern-heading">Weekday and time pattern</strong>
+            <span class="field-help">Each weekday may be used once.</span>
+          </div>
+          <div id="staffing-recurring-rows">${draft.recurrenceRows.map(appointmentRecurrenceRowMarkup).join("")}</div>
+          <button type="button" class="secondary-button appointment-add-day" id="staffing-recurring-add-day">+ Add Day</button>
+        </section>
+        <label class="staffing-recurring-note">Operational scheduling note<textarea name="notes" rows="2">${escapeHtml(draft.operationalNote)}</textarea></label>
+      </div>
+      ${candidate.availability?.status === "not_configured" ? '<p class="staffing-schedule-note is-warning">Provider Availability is not configured. Scheduling is permitted under the current transitional rule.</p>' : ""}
+      <p class="muted">The requested Staffing date and time are defaults only. Review and define the full recurring pattern before continuing.</p>
+    `;
+    staffingRecurringBack?.classList.add("hidden");
+    staffingRecurringSubmit.textContent = "Review recurring schedule";
+    updateStaffingRecurringControls();
+  }
+  staffingRecurringMessage.textContent = state.staffingRecurringError;
+  staffingRecurringSubmit.disabled = state.staffingRecurringSubmitting;
+  staffingRecurringBack.disabled = state.staffingRecurringSubmitting;
+  staffingRecurringCloseButtons.forEach((button) => { button.disabled = state.staffingRecurringSubmitting; });
+}
+
+function openStaffingRecurring(providerUserId) {
+  const candidate = staffingCandidate(providerUserId);
+  if (!staffingRecurringReadiness(candidate).ready || !staffingRecurringModal) return;
+  state.staffingRecurringCandidateId = providerUserId;
+  state.staffingRecurringDraft = staffingRecurringDefaultDraft(candidate);
+  state.staffingRecurringStage = "edit";
+  state.staffingRecurringSubmitting = false;
+  state.staffingRecurringError = "";
+  state.staffingRecurringRequestId = "";
+  state.staffingRecurringRequestSignature = "";
+  staffingRecurringModal.classList.remove("hidden");
+  staffingRecurringModal.setAttribute("aria-hidden", "false");
+  renderStaffingRecurring();
+  staffingRecurringForm?.elements?.recurrenceStartDate?.focus();
+}
+
+function closeStaffingRecurring() {
+  if (state.staffingRecurringSubmitting || !staffingRecurringModal) return;
+  const providerUserId = state.staffingRecurringCandidateId;
+  state.staffingRecurringCandidateId = "";
+  state.staffingRecurringDraft = null;
+  state.staffingRecurringStage = "edit";
+  state.staffingRecurringError = "";
+  state.staffingRecurringRequestId = "";
+  state.staffingRecurringRequestSignature = "";
+  staffingRecurringModal.classList.add("hidden");
+  staffingRecurringModal.setAttribute("aria-hidden", "true");
+  if (providerUserId) {
+    staffingResults?.querySelector(`[data-recurring-provider-id="${CSS.escape(providerUserId)}"]`)?.focus();
+  }
+}
+
+function handleStaffingRecurringInput() {
+  if (state.staffingRecurringStage !== "edit") return;
+  syncStaffingRecurringDraftFromForm();
+  state.staffingRecurringError = "";
+  if (staffingRecurringMessage) staffingRecurringMessage.textContent = "";
+  updateStaffingRecurringControls();
+}
+
+function handleStaffingRecurringContentClick(event) {
+  if (state.staffingRecurringStage !== "edit") return;
+  const addButton = event.target.closest("#staffing-recurring-add-day");
+  if (addButton) {
+    syncStaffingRecurringDraftFromForm();
+    const used = new Set(state.staffingRecurringDraft.recurrenceRows.map((row) => Number(row.weekday)));
+    const weekday = [0, 1, 2, 3, 4, 5, 6].find((value) => !used.has(value));
+    if (weekday === undefined) return;
+    const source = state.staffingRecurringDraft.recurrenceRows.at(-1) || { startLocalTime: "09:00", endLocalTime: "10:00" };
+    state.staffingRecurringDraft.recurrenceRows.push({
+      weekday,
+      startLocalTime: source.startLocalTime,
+      endLocalTime: source.endLocalTime
+    });
+    renderStaffingRecurring();
+    return;
+  }
+  const removeButton = event.target.closest("[data-remove-recurrence-day]");
+  if (!removeButton) return;
+  syncStaffingRecurringDraftFromForm();
+  if (state.staffingRecurringDraft.recurrenceRows.length <= 1) return;
+  const row = removeButton.closest("[data-appointment-recurrence-row]");
+  const rows = [...staffingRecurringContent.querySelectorAll("[data-appointment-recurrence-row]")];
+  const index = rows.indexOf(row);
+  if (index >= 0) state.staffingRecurringDraft.recurrenceRows.splice(index, 1);
+  renderStaffingRecurring();
+}
+
+function returnToStaffingRecurringEditor() {
+  if (state.staffingRecurringSubmitting) return;
+  state.staffingRecurringStage = "edit";
+  state.staffingRecurringError = "";
+  renderStaffingRecurring();
+  staffingRecurringForm?.elements?.recurrenceStartDate?.focus();
+}
+
+async function handleStaffingRecurringSubmit(event) {
+  event.preventDefault();
+  if (state.staffingRecurringSubmitting || !state.staffingRecurringDraft) return;
+  if (state.staffingRecurringStage === "edit") {
+    syncStaffingRecurringDraftFromForm();
+    const errors = validateStaffingRecurringDraft();
+    if (errors.length) {
+      state.staffingRecurringError = errors.join(" ");
+      renderStaffingRecurring();
+      staffingRecurringMessage?.focus({ preventScroll: true });
+      return;
+    }
+    state.staffingRecurringStage = "confirm";
+    state.staffingRecurringError = "";
+    renderStaffingRecurring();
+    staffingRecurringSubmit?.focus();
+    return;
+  }
+  const candidate = staffingCandidate(state.staffingRecurringCandidateId);
+  if (!candidate || !staffingRecurringReadiness(candidate).ready) return;
+  state.staffingRecurringSubmitting = true;
+  state.staffingRecurringError = "";
+  renderStaffingRecurring();
+  try {
+    await verifyStaffingRbtAssignment(candidate, state.staffingRecurringDraft.clientId);
+    const result = await createRecurringSeries(staffingRecurringSubmissionPayload());
+    const providerName = candidate.provider.name;
+    state.staffingRecurringSubmitting = false;
+    closeStaffingRecurring();
+    state.scheduleLoadedStartDate = "";
+    state.scheduleLoadedEndDate = "";
+    try {
+      await refreshCurrentStaffingMatches();
+    } catch {
+      // Series creation already succeeded; a match refresh failure must not reverse the success state.
+    }
+    staffingMessage.textContent = `Recurring schedule created with ${providerName}. ${recurringSeriesSuccessMessage(result)}`;
+  } catch (error) {
+    state.staffingRecurringSubmitting = false;
+    state.staffingRecurringError = `Recurring schedule was not created. ${error.message || "Unable to create the recurring schedule."}`;
+    renderStaffingRecurring();
+    staffingRecurringMessage?.focus({ preventScroll: true });
+  }
+}
+
+function handleStaffingRecurringKeydown(event) {
+  if (event.key === "Escape" && !staffingRecurringModal?.classList.contains("hidden")) closeStaffingRecurring();
+}
+
 async function handleConfirmStaffingAssignment() {
   const candidate = staffingCandidate(state.staffingAssignmentCandidateId);
   const clientId = state.staffingMatchResult?.request?.clientId;
@@ -4681,6 +5083,7 @@ function renderStaffing() {
 function handleStaffingClientChange() {
   closeStaffingConfirmation();
   closeStaffingSchedule();
+  closeStaffingRecurring();
   state.staffingMatchResult = null;
   state.staffingMatchError = "";
   staffingLocationSelect.value = "";
@@ -4691,6 +5094,7 @@ function handleStaffingCriteriaChange() {
   if (state.staffingMatching) return;
   closeStaffingConfirmation();
   closeStaffingSchedule();
+  closeStaffingRecurring();
   state.staffingMatchResult = null;
   state.staffingMatchError = "";
   renderStaffingResults();

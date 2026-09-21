@@ -1221,6 +1221,7 @@ button:focus-visible {
 .staffing-schedule-note.is-blocked { color: #9f2d2d; }
 .staffing-schedule-note.is-warning { color: #9a3412; }
 .staffing-confirmation-panel { width: min(620px, calc(100vw - 32px)); }
+.staffing-recurring-panel { width: min(780px, calc(100vw - 32px)); }
 .staffing-confirmation-provider {
   display: flex;
   align-items: baseline;
@@ -1250,6 +1251,29 @@ button:focus-visible {
   background: #f8fafc;
 }
 .staffing-schedule-summary span { color: var(--muted); font-size: 0.8rem; font-weight: 700; }
+.staffing-recurring-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.staffing-recurring-schedule,
+.staffing-recurring-note { grid-column: 1 / -1; }
+#staffing-recurring-rows {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0;
+}
+.staffing-recurring-confirmation {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.staffing-recurring-confirmation p { margin: 0 0 8px; }
+.staffing-recurring-confirmation ul { margin: 0; padding-left: 20px; }
+.staffing-recurring-confirmation li + li { margin-top: 5px; }
+.staffing-recurring-actions { align-items: center; }
 .staffing-group-empty { grid-column: 1 / -1; margin: 0; color: var(--muted); }
 
 .schedule-week-grid {
@@ -2951,6 +2975,13 @@ button:disabled {
   .staffing-form-grid,
   .staffing-candidate-list { grid-template-columns: minmax(0, 1fr); }
   .staffing-schedule-summary { grid-template-columns: minmax(0, 1fr); }
+  .staffing-recurring-fields,
+  #staffing-recurring-rows .appointment-recurrence-row { grid-template-columns: minmax(0, 1fr); }
+  .staffing-recurring-fields > *,
+  .staffing-recurring-schedule,
+  .staffing-recurring-note { grid-column: auto; }
+  .staffing-recurring-actions,
+  .staffing-recurring-actions > * { width: 100%; }
   .staffing-client-field,
   .staffing-location-field { grid-column: auto; }
   .staffing-match-form { padding: 14px; }

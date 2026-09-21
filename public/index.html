@@ -2426,6 +2426,28 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
       </section>
     </div>
 
+    <div id="staffing-recurring-modal" class="modal-shell hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-staffing-recurring></div>
+      <section class="modal-panel staffing-recurring-panel" role="dialog" aria-modal="true" aria-labelledby="staffing-recurring-title">
+        <div class="block-heading">
+          <div>
+            <p class="eyebrow">Recurring schedule</p>
+            <h3 id="staffing-recurring-title">Create recurring schedule</h3>
+          </div>
+          <button type="button" class="secondary-button" data-close-staffing-recurring>Close</button>
+        </div>
+        <form id="staffing-recurring-form" novalidate>
+          <div id="staffing-recurring-content"></div>
+          <p class="form-message appointment-form-error" id="staffing-recurring-message" role="alert" aria-live="assertive" tabindex="-1"></p>
+          <div class="form-actions staffing-recurring-actions">
+            <button type="button" class="secondary-button" data-close-staffing-recurring>Cancel</button>
+            <button type="button" class="secondary-button hidden" id="staffing-recurring-back">Edit pattern</button>
+            <button type="submit" class="primary-button" id="staffing-recurring-submit">Review recurring schedule</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
     <div id="appointment-details-modal" class="modal-shell hidden" aria-hidden="true">
       <div class="modal-backdrop" data-close-appointment-details></div>
       <section class="modal-panel appointment-details-panel" role="dialog" aria-modal="true" aria-labelledby="appointment-details-title">

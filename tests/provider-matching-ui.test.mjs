@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import vm from "node:vm";
 
 const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const api = fs.readFileSync(new URL("../public/api.js", import.meta.url), "utf8");
@@ -33,6 +34,9 @@ test("Staffing tab provides matching criteria and an explicit staffing confirmat
     assert.match(html, new RegExp(`id="${id}"`));
   }
   for (const id of ["staffing-schedule-modal", "staffing-schedule-title", "staffing-schedule-content", "staffing-schedule-submit"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  for (const id of ["staffing-recurring-modal", "staffing-recurring-title", "staffing-recurring-form", "staffing-recurring-content", "staffing-recurring-submit"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(html, /role="dialog"/);
@@ -155,7 +159,159 @@ test("Staffing card exposes separate Staff and Schedule actions without a combin
   const card = functionSource("staffingCandidateCard");
   assert.match(card, /Staff this case/);
   assert.match(card, /Schedule this provider/);
+  assert.match(card, /Create recurring schedule/);
   assert.doesNotMatch(card, /Staff and Schedule|Staff & Schedule/i);
+});
+
+test("recurring readiness requires access prerequisites but does not reuse the single-slot conflict decision", () => {
+  const readiness = functionSource("staffingRecurringReadiness");
+  assert.match(readiness, /canCreateAppointments/);
+  assert.match(readiness, /activeStructuredClientServiceLocations/);
+  assert.match(readiness, /role === "rbt"/);
+  assert.match(readiness, /caseAssignment\?\.status !== "assigned"/);
+  assert.match(readiness, /Staff this case before recurring scheduling/);
+  assert.doesNotMatch(readiness, /candidate\.availability|candidate\.schedule|candidate\.zone/);
+  const card = functionSource("staffingCandidateCard");
+  assert.match(card, /staffingRecurringReadiness/);
+  assert.match(card, /data-recurring-provider-id/);
+});
+
+test("recurring readiness allows assigned RBTs and BCBAs while withholding the action from unassigned RBTs", () => {
+  const context = {
+    state: {
+      clients: [{ id: "client-1", status: "active" }],
+      staffingMatchResult: {
+        request: { clientId: "client-1", serviceLocationId: "location-1", cptCode: "97153" },
+        permissions: { canCreateAppointments: true }
+      }
+    },
+    activeStructuredClientServiceLocations: () => [{ id: "location-1" }]
+  };
+  vm.runInNewContext(functionSource("staffingRecurringReadiness"), context);
+  const rbt = { provider: { role: "rbt" }, caseAssignment: { status: "assigned" }, schedule: { status: "conflict" }, availability: { status: "outside" } };
+  assert.equal(context.staffingRecurringReadiness(rbt).ready, true);
+  rbt.caseAssignment.status = "not_assigned";
+  assert.equal(context.staffingRecurringReadiness(rbt).ready, false);
+  assert.equal(context.staffingRecurringReadiness({ provider: { role: "bcba" } }).ready, true);
+});
+
+test("recurring Staffing opens an explicit editor and requires a separate confirmation step", () => {
+  const open = functionSource("openStaffingRecurring");
+  const render = functionSource("renderStaffingRecurring");
+  const submit = functionSource("handleStaffingRecurringSubmit", { async: true });
+  assert.match(open, /staffingRecurringDefaultDraft/);
+  assert.match(open, /staffingRecurringStage = "edit"/);
+  assert.match(open, /classList\.remove\("hidden"\)/);
+  assert.doesNotMatch(open, /createRecurringSeries|createAppointment/);
+  assert.match(render, /Review recurring schedule/);
+  assert.match(render, /Confirm recurring schedule/);
+  assert.match(render, /Start date/);
+  assert.match(render, /End date/);
+  assert.match(render, /Weekday and time pattern/);
+  assert.match(render, /The requested Staffing date and time are defaults only/);
+  assert.match(submit, /state\.staffingRecurringStage === "edit"/);
+  assert.match(submit, /state\.staffingRecurringStage = "confirm"/);
+  assert.ok(submit.indexOf('state.staffingRecurringStage = "confirm"') < submit.indexOf("await createRecurringSeries"));
+});
+
+test("recurring Staffing reuses recurrence rows, supports add/remove, and validates bounded patterns", () => {
+  const render = functionSource("renderStaffingRecurring");
+  const click = functionSource("handleStaffingRecurringContentClick");
+  const validation = functionSource("validateStaffingRecurringDraft");
+  assert.match(render, /appointmentRecurrenceRowMarkup/);
+  assert.match(click, /staffing-recurring-add-day/);
+  assert.match(click, /data-remove-recurrence-day/);
+  assert.match(click, /recurrenceRows\.splice/);
+  assert.match(validation, /Start date is required/);
+  assert.match(validation, /End date is required/);
+  assert.match(validation, /at most 12 months/);
+  assert.match(validation, /Each recurrence weekday may be used only once/);
+  assert.match(validation, /cross-midnight appointments are not supported/);
+  assert.match(validation, /active structured service location/);
+});
+
+test("recurring Staffing uses the existing series endpoint after an immediate RBT assignment recheck", () => {
+  const payload = functionSource("staffingRecurringUnsignedPayload");
+  const submit = functionSource("handleStaffingRecurringSubmit", { async: true });
+  for (const field of ["clientId", "serviceCode", "providerUserId", "serviceLocationId", "timeZone", "startDate", "endDate", "recurrenceRows", "operationalNote"]) {
+    assert.match(payload, new RegExp(`${field}:`));
+  }
+  assert.match(submit, /await verifyStaffingRbtAssignment\(candidate, state\.staffingRecurringDraft\.clientId\)/);
+  assert.match(submit, /await createRecurringSeries\(staffingRecurringSubmissionPayload\(\)\)/);
+  assert.ok(submit.indexOf("await verifyStaffingRbtAssignment") < submit.indexOf("await createRecurringSeries"));
+  assert.match(submit, /state\.scheduleLoadedStartDate = ""/);
+  assert.match(submit, /await refreshCurrentStaffingMatches\(\)/);
+  assert.match(submit, /Recurring schedule created with/);
+  assert.match(submit, /recurringSeriesSuccessMessage\(result\)/);
+  assert.doesNotMatch(submit, /assignClientProvider|createAppointment/);
+  assert.match(api, /fetch\("\/api\/recurring-series"/);
+});
+
+test("the immediate assignment check rejects a removed RBT assignment and bypasses BCBA assignment lookup", async () => {
+  let reads = 0;
+  const context = {
+    getClientAssignments: async () => {
+      reads += 1;
+      return { assignments: [] };
+    },
+    Error
+  };
+  vm.runInNewContext(functionSource("verifyStaffingRbtAssignment", { async: true }), context);
+  await assert.rejects(
+    context.verifyStaffingRbtAssignment({ provider: { role: "rbt", userId: "rbt-1" } }, "client-1"),
+    /Staff this case before scheduling/
+  );
+  await context.verifyStaffingRbtAssignment({ provider: { role: "bcba", userId: "bcba-1" } }, "client-1");
+  assert.equal(reads, 1);
+});
+
+test("recurring Staffing request identity is stable for retries and changes after a material edit", () => {
+  let requestNumber = 0;
+  const context = {
+    state: {
+      staffingRecurringDraft: null,
+      staffingRecurringRequestId: "",
+      staffingRecurringRequestSignature: ""
+    },
+    crypto: { randomUUID: () => `staffing-request-${++requestNumber}` },
+    String,
+    Number,
+    JSON,
+    Date,
+    Math
+  };
+  vm.runInNewContext([
+    functionSource("recurringSeriesRequestId"),
+    functionSource("staffingRecurringUnsignedPayload"),
+    functionSource("staffingRecurringSubmissionPayload")
+  ].join("\n"), context);
+  const draft = {
+    clientId: "client-1",
+    serviceCode: "97153",
+    providerUserId: "user-rbt",
+    serviceLocationId: "location-1",
+    timeZone: "America/New_York",
+    startDate: "2026-09-28",
+    endDate: "2026-12-18",
+    recurrenceRows: [{ weekday: 1, startLocalTime: "15:00", endLocalTime: "18:00" }],
+    operationalNote: ""
+  };
+  const first = context.staffingRecurringSubmissionPayload(draft);
+  const retry = context.staffingRecurringSubmissionPayload(draft);
+  assert.equal(retry.requestId, first.requestId);
+  draft.endDate = "2026-12-19";
+  const edited = context.staffingRecurringSubmissionPayload(draft);
+  assert.notEqual(edited.requestId, first.requestId);
+});
+
+test("recurring Staffing confirmation keeps access, zone, availability, and atomic validation visible", () => {
+  const render = functionSource("renderStaffingRecurring");
+  assert.match(render, /BCBA clinical access/);
+  assert.match(render, /candidate\.zone\.label/);
+  assert.match(render, /Provider Availability is not configured/);
+  assert.match(render, /check every occurrence/);
+  assert.match(render, /If any occurrence is invalid, nothing will be created/);
+  assert.match(functionSource("handleStaffingRecurringKeydown"), /event\.key === "Escape"/);
 });
 
 test("Staffing uses compact cards and collapses to one column without horizontal overflow", () => {
@@ -165,4 +321,6 @@ test("Staffing uses compact cards and collapses to one column without horizontal
   assert.match(css, /\.staffing-candidate-card[^}]*min-width: 0/);
   assert.match(css, /\.staffing-confirmation-panel[^}]*calc\(100vw - 32px\)/);
   assert.match(css, /@media \(max-width: 780px\)[\s\S]*\.staffing-schedule-summary[^}]*minmax\(0, 1fr\)/);
+  assert.match(css, /\.staffing-recurring-panel[^}]*calc\(100vw - 32px\)/);
+  assert.match(css, /@media \(max-width: 780px\)[\s\S]*\.staffing-recurring-fields[^}]*minmax\(0, 1fr\)/);
 });
