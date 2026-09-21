@@ -1468,11 +1468,15 @@
             </div>
             <p class="muted provider-zone-guidance">Primary zone is the provider’s preferred service area. Additional zones are other areas the provider is willing to cover.</p>
             <form id="provider-zone-form" class="provider-zone-form">
-              <label>Primary service area<select name="primaryZone" id="provider-zone-primary"><option value="">Select a primary service area</option></select></label>
-              <fieldset class="provider-zone-fieldset"><legend>Additional service areas</legend><div id="provider-zone-acceptable" class="provider-zone-options"></div></fieldset>
+              <label class="provider-zone-primary-field">Primary service area<select name="primaryZone" id="provider-zone-primary"><option value="">Select a primary service area</option></select></label>
+              <fieldset class="provider-zone-fieldset">
+                <legend>Additional service areas</legend>
+                <p class="muted provider-zone-selection-help">Select any other areas this provider can cover.</p>
+                <div id="provider-zone-acceptable" class="provider-zone-options"></div>
+              </fieldset>
               <p class="muted provider-zone-legacy hidden" id="provider-zone-legacy"></p>
               <p class="form-message" id="provider-zone-message" role="status" aria-live="polite"></p>
-              <div class="button-row"><button type="submit" class="primary-button" id="provider-zone-save">Save zone preferences</button><button type="button" class="secondary-button hidden" id="provider-zone-deactivate">Deactivate profile</button></div>
+              <div class="button-row provider-zone-actions"><button type="submit" class="primary-button" id="provider-zone-save">Save changes</button><button type="button" class="secondary-button hidden" id="provider-zone-deactivate">Deactivate profile</button></div>
             </form>
             <p class="provider-zone-note">Zone preferences are used for staffing and service-area planning. They do not currently block appointment scheduling.</p>
           </div>

@@ -4552,7 +4552,7 @@ function renderProviderZones() {
   providerZoneProvider.disabled = state.providerZonesLoading || state.providerZonesSaving;
   Array.from(providerZoneForm.elements).forEach((element) => { element.disabled = disabled || (element.type === "checkbox" && element.value === draft.primaryZone); });
   providerZoneSaveButton.disabled = disabled || Boolean(legacyPrimary);
-  providerZoneSaveButton.textContent = state.providerZonesSaving ? "Saving..." : "Save zone preferences";
+  providerZoneSaveButton.textContent = state.providerZonesSaving ? "Saving..." : "Save changes";
   providerZoneDeactivateButton.classList.toggle("hidden", !profile?.active);
   providerZoneMessage.textContent = state.providerZoneMessage;
 }

@@ -14,6 +14,8 @@ test("Zones subview is functional and contains the administrative editor", () =>
   assert.match(panel, /do not currently block appointment scheduling/);
   assert.match(panel, /Primary service area/);
   assert.match(panel, /Additional service areas/);
+  assert.match(panel, /Select any other areas this provider can cover/);
+  assert.match(panel, /Save changes/);
 });
 
 test("Zones UI loads eligible providers and canonical zones and wires CRUD", () => {
@@ -32,11 +34,21 @@ test("primary zone is removed and disabled from additional zones with visible er
 });
 
 test("Zones layout is responsive without horizontal overflow", () => {
-  assert.match(css, /\.provider-zone-editor[\s\S]*max-width: 640px/);
-  assert.match(css, /\.provider-zone-options[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
-  assert.match(css, /@media \(max-width: 780px\)[\s\S]*\.provider-zone-options[\s\S]*grid-template-columns: 1fr/);
+  assert.match(css, /\.provider-zone-editor[\s\S]*max-width: 720px/);
+  assert.match(css, /\.provider-zone-options[\s\S]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(css, /@media \(max-width: 780px\)[\s\S]*\.provider-zone-options[^}]*repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.provider-zone-options[^}]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /\.provider-zone-fieldset[^}]*min-width: 0/);
-  assert.doesNotMatch(css, /\.provider-zone-options[^}]*repeat\(3/);
+  assert.match(css, /\.provider-zone-option span[^}]*white-space: nowrap/);
+});
+
+test("additional service areas use accessible selectable chips with clear checked, focus, and disabled states", () => {
+  assert.match(app, /<label class="provider-zone-option"><input type="checkbox"/);
+  assert.match(css, /\.provider-zone-option:has\(input:checked\)/);
+  assert.match(css, /\.provider-zone-option:focus-within/);
+  assert.match(css, /\.provider-zone-option:has\(input:disabled\)/);
+  assert.match(css, /\.provider-zone-option[^}]*cursor: pointer/);
+  assert.match(css, /\.provider-zone-option span[^}]*text-align: left/);
 });
 
 test("Client Profile receives the same canonical zones without a municipality matrix", () => {
