@@ -155,7 +155,7 @@ test("calendar is responsive without a page-level horizontal calendar layout", (
   assert.match(cssSource, /\.schedule-subview\.hidden,\s*\.schedule-empty-state\.hidden\s*\{[^}]*display:\s*none/s);
 });
 
-test("Phase 3C adds individual cancellation without later scheduling or Zone Management logic", () => {
+test("Scheduling shell keeps appointment mutations explicit without drag-and-drop or zone-management logic", () => {
   assert.match(appSource, /createAppointment/);
   assert.match(appSource, /getAppointment/);
   assert.match(appSource, /updateAppointment/);
@@ -163,6 +163,6 @@ test("Phase 3C adds individual cancellation without later scheduling or Zone Man
   assert.doesNotMatch(appSource, /\b(?:deleteAppointment|confirmAppointment|rescheduleAppointment|reactivateAppointment)\s*\(/);
   assert.doesNotMatch(appSource, /schedulingZones\s*:|zoneZip|zoneAdjacency|createZone|updateZone|deleteZone/);
   assert.match(htmlSource, /Add Appointment/);
-  assert.doesNotMatch(htmlSource, /drag-and-drop|draggable|Edit appointment|Cancel appointment|Confirm appointment|Reschedule appointment/);
+  assert.doesNotMatch(htmlSource, /drag-and-drop|draggable|Reschedule appointment/);
   assert.doesNotMatch(htmlSource, /Create zone|Edit zone|ZIP-code association|travel-buffer rule/);
 });

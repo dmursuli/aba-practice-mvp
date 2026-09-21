@@ -19,6 +19,7 @@ import { appointmentStatusBlocksScheduling, validateProviderScheduling } from ".
 import { evaluateProviderMatches } from "./lib/provider-matching.mjs";
 import {
   providerRoleIsEligibleForService,
+  serviceCodesEligibleForProviderRole,
   SCHEDULING_SERVICE_CODES
 } from "./lib/scheduling-provider-eligibility.mjs";
 import { SERVICE_ZONE_SET, SERVICE_ZONE_VALUES, sanitizeProviderZoneInput } from "./lib/service-zones.mjs";
@@ -1218,7 +1219,10 @@ export function createAppServer() {
           scheduledStartAt: normalized.scheduledStartAt,
           scheduledEndAt: normalized.scheduledEndAt
         },
-        permissions: { canManageClientAssignments: true },
+        permissions: {
+          canManageClientAssignments: true,
+          canCreateAppointments: true
+        },
         groups: matches.groups
       });
       return;
@@ -1587,7 +1591,12 @@ export function createAppServer() {
           provider.active !== false
           && ["bcba", "rbt"].includes(provider.role)
         ))
-        .map((provider) => ({ id: provider.id, name: provider.name, role: provider.role }))
+        .map((provider) => ({
+          id: provider.id,
+          name: provider.name,
+          role: provider.role,
+          eligibleServiceCodes: serviceCodesEligibleForProviderRole(provider.role)
+        }))
         .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
       sendJson(res, 200, { clients, providers });
       return;

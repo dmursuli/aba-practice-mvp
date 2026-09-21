@@ -268,6 +268,14 @@ test("appointment options are active, eligible, organization-wide, and available
   assert.deepEqual(adminOptions.json.clients.map((client) => client.id), ["client-1", "other-client"]);
   assert.deepEqual(adminOptions.json.providers.map((provider) => provider.id), ["user-bcba", otherProvider.json.id]);
   assert.ok(adminOptions.json.providers.every((provider) => ["bcba", "rbt"].includes(provider.role)));
+  assert.deepEqual(
+    adminOptions.json.providers.find((provider) => provider.role === "bcba").eligibleServiceCodes,
+    ["97151", "97153", "97155", "97156"]
+  );
+  assert.deepEqual(
+    adminOptions.json.providers.find((provider) => provider.role === "rbt").eligibleServiceCodes,
+    ["97153"]
+  );
   assert.ok(adminOptions.json.providers.every((provider) => !["email", "username", "agency"].some((key) => key in provider)));
 
   const bcbaCookie = await loginAs("bcba", "bcba123");
@@ -335,7 +343,8 @@ test("create validates canonical service codes, providers, timestamps, timezone,
   assert.match(legacyCode.json.errors.join(" "), /97151, 97153, 97155, or 97156/);
 
   const wrongRole = await createAppointment(cookie, {
-    providerAssignments: [{ userId: "user-bcba", assignmentRole: "primary" }]
+    serviceCode: "97155",
+    providerAssignments: [{ userId: "user-rbt", assignmentRole: "primary" }]
   });
   assert.equal(wrongRole.response.status, 400);
   assert.match(wrongRole.json.errors.join(" "), /role is not permitted/);
@@ -419,6 +428,13 @@ test("provider must be active and is eligible organization-wide", async () => {
     providerAssignments: [{ userId: otherAgencyProvider.json.id, assignmentRole: "primary" }]
   });
   assert.equal(organizationWide.response.status, 201);
+
+  const bcbaDirectTreatment = await createAppointment(nextCookie, {
+    scheduledStartAt: "2026-08-03T13:00:00-04:00",
+    scheduledEndAt: "2026-08-03T14:00:00-04:00",
+    providerAssignments: [{ userId: "user-bcba", assignmentRole: "primary" }]
+  });
+  assert.equal(bcbaDirectTreatment.response.status, 201);
 });
 
 test("date-range and ID reads are lightweight and organization-wide", async () => {

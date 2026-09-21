@@ -32,6 +32,9 @@ test("Staffing tab provides matching criteria and an explicit staffing confirmat
   for (const id of ["staffing-confirmation-modal", "staffing-confirmation-title", "staffing-confirmation-content", "staffing-confirmation-submit"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
+  for (const id of ["staffing-schedule-modal", "staffing-schedule-title", "staffing-schedule-content", "staffing-schedule-submit"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
   assert.match(html, /role="dialog"/);
   assert.match(html, /aria-modal="true"/);
 });
@@ -87,6 +90,18 @@ test("Staff this case is limited to unassigned 97153 RBT candidates and does not
   assert.doesNotMatch(eligibility, /availability|schedule|zone/);
 });
 
+test("Schedule readiness keeps RBT assignment, availability, conflict, and zone concepts separate", () => {
+  const readiness = functionSource("staffingSchedulingReadiness");
+  assert.match(readiness, /role === "rbt"/);
+  assert.match(readiness, /request\.cptCode === "97153"/);
+  assert.match(readiness, /caseAssignment\?\.status !== "assigned"/);
+  assert.match(readiness, /Staff this case before scheduling/);
+  assert.match(readiness, /availability\?\.status === "outside"/);
+  assert.match(readiness, /schedule\?\.status === "conflict"/);
+  assert.match(readiness, /availability\?\.status === "not_configured"/);
+  assert.doesNotMatch(readiness, /candidate\.zone/);
+});
+
 test("staffing requires confirmation, reuses the assignment API, updates the card, and creates no appointment", () => {
   const open = functionSource("openStaffingConfirmation");
   const confirm = functionSource("handleConfirmStaffingAssignment", { async: true });
@@ -104,10 +119,50 @@ test("staffing requires confirmation, reuses the assignment API, updates the car
   assert.match(functionSource("renderStaffingConfirmation"), /No appointment will be created/);
 });
 
+test("Schedule this provider requires confirmation and reuses single appointment creation", () => {
+  const card = functionSource("staffingCandidateCard");
+  const open = functionSource("openStaffingSchedule");
+  const confirmation = functionSource("renderStaffingScheduleConfirmation");
+  const payload = functionSource("staffingAppointmentPayload");
+  const confirm = functionSource("handleConfirmStaffingSchedule", { async: true });
+  assert.match(card, /data-schedule-provider-id/);
+  assert.match(card, /Schedule this provider/);
+  assert.match(open, /staffingSchedulingReadiness\(candidate\)\.ready/);
+  assert.match(open, /staffingScheduleSubmit\?\.focus/);
+  assert.doesNotMatch(open, /createAppointment/);
+  assert.match(confirmation, /BCBA clinical access/);
+  assert.match(confirmation, /does not create a recurring series or change case assignments/);
+  assert.match(confirmation, /Provider Availability is not configured/);
+  for (const field of ["clientId", "serviceCode", "providerAssignments", "scheduledStartAt", "scheduledEndAt", "timeZone", "locationId"]) {
+    assert.match(payload, new RegExp(`${field}:`));
+  }
+  assert.match(payload, /assignmentRole: "primary"/);
+  assert.doesNotMatch(payload, /recurrence|requestId|caseAssignment/);
+  assert.match(confirm, /await createAppointment\(staffingAppointmentPayload\(candidate, result\)\)/);
+  assert.match(confirm, /await verifyStaffingRbtAssignment\(candidate, result\.request\.clientId\)/);
+  assert.match(confirm, /await refreshCurrentStaffingMatches\(\)/);
+  assert.match(confirm, /Appointment scheduled with/);
+  assert.match(confirm, /Appointment was not created/);
+  assert.doesNotMatch(confirm, /assignClientProvider|createRecurringSeries/);
+  assert.match(functionSource("handleStaffingScheduleKeydown"), /event\.key === "Escape"/);
+  const assignmentCheck = functionSource("verifyStaffingRbtAssignment", { async: true });
+  assert.match(assignmentCheck, /candidate\.provider\.role !== "rbt"/);
+  assert.match(assignmentCheck, /getClientAssignments\(clientId\)/);
+  assert.match(assignmentCheck, /Staff this case before scheduling/);
+});
+
+test("Staffing card exposes separate Staff and Schedule actions without a combined action", () => {
+  const card = functionSource("staffingCandidateCard");
+  assert.match(card, /Staff this case/);
+  assert.match(card, /Schedule this provider/);
+  assert.doesNotMatch(card, /Staff and Schedule|Staff & Schedule/i);
+});
+
 test("Staffing uses compact cards and collapses to one column without horizontal overflow", () => {
   assert.match(css, /\.staffing-match-form[^}]*max-width: 760px/);
   assert.match(css, /\.staffing-candidate-list[^}]*repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /@media \(max-width: 780px\)[\s\S]*\.staffing-candidate-list[^}]*minmax\(0, 1fr\)/);
   assert.match(css, /\.staffing-candidate-card[^}]*min-width: 0/);
   assert.match(css, /\.staffing-confirmation-panel[^}]*calc\(100vw - 32px\)/);
+  assert.match(css, /@media \(max-width: 780px\)[\s\S]*\.staffing-schedule-summary[^}]*minmax\(0, 1fr\)/);
 });

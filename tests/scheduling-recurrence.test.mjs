@@ -31,7 +31,10 @@ const client = {
     }]
   }
 };
-const users = [{ id: "rbt-1", agency: "Triumph ABA", role: "rbt", active: true }];
+const users = [
+  { id: "rbt-1", agency: "Triumph ABA", role: "rbt", active: true },
+  { id: "bcba-1", agency: "Triumph ABA", role: "bcba", active: true }
+];
 
 function validSeries(overrides = {}) {
   return {
@@ -84,6 +87,13 @@ test("series sanitizer accepts a valid complete revision and uses the authoritat
   );
   assert.equal(result.series.revisions[0].status, "active");
   assert.equal(result.series.revisions[0].supersededAt, "");
+});
+
+test("series sanitizer uses shared eligibility and accepts BCBA direct treatment", () => {
+  const series = validSeries();
+  series.revisions[0].template.providerAssignments[0].userId = "bcba-1";
+  const result = sanitizeRecurringSeriesRecord(series, { clients: [client], users, validateReferences: true });
+  assert.deepEqual(result.errors, []);
 });
 
 test("legacy revisions behave as active without mutating the source record", () => {

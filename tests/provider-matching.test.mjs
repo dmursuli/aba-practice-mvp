@@ -69,7 +69,7 @@ test("service eligibility includes only active role-compatible providers without
     user("rbt-2", "Inactive RBT", "rbt", false),
     user("bcba-1", "Active BCBA", "bcba")
   ];
-  assert.deepEqual(candidates(evaluate({ users, serviceCode: "97153" })).map((item) => item.provider.userId), ["rbt-1"]);
+  assert.deepEqual(candidates(evaluate({ users, serviceCode: "97153" })).map((item) => item.provider.userId), ["bcba-1", "rbt-1"]);
   assert.deepEqual(candidates(evaluate({ users, serviceCode: "97155" })).map((item) => item.provider.userId), ["bcba-1"]);
   assert.deepEqual(candidates(evaluate({ users, serviceCode: "97151" })).map((item) => item.provider.userId), ["bcba-1"]);
   assert.deepEqual(candidates(evaluate({ users, serviceCode: "97156" })).map((item) => item.provider.userId), ["bcba-1"]);
@@ -103,6 +103,21 @@ test("BCBA matching remains independent of RBT client assignment records", () =>
   });
   assert.equal(candidates(result).length, 1);
   assert.equal(candidate(result, "bcba-1").caseAssignment, null);
+});
+
+test("BCBA 97153 receives the same factual zone, availability, and conflict evaluation without assignment state", () => {
+  const result = evaluate({
+    users: [user("bcba-1", "Bailey BCBA", "bcba")],
+    providerZoneProfiles: [zone("bcba-1", "Kendall")],
+    providerAvailabilityProfiles: [availability("bcba-1")],
+    appointments: [appointment("bcba-1")]
+  });
+  const match = candidate(result, "bcba-1");
+  assert.equal(match.zone.status, "primary");
+  assert.equal(match.availability.status, "available");
+  assert.equal(match.schedule.status, "conflict");
+  assert.equal(match.caseAssignment, null);
+  assert.equal(match.group, "unavailable_or_conflicted");
 });
 
 test("zone evaluation distinguishes primary, acceptable, outside, missing, and legacy location zones", () => {

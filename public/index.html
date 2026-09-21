@@ -2408,6 +2408,24 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
       </section>
     </div>
 
+    <div id="staffing-schedule-modal" class="modal-shell hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-staffing-schedule></div>
+      <section class="modal-panel staffing-confirmation-panel" role="dialog" aria-modal="true" aria-labelledby="staffing-schedule-title">
+        <div class="block-heading">
+          <div>
+            <p class="eyebrow">Single appointment</p>
+            <h3 id="staffing-schedule-title">Schedule provider?</h3>
+          </div>
+          <button type="button" class="secondary-button" data-close-staffing-schedule>Close</button>
+        </div>
+        <div id="staffing-schedule-content"></div>
+        <div class="form-actions">
+          <button type="button" class="secondary-button" data-close-staffing-schedule>Cancel</button>
+          <button type="button" class="primary-button" id="staffing-schedule-submit">Confirm appointment</button>
+        </div>
+      </section>
+    </div>
+
     <div id="appointment-details-modal" class="modal-shell hidden" aria-hidden="true">
       <div class="modal-backdrop" data-close-appointment-details></div>
       <section class="modal-panel appointment-details-panel" role="dialog" aria-modal="true" aria-labelledby="appointment-details-title">

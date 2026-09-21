@@ -81,6 +81,18 @@ function criteria(overrides = {}) {
 async function match(cookie, body = criteria()) {
   return request("/api/scheduling/provider-matches", { method: "POST", cookie, body });
 }
+function appointmentFromMatch(result, candidate) {
+  return {
+    clientId: result.request.clientId,
+    serviceCode: result.request.cptCode,
+    providerAssignments: [{ userId: candidate.provider.userId, assignmentRole: "primary" }],
+    scheduledStartAt: result.context.scheduledStartAt,
+    scheduledEndAt: result.context.scheduledEndAt,
+    timeZone: result.request.timezone,
+    locationId: result.request.serviceLocationId,
+    notes: ""
+  };
+}
 
 test("Admin and BCBA may match organization-wide while RBT, read-only, and anonymous users are denied", async () => {
   await resetDb();
@@ -92,8 +104,10 @@ test("Admin and BCBA may match organization-wide while RBT, read-only, and anony
   const before = await db();
   const adminResult = await match(admin);
   assert.equal(adminResult.response.status, 200);
-  assert.equal(adminResult.json.groups.flatMap((group) => group.candidates).length, 1);
-  assert.equal(adminResult.json.groups.flatMap((group) => group.candidates)[0].provider.role, "rbt");
+  assert.deepEqual(
+    adminResult.json.groups.flatMap((group) => group.candidates).map((candidate) => candidate.provider.role).sort(),
+    ["bcba", "rbt"]
+  );
   assert.deepEqual((await db()).clientUserAssignments, []);
   assert.deepEqual(await db(), before);
 
@@ -149,7 +163,8 @@ test("matching reports existing assignment state without changing ranking or per
   await resetDb();
   const admin = await login();
   const unassigned = await match(admin);
-  const unassignedCandidate = unassigned.json.groups.flatMap((group) => group.candidates)[0];
+  const unassignedCandidate = unassigned.json.groups.flatMap((group) => group.candidates)
+    .find((candidate) => candidate.provider.role === "rbt");
   const originalGroup = unassignedCandidate.group;
   assert.deepEqual(unassignedCandidate.caseAssignment, { status: "not_assigned", label: "Not assigned" });
   assert.equal(unassigned.json.permissions.canManageClientAssignments, true);
@@ -165,7 +180,8 @@ test("matching reports existing assignment state without changing ranking or per
   await writeFile(dbPath, `${JSON.stringify(state, null, 2)}\n`);
   const before = await db();
   const assigned = await match(admin);
-  const assignedCandidate = assigned.json.groups.flatMap((group) => group.candidates)[0];
+  const assignedCandidate = assigned.json.groups.flatMap((group) => group.candidates)
+    .find((candidate) => candidate.provider.userId === unassignedCandidate.provider.userId);
   assert.deepEqual(assignedCandidate.caseAssignment, { status: "assigned", label: "Already assigned to this client" });
   assert.equal(assignedCandidate.group, originalGroup);
   assert.deepEqual(await db(), before);
@@ -176,7 +192,8 @@ test("Staffing reuses the authoritative assignment mutation and changes no sched
   const admin = await login();
   const before = await db();
   const result = await match(admin);
-  const rbt = result.json.groups.flatMap((group) => group.candidates)[0].provider;
+  const rbt = result.json.groups.flatMap((group) => group.candidates)
+    .find((candidate) => candidate.provider.role === "rbt").provider;
 
   const assigned = await request("/api/clients/client-1/assignments", {
     method: "POST",
@@ -266,4 +283,109 @@ test("existing assignment authorization and validation remain authoritative for 
   assert.equal(candidates.length, 1);
   assert.equal(candidates[0].provider.userId, bcba.id);
   assert.equal(candidates[0].caseAssignment, null);
+});
+
+test("Schedule from Staffing reuses single appointment creation with stable match identities", async () => {
+  await resetDb();
+  const admin = await login();
+  const matched = await match(admin);
+  assert.equal(matched.response.status, 200);
+  assert.equal(matched.json.permissions.canCreateAppointments, true);
+  const candidates = matched.json.groups.flatMap((group) => group.candidates);
+  const bcba = candidates.find((candidate) => candidate.provider.role === "bcba");
+  const rbt = candidates.find((candidate) => candidate.provider.role === "rbt");
+  assert.ok(bcba);
+  assert.ok(rbt);
+  assert.equal(bcba.caseAssignment, null);
+
+  const created = await request("/api/appointments", {
+    method: "POST",
+    cookie: admin,
+    body: appointmentFromMatch(matched.json, bcba)
+  });
+  assert.equal(created.response.status, 201);
+  assert.equal(created.json.clientId, "client-1");
+  assert.equal(created.json.serviceCode, "97153");
+  assert.equal(created.json.providerAssignments[0].userId, bcba.provider.userId);
+  assert.equal(created.json.locationId, "location-1");
+  assert.equal(created.json.locationSnapshot.label, "Home");
+  assert.equal(created.json.timeZone, "America/New_York");
+
+  const persisted = await db();
+  assert.equal(persisted.appointments.length, 1);
+  assert.equal(persisted.recurringAppointmentSeries.length, 0);
+  assert.equal(persisted.clientUserAssignments.length, 0);
+  assert.equal(persisted.auditLog.filter((entry) => entry.action === "appointment-created").length, 1);
+
+  const staleConflict = await request("/api/appointments", {
+    method: "POST",
+    cookie: admin,
+    body: appointmentFromMatch(matched.json, bcba)
+  });
+  assert.equal(staleConflict.response.status, 400);
+  assert.match(staleConflict.json.errors.join(" "), /already scheduled/i);
+  assert.equal((await db()).appointments.length, 1);
+});
+
+test("an assigned RBT remains separately eligible for one Staffing appointment", async () => {
+  await resetDb();
+  const admin = await login();
+  const initial = await match(admin);
+  const rbt = initial.json.groups.flatMap((group) => group.candidates)
+    .find((candidate) => candidate.provider.role === "rbt");
+  const assigned = await request("/api/clients/client-1/assignments", {
+    method: "POST",
+    cookie: admin,
+    body: { userId: rbt.provider.userId }
+  });
+  assert.equal(assigned.response.status, 201);
+
+  const refreshed = await match(admin);
+  const assignedRbt = refreshed.json.groups.flatMap((group) => group.candidates)
+    .find((candidate) => candidate.provider.userId === rbt.provider.userId);
+  assert.equal(assignedRbt.caseAssignment.status, "assigned");
+  assert.equal(assignedRbt.availability.status, "not_configured");
+  assert.equal(assignedRbt.schedule.status, "none");
+
+  const created = await request("/api/appointments", {
+    method: "POST",
+    cookie: admin,
+    body: appointmentFromMatch(refreshed.json, assignedRbt)
+  });
+  assert.equal(created.response.status, 201);
+  const persisted = await db();
+  assert.equal(persisted.appointments.length, 1);
+  assert.equal(persisted.clientUserAssignments.length, 1);
+  assert.equal(persisted.recurringAppointmentSeries.length, 0);
+});
+
+test("authoritative availability changes after matching prevent stale Staffing creation", async () => {
+  await resetDb();
+  const admin = await login();
+  const matched = await match(admin);
+  const bcba = matched.json.groups.flatMap((group) => group.candidates)
+    .find((candidate) => candidate.provider.role === "bcba");
+  const state = await db();
+  state.providerAvailabilityProfiles.push({
+    id: "availability-bcba",
+    providerUserId: bcba.provider.userId,
+    active: true,
+    effectiveDate: "2026-09-01",
+    timezone: "America/New_York",
+    weeklyAvailability: {
+      monday: [{ start: "10:00", end: "17:00" }],
+      tuesday: [], wednesday: [], thursday: [], friday: [], saturday: [], sunday: []
+    },
+    version: 1
+  });
+  await writeFile(dbPath, `${JSON.stringify(state, null, 2)}\n`);
+
+  const staleAvailability = await request("/api/appointments", {
+    method: "POST",
+    cookie: admin,
+    body: appointmentFromMatch(matched.json, bcba)
+  });
+  assert.equal(staleAvailability.response.status, 400);
+  assert.match(staleAvailability.json.errors.join(" "), /outside .*configured availability/i);
+  assert.equal((await db()).appointments.length, 0);
 });

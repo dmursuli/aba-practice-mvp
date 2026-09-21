@@ -40,7 +40,7 @@ test("Add Appointment visibility is limited to admin and BCBA", () => {
 });
 
 test("creation form contains exactly the requested scheduling fields and canonical codes", () => {
-  const form = htmlSource.slice(htmlSource.indexOf('id="appointment-form"'), htmlSource.indexOf('id="program-graph-modal"'));
+  const form = htmlSource.slice(htmlSource.indexOf('id="appointment-form"'), htmlSource.indexOf('id="staffing-confirmation-modal"'));
   for (const name of [
     "clientId", "serviceCode", "providerUserId", "date", "startTime", "endTime", "timeZone",
     "serviceLocationIndex", "notes"
@@ -237,6 +237,7 @@ test("selectors use stable IDs from active organization-wide authoritative recor
   assert.match(route, /client\.status !== "archived"/);
   assert.match(route, /provider\.active !== false/);
   assert.match(route, /\["bcba", "rbt"\]\.includes\(provider\.role\)/);
+  assert.match(route, /eligibleServiceCodes: serviceCodesEligibleForProviderRole\(provider\.role\)/);
   assert.doesNotMatch(route, /client\.agency\).*===|provider\.agency\).*===|userAgency\(provider\)/);
   assert.match(functionSource("appointmentFormPayload"), /clientId: String\(formData\.get\("clientId"\)/);
   assert.match(functionSource("appointmentFormPayload"), /userId: String\(formData\.get\("providerUserId"\)/);
@@ -246,11 +247,11 @@ test("selectors use stable IDs from active organization-wide authoritative recor
 });
 
 test("provider choices follow service eligibility and exactly one primary assignment is submitted", () => {
-  const context = {};
-  vm.runInNewContext(functionSource("appointmentProviderRole"), context);
-  assert.equal(context.appointmentProviderRole("97153"), "rbt");
-  for (const code of ["97151", "97155", "97156"]) assert.equal(context.appointmentProviderRole(code), "bcba");
-  assert.equal(context.appointmentProviderRole("parent-training"), "");
+  const eligibility = functionSource("appointmentProviderIsEligible");
+  assert.match(eligibility, /provider\?\.eligibleServiceCodes\?\.includes/);
+  const renderer = functionSource("renderAppointmentProviderOptions");
+  assert.match(renderer, /appointmentProviderIsEligible\(provider, serviceCode\)/);
+  assert.doesNotMatch(renderer, /provider\.role ===/);
   const payload = functionSource("appointmentFormPayload");
   assert.match(payload, /providerAssignments: \[\{/);
   assert.match(payload, /assignmentRole: "primary"/);
@@ -613,14 +614,9 @@ test("individual edit form exposes only Phase 3B operational fields and keeps cl
 
 test("edit provider choices use stable user IDs and re-filter immediately by service code", () => {
   const renderer = functionSource("renderAppointmentEditProviderOptions");
-  assert.match(renderer, /appointmentProviderRole\(form\.elements\.serviceCode\.value\)/);
-  assert.match(renderer, /state\.appointmentProviders\.filter\(\(provider\) => provider\.role === role\)/);
+  assert.match(renderer, /appointmentProviderIsEligible\(provider, serviceCode\)/);
   assert.match(renderer, /value="\$\{escapeHtml\(provider\.id\)\}"/);
   assert.match(functionSource("handleAppointmentEditChange"), /name === "serviceCode"\) renderAppointmentEditProviderOptions\(\)/);
-  const roleContext = {};
-  vm.runInNewContext(functionSource("appointmentProviderRole"), roleContext);
-  assert.equal(roleContext.appointmentProviderRole("97153"), "rbt");
-  for (const code of ["97151", "97155", "97156"]) assert.equal(roleContext.appointmentProviderRole(code), "bcba");
 });
 
 test("edit locations use active structured Client Profile IDs and derive Setting and Zone", () => {

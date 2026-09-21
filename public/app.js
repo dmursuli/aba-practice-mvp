@@ -62,6 +62,8 @@ const state = {
   staffingAssignmentCandidateId: "",
   staffingAssignmentSubmitting: false,
   staffingAssignmentError: "",
+  staffingScheduleCandidateId: "",
+  staffingScheduleSubmitting: false,
   providerAvailabilityProviders: [],
   selectedProviderAvailabilityUserId: "",
   providerAvailabilityProfile: null,
@@ -433,6 +435,11 @@ const staffingConfirmationContent = document.querySelector("#staffing-confirmati
 const staffingConfirmationMessage = document.querySelector("#staffing-confirmation-message");
 const staffingConfirmationSubmit = document.querySelector("#staffing-confirmation-submit");
 const staffingConfirmationCloseButtons = document.querySelectorAll("[data-close-staffing-confirmation]");
+const staffingScheduleModal = document.querySelector("#staffing-schedule-modal");
+const staffingScheduleTitle = document.querySelector("#staffing-schedule-title");
+const staffingScheduleContent = document.querySelector("#staffing-schedule-content");
+const staffingScheduleSubmit = document.querySelector("#staffing-schedule-submit");
+const staffingScheduleCloseButtons = document.querySelectorAll("[data-close-staffing-schedule]");
 const providerAvailabilityProvider = document.querySelector("#provider-availability-provider");
 const providerAvailabilityStatus = document.querySelector("#provider-availability-status");
 const providerAvailabilityForm = document.querySelector("#provider-availability-form");
@@ -1467,6 +1474,8 @@ function bindEvents() {
   staffingResults?.addEventListener("click", handleStaffingResultClick);
   staffingConfirmationSubmit?.addEventListener("click", handleConfirmStaffingAssignment);
   staffingConfirmationCloseButtons.forEach((button) => button.addEventListener("click", closeStaffingConfirmation));
+  staffingScheduleSubmit?.addEventListener("click", handleConfirmStaffingSchedule);
+  staffingScheduleCloseButtons.forEach((button) => button.addEventListener("click", closeStaffingSchedule));
   providerAvailabilityProvider?.addEventListener("change", handleProviderAvailabilityProviderChange);
   providerAvailabilityForm?.addEventListener("submit", handleSaveProviderAvailability);
   providerAvailabilityForm?.addEventListener("input", syncProviderAvailabilityDraftFromForm);
@@ -1510,6 +1519,7 @@ function bindEvents() {
   window.addEventListener("aba-auth-error", (event) => handleAuthFailureEvent(event.detail));
   window.addEventListener("keydown", handleAppointmentDetailsKeydown);
   window.addEventListener("keydown", handleStaffingConfirmationKeydown);
+  window.addEventListener("keydown", handleStaffingScheduleKeydown);
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) {
       if (!state.currentUser && !state.authChallenge) showLogin();
@@ -1840,8 +1850,12 @@ function resetSensitiveState() {
   state.staffingAssignmentCandidateId = "";
   state.staffingAssignmentSubmitting = false;
   state.staffingAssignmentError = "";
+  state.staffingScheduleCandidateId = "";
+  state.staffingScheduleSubmitting = false;
   staffingConfirmationModal?.classList.add("hidden");
   staffingConfirmationModal?.setAttribute("aria-hidden", "true");
+  staffingScheduleModal?.classList.add("hidden");
+  staffingScheduleModal?.setAttribute("aria-hidden", "true");
   state.providerAvailabilityProviders = [];
   state.selectedProviderAvailabilityUserId = "";
   state.providerAvailabilityProfile = null;
@@ -4321,10 +4335,33 @@ function canStaffCandidate(candidate) {
   );
 }
 
+function staffingSchedulingReadiness(candidate) {
+  const request = state.staffingMatchResult?.request;
+  const reasons = [];
+  if (!candidate || !request || !state.staffingMatchResult?.permissions?.canCreateAppointments) {
+    reasons.push("Scheduling is not available.");
+  } else {
+    if (candidate.provider?.role === "rbt"
+      && request.cptCode === "97153"
+      && candidate.caseAssignment?.status !== "assigned") {
+      reasons.push("Staff this case before scheduling.");
+    }
+    if (candidate.availability?.status === "outside") reasons.push("Outside configured availability.");
+    if (candidate.schedule?.status === "conflict") reasons.push(candidate.schedule.label || "Scheduling conflict.");
+  }
+  return {
+    ready: reasons.length === 0,
+    reasons,
+    missingAvailability: candidate?.availability?.status === "not_configured"
+  };
+}
+
 function staffingCandidateCard(candidate) {
   const showCaseStatus = state.staffingMatchResult?.request?.cptCode === "97153"
     && candidate.provider?.role === "rbt"
     && candidate.caseAssignment;
+  const readiness = staffingSchedulingReadiness(candidate);
+  const canStaff = canStaffCandidate(candidate);
   return `
     <article class="staffing-candidate-card">
       <div class="staffing-candidate-heading">
@@ -4341,7 +4378,14 @@ function staffingCandidateCard(candidate) {
           <span>Case status</span>
           <strong>${escapeHtml(candidate.caseAssignment.label)}</strong>
         </div>
-        ${canStaffCandidate(candidate) ? `<button type="button" class="secondary-button staffing-case-action" data-staff-case-provider-id="${escapeHtml(candidate.provider.userId)}">Staff this case</button>` : ""}
+      ` : ""}
+      ${readiness.missingAvailability ? '<p class="staffing-schedule-note is-warning">Availability is not configured; scheduling is permitted under the current transitional rule.</p>' : ""}
+      ${readiness.reasons.map((reason) => `<p class="staffing-schedule-note is-blocked">${escapeHtml(reason)}</p>`).join("")}
+      ${(canStaff || readiness.ready) ? `
+        <div class="staffing-candidate-actions">
+          ${canStaff ? `<button type="button" class="secondary-button staffing-case-action" data-staff-case-provider-id="${escapeHtml(candidate.provider.userId)}">Staff this case</button>` : ""}
+          ${readiness.ready ? `<button type="button" class="primary-button staffing-case-action" data-schedule-provider-id="${escapeHtml(candidate.provider.userId)}">Schedule this provider</button>` : ""}
+        </div>
       ` : ""}
     </article>
   `;
@@ -4401,12 +4445,160 @@ function closeStaffingConfirmation() {
 }
 
 function handleStaffingResultClick(event) {
-  const button = event.target.closest("[data-staff-case-provider-id]");
-  if (button) openStaffingConfirmation(button.dataset.staffCaseProviderId);
+  const staffButton = event.target.closest("[data-staff-case-provider-id]");
+  if (staffButton) {
+    openStaffingConfirmation(staffButton.dataset.staffCaseProviderId);
+    return;
+  }
+  const scheduleButton = event.target.closest("[data-schedule-provider-id]");
+  if (scheduleButton) openStaffingSchedule(scheduleButton.dataset.scheduleProviderId);
 }
 
 function handleStaffingConfirmationKeydown(event) {
   if (event.key === "Escape" && !staffingConfirmationModal?.classList.contains("hidden")) closeStaffingConfirmation();
+}
+
+function staffingServiceLabel(serviceCode) {
+  return ({
+    "97151": "Behavior identification assessment",
+    "97153": "Direct treatment",
+    "97155": "Protocol modification",
+    "97156": "Caregiver guidance"
+  })[serviceCode] || "Service";
+}
+
+function renderStaffingScheduleConfirmation() {
+  if (!staffingScheduleModal || !staffingScheduleContent || !staffingScheduleSubmit) return;
+  const candidate = staffingCandidate(state.staffingScheduleCandidateId);
+  const result = state.staffingMatchResult;
+  const request = result?.request;
+  const client = (state.clients || []).find((item) => item.id === request?.clientId);
+  const readiness = staffingSchedulingReadiness(candidate);
+  if (!candidate || !client || !request || !readiness.ready) {
+    closeStaffingSchedule();
+    return;
+  }
+  const accessLabel = candidate.provider.role === "rbt"
+    ? candidate.caseAssignment?.label || "Assigned to this client"
+    : "BCBA clinical access";
+  const timeLabel = scheduleAppointmentTimeLabel({
+    scheduledStartAt: result.context?.scheduledStartAt,
+    scheduledEndAt: result.context?.scheduledEndAt,
+    timeZone: request.timezone
+  });
+  const locationLabel = result.context?.serviceLocation?.label || "Service location";
+  const locationZone = result.context?.serviceLocation?.zone || "";
+  staffingScheduleTitle.textContent = `Schedule ${candidate.provider.name}?`;
+  staffingScheduleContent.innerHTML = `
+    <div class="staffing-schedule-summary">
+      <div><span>Client</span><strong>${escapeHtml(client.name)}</strong></div>
+      <div><span>Provider</span><strong>${escapeHtml(candidate.provider.name)}, ${escapeHtml(String(candidate.provider.role || "").toUpperCase())}</strong></div>
+      <div><span>Service</span><strong>${escapeHtml(request.cptCode)} — ${escapeHtml(staffingServiceLabel(request.cptCode))}</strong></div>
+      <div><span>Location</span><strong>${escapeHtml(locationLabel)}${locationZone ? ` — ${escapeHtml(locationZone)}` : ""}</strong></div>
+      <div><span>Date</span><strong>${escapeHtml(formatDate(request.date))}</strong></div>
+      <div><span>Time</span><strong>${escapeHtml(timeLabel)}</strong></div>
+    </div>
+    <div class="staffing-candidate-factors">
+      <span class="staffing-factor zone-${escapeHtml(candidate.zone.status)}">${escapeHtml(candidate.zone.label)}</span>
+      <span class="staffing-factor availability-${escapeHtml(candidate.availability.status)}">${escapeHtml(candidate.availability.label)}</span>
+      <span class="staffing-factor schedule-${escapeHtml(candidate.schedule.status)}">${escapeHtml(candidate.schedule.label)}</span>
+      <span class="staffing-factor">${escapeHtml(accessLabel)}</span>
+    </div>
+    ${readiness.missingAvailability ? '<p class="staffing-schedule-note is-warning">Provider Availability is not configured. The current transitional rule permits scheduling, and the server will recheck before creation.</p>' : ""}
+    <p class="muted">This creates one scheduled appointment only. It does not create a recurring series or change case assignments.</p>
+  `;
+  staffingScheduleSubmit.disabled = state.staffingScheduleSubmitting;
+  staffingScheduleSubmit.textContent = state.staffingScheduleSubmitting ? "Scheduling…" : "Confirm appointment";
+  staffingScheduleCloseButtons.forEach((button) => { button.disabled = state.staffingScheduleSubmitting; });
+}
+
+function openStaffingSchedule(providerUserId) {
+  const candidate = staffingCandidate(providerUserId);
+  if (!staffingSchedulingReadiness(candidate).ready || !staffingScheduleModal) return;
+  state.staffingScheduleCandidateId = providerUserId;
+  state.staffingScheduleSubmitting = false;
+  staffingScheduleModal.classList.remove("hidden");
+  staffingScheduleModal.setAttribute("aria-hidden", "false");
+  renderStaffingScheduleConfirmation();
+  staffingScheduleSubmit?.focus();
+}
+
+function closeStaffingSchedule() {
+  if (state.staffingScheduleSubmitting || !staffingScheduleModal) return;
+  const providerUserId = state.staffingScheduleCandidateId;
+  state.staffingScheduleCandidateId = "";
+  staffingScheduleModal.classList.add("hidden");
+  staffingScheduleModal.setAttribute("aria-hidden", "true");
+  if (providerUserId) {
+    staffingResults?.querySelector(`[data-schedule-provider-id="${CSS.escape(providerUserId)}"]`)?.focus();
+  }
+}
+
+function handleStaffingScheduleKeydown(event) {
+  if (event.key === "Escape" && !staffingScheduleModal?.classList.contains("hidden")) closeStaffingSchedule();
+}
+
+function staffingAppointmentPayload(candidate, result = state.staffingMatchResult) {
+  return {
+    clientId: result.request.clientId,
+    serviceCode: result.request.cptCode,
+    providerAssignments: [{ userId: candidate.provider.userId, assignmentRole: "primary" }],
+    scheduledStartAt: result.context.scheduledStartAt,
+    scheduledEndAt: result.context.scheduledEndAt,
+    timeZone: result.request.timezone,
+    locationId: result.request.serviceLocationId,
+    notes: ""
+  };
+}
+
+async function refreshCurrentStaffingMatches() {
+  const request = state.staffingMatchResult?.request;
+  if (!request) return;
+  state.staffingMatchResult = await findSchedulingProviderMatches({ ...request });
+  renderStaffingResults();
+}
+
+async function verifyStaffingRbtAssignment(candidate, clientId) {
+  if (candidate.provider.role !== "rbt") return;
+  const snapshot = await getClientAssignments(clientId);
+  if (!(snapshot.assignments || []).some((assignment) => assignment.userId === candidate.provider.userId)) {
+    throw new Error("Staff this case before scheduling.");
+  }
+}
+
+async function handleConfirmStaffingSchedule() {
+  const candidate = staffingCandidate(state.staffingScheduleCandidateId);
+  const result = state.staffingMatchResult;
+  const client = (state.clients || []).find((item) => item.id === result?.request?.clientId);
+  if (!candidate || !client || !staffingSchedulingReadiness(candidate).ready || state.staffingScheduleSubmitting) return;
+  state.staffingScheduleSubmitting = true;
+  renderStaffingScheduleConfirmation();
+  try {
+    await verifyStaffingRbtAssignment(candidate, result.request.clientId);
+    await createAppointment(staffingAppointmentPayload(candidate, result));
+  } catch (error) {
+    state.staffingScheduleSubmitting = false;
+    closeStaffingSchedule();
+    let refreshMessage = "";
+    try {
+      await refreshCurrentStaffingMatches();
+      refreshMessage = " Provider matches were refreshed.";
+    } catch {
+      refreshMessage = " Refresh provider matches before trying again.";
+    }
+    staffingMessage.textContent = `Appointment was not created. ${error.message || "Unable to schedule this provider."}${refreshMessage}`;
+    return;
+  }
+  state.staffingScheduleSubmitting = false;
+  closeStaffingSchedule();
+  state.scheduleLoadedStartDate = "";
+  state.scheduleLoadedEndDate = "";
+  try {
+    await refreshCurrentStaffingMatches();
+  } catch {
+    // Appointment creation already succeeded; a match refresh failure must not reverse the success state.
+  }
+  staffingMessage.textContent = `Appointment scheduled with ${candidate.provider.name}.`;
 }
 
 async function handleConfirmStaffingAssignment() {
@@ -4488,6 +4680,7 @@ function renderStaffing() {
 
 function handleStaffingClientChange() {
   closeStaffingConfirmation();
+  closeStaffingSchedule();
   state.staffingMatchResult = null;
   state.staffingMatchError = "";
   staffingLocationSelect.value = "";
@@ -4497,6 +4690,7 @@ function handleStaffingClientChange() {
 function handleStaffingCriteriaChange() {
   if (state.staffingMatching) return;
   closeStaffingConfirmation();
+  closeStaffingSchedule();
   state.staffingMatchResult = null;
   state.staffingMatchError = "";
   renderStaffingResults();
@@ -5129,8 +5323,8 @@ function renderScheduleAccessControls() {
   scheduleAddAppointmentButton?.classList.toggle("hidden", !canCreateAppointments());
 }
 
-function appointmentProviderRole(serviceCode) {
-  return serviceCode === "97153" ? "rbt" : ["97151", "97155", "97156"].includes(serviceCode) ? "bcba" : "";
+function appointmentProviderIsEligible(provider, serviceCode) {
+  return Boolean(provider?.eligibleServiceCodes?.includes(String(serviceCode || "")));
 }
 
 function renderAppointmentClientOptions() {
@@ -5429,11 +5623,10 @@ function renderAppointmentProviderOptions() {
   const select = appointmentForm?.elements?.providerUserId;
   if (!select) return;
   const serviceCode = appointmentForm.elements.serviceCode.value;
-  const role = appointmentProviderRole(serviceCode);
   const selectedId = select.value;
-  const providers = state.appointmentProviders.filter((provider) => provider.role === role);
+  const providers = state.appointmentProviders.filter((provider) => appointmentProviderIsEligible(provider, serviceCode));
   select.innerHTML = [
-    `<option value="">${role ? "Select an active provider" : "Select a service code first"}</option>`,
+    `<option value="">${["97151", "97153", "97155", "97156"].includes(serviceCode) ? "Select an active provider" : "Select a service code first"}</option>`,
     ...providers.map((provider) => (
       `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)} (${escapeHtml(provider.role.toUpperCase())})</option>`
     ))
@@ -5638,7 +5831,7 @@ function validateAppointmentForm(formData) {
     errors.push("Choose a supported service code.");
   }
   const provider = state.appointmentProviders.find((item) => item.id === String(formData.get("providerUserId") || ""));
-  if (provider && provider.role !== appointmentProviderRole(serviceCode)) {
+  if (provider && !appointmentProviderIsEligible(provider, serviceCode)) {
     errors.push("Choose an active provider who is eligible for the selected service code.");
   }
   if (isRecurring && (!serviceLocation?.id || !activeStructuredClientServiceLocations(String(formData.get("clientId") || "")).some((location) => location.id === serviceLocation.id))) {
@@ -5934,11 +6127,11 @@ function renderAppointmentEditProviderOptions() {
   const form = appointmentDetailsContent?.querySelector("#appointment-edit-form");
   const select = form?.elements?.providerUserId;
   if (!select) return;
-  const role = appointmentProviderRole(form.elements.serviceCode.value);
+  const serviceCode = form.elements.serviceCode.value;
   const selectedId = select.value;
-  const providers = state.appointmentProviders.filter((provider) => provider.role === role);
+  const providers = state.appointmentProviders.filter((provider) => appointmentProviderIsEligible(provider, serviceCode));
   select.innerHTML = [
-    `<option value="">${role ? "Select an active provider" : "Select a service code first"}</option>`,
+    `<option value="">${["97151", "97153", "97155", "97156"].includes(serviceCode) ? "Select an active provider" : "Select a service code first"}</option>`,
     ...providers.map((provider) => (
       `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)} (${escapeHtml(provider.role.toUpperCase())})</option>`
     ))
@@ -6159,7 +6352,7 @@ function renderAppointmentEditForm(appointment) {
   form.elements.providerUserId.value = providerId;
   renderAppointmentEditProviderOptions();
   form.elements.providerUserId.value = state.appointmentProviders.some((provider) => (
-    provider.id === providerId && provider.role === appointmentProviderRole(appointment.serviceCode)
+    provider.id === providerId && appointmentProviderIsEligible(provider, appointment.serviceCode)
   )) ? providerId : "";
   syncAppointmentEditLocationDetails();
   syncAppointmentEntireSeriesEditor();
@@ -6176,9 +6369,9 @@ function validateAppointmentEditForm(formData) {
     if (!String(formData.get(name) || "").trim()) errors.push(`${label} is required.`);
   }
   const serviceCode = String(formData.get("serviceCode") || "");
-  if (!appointmentProviderRole(serviceCode)) errors.push("Choose a supported service code.");
+  if (!["97151", "97153", "97155", "97156"].includes(serviceCode)) errors.push("Choose a supported service code.");
   const provider = state.appointmentProviders.find((item) => item.id === String(formData.get("providerUserId") || ""));
-  if (provider && provider.role !== appointmentProviderRole(serviceCode)) {
+  if (provider && !appointmentProviderIsEligible(provider, serviceCode)) {
     errors.push("Choose a provider who is eligible for the selected service code.");
   }
   const locationId = String(formData.get("locationId") || "");

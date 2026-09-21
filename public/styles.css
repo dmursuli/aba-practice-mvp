@@ -1211,7 +1211,15 @@ button:focus-visible {
 }
 .staffing-case-status strong { color: var(--text); }
 .staffing-case-status.case-assigned strong { color: #276238; }
-.staffing-case-action { justify-self: start; }
+.staffing-candidate-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.staffing-case-action { width: fit-content; }
+.staffing-schedule-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+.staffing-schedule-note.is-blocked { color: #9f2d2d; }
+.staffing-schedule-note.is-warning { color: #9a3412; }
 .staffing-confirmation-panel { width: min(620px, calc(100vw - 32px)); }
 .staffing-confirmation-provider {
   display: flex;
@@ -1227,6 +1235,21 @@ button:focus-visible {
 .staffing-confirmation-provider span { color: var(--muted); font-weight: 700; }
 .staffing-confirmation-panel .staffing-candidate-factors { margin-bottom: 14px; }
 .staffing-confirmation-panel p { line-height: 1.5; }
+.staffing-schedule-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+.staffing-schedule-summary > div {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.staffing-schedule-summary span { color: var(--muted); font-size: 0.8rem; font-weight: 700; }
 .staffing-group-empty { grid-column: 1 / -1; margin: 0; color: var(--muted); }
 
 .schedule-week-grid {
@@ -2927,6 +2950,7 @@ button:disabled {
 
   .staffing-form-grid,
   .staffing-candidate-list { grid-template-columns: minmax(0, 1fr); }
+  .staffing-schedule-summary { grid-template-columns: minmax(0, 1fr); }
   .staffing-client-field,
   .staffing-location-field { grid-column: auto; }
   .staffing-match-form { padding: 14px; }

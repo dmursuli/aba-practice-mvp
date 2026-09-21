@@ -229,7 +229,7 @@ test("creation uses organization-wide authoritative identity, role, service-code
 
   const cases = [
     [{ requestId: "reject-inactive-rbt", providerUserId: "inactive-rbt" }, /Provider must be active/],
-    [{ requestId: "reject-role-service", providerUserId: "user-bcba" }, /role is not permitted/],
+    [{ requestId: "reject-role-service", serviceCode: "97155", providerUserId: "user-rbt" }, /role is not permitted/],
     [{ requestId: "reject-service-code", serviceCode: "parent-training" }, /97151, 97153, 97155, or 97156/],
     [{ requestId: "reject-location-id", serviceLocationId: "missing" }, /active service location/]
   ];
@@ -245,6 +245,22 @@ test("creation uses organization-wide authoritative identity, role, service-code
   const inactiveLocation = await createSeries(cookie, { requestId: "reject-inactive-location" });
   assert.equal(inactiveLocation.response.status, 400);
   assert.match(inactiveLocation.json.errors.join(" "), /active service location/);
+});
+
+test("recurring creation accepts a BCBA provider for 97153 through shared eligibility", async () => {
+  await resetDb();
+  const cookie = await login();
+  const result = await createSeries(cookie, {
+    requestId: "bcba-direct-treatment-series",
+    providerUserId: "user-bcba"
+  });
+  assert.equal(result.response.status, 201);
+  const persisted = await readDb();
+  assert.equal(persisted.recurringAppointmentSeries.length, 1);
+  assert.equal(persisted.recurringAppointmentSeries[0].revisions[0].template.serviceCode, "97153");
+  assert.equal(persisted.recurringAppointmentSeries[0].revisions[0].template.providerAssignments[0].userId, "user-bcba");
+  assert.ok(persisted.appointments.length > 0);
+  assert.ok(persisted.appointments.every((appointment) => appointment.providerAssignments[0].userId === "user-bcba"));
 });
 
 test("multiple weekdays, distinct times, inclusive boundaries, and year boundaries materialize correctly", async () => {
