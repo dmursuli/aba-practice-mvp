@@ -45,12 +45,12 @@ test("Scheduling workspace has five subviews with Calendar active", () => {
   assert.equal(subviewButtons.length, 5);
   assert.equal(subviewPanels.length, 5);
   assert.match(htmlSource, /data-schedule-subview-button="calendar"[^>]*aria-selected="true"/);
-  assert.match(htmlSource, /data-schedule-subview-panel="staffing"[\s\S]*Find providers for a service/);
+  assert.match(htmlSource, /data-schedule-subview-panel="staffing"[\s\S]*Find, staff, and schedule providers/);
   assert.match(htmlSource, /id="staffing-match-form"/);
   assert.match(htmlSource, /data-schedule-subview-panel="availability"[\s\S]*Provider Availability/);
   assert.match(htmlSource, /id="provider-availability-provider"/);
   assert.match(htmlSource, /data-schedule-subview-panel="zones"[\s\S]*Provider Zones/);
-  assert.match(htmlSource, /data-schedule-subview-panel="capacity"[\s\S]*No capacity calculations are active yet/);
+  assert.match(htmlSource, /data-schedule-subview-panel="capacity"[\s\S]*Coming later\. No capacity calculations are active/);
 });
 
 test("Scheduling is available only to admin and BCBA roles", () => {
@@ -131,7 +131,8 @@ test("calendar preserves historical labels and adds read-only appointment record
   assert.match(block, /Scheduled appointment/);
   assert.match(block, /Loading sessions and appointments/);
   assert.match(block, /visible calendar week could not be loaded/);
-  assert.match(block, /No sessions or appointments for this week/);
+  assert.match(block, /No appointments scheduled for this week/);
+  assert.match(block, /No scheduled services/);
   assert.doesNotMatch(block, /soapNote|providerSignature|therapist/);
 });
 
@@ -153,6 +154,21 @@ test("calendar is responsive without a page-level horizontal calendar layout", (
   assert.match(cssSource, /@media \(max-width: 780px\)[\s\S]*?\.schedule-week-grid\s*\{[^}]*grid-template-columns:\s*1fr/);
   assert.match(cssSource, /\.schedule-panel\s*\{[^}]*overflow:\s*hidden/s);
   assert.match(cssSource, /\.schedule-subview\.hidden,\s*\.schedule-empty-state\.hidden\s*\{[^}]*display:\s*none/s);
+});
+
+test("Scheduling subnavigation is compact, visibly selected, keyboard focusable, and mobile-scrollable", () => {
+  assert.match(cssSource, /\.schedule-subnav\s*\{[^}]*overflow-x:\s*auto/s);
+  assert.match(cssSource, /\.schedule-subnav \.domain-tab\[aria-selected="true"\]/);
+  assert.match(cssSource, /\.schedule-subnav \.domain-tab:focus-visible/);
+  assert.match(cssSource, /@media \(max-width: 780px\)[\s\S]*\.schedule-subnav[^}]*width:\s*100%/);
+});
+
+test("Scheduling feedback uses shared compact success, warning, error, and info tones", () => {
+  const helper = functionSource("setSchedulingFeedback");
+  assert.match(helper, /element\.dataset\.tone/);
+  for (const tone of ["success", "warning", "error", "info"]) {
+    assert.match(cssSource, new RegExp(`form-message\\[data-tone="${tone}"\\]`));
+  }
 });
 
 test("Scheduling shell keeps appointment mutations explicit without drag-and-drop or zone-management logic", () => {

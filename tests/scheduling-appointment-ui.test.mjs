@@ -443,7 +443,7 @@ test("calendar loads appointments with sessions and makes only appointments sele
   assert.match(renderer, /scheduleSettingLabel\(appointment\.settingType\)/);
   assert.match(renderer, /scheduleStatusLabel\(appointment\.status\)/);
   assert.match(renderer, /<button type="button"[^>]*data-schedule-appointment-id=/);
-  assert.match(renderer, /<article class="schedule-record">[\s\S]*Completed session/);
+  assert.match(renderer, /<article class="schedule-record schedule-completed-record">[\s\S]*Completed session/);
   assert.doesNotMatch(renderer, /<article[^>]*data-schedule-appointment-id/);
   assert.match(appSource, /scheduleWeekGrid\?\.addEventListener\("click", handleScheduleAppointmentSelection\)/);
   assert.match(functionSource("handleScheduleAppointmentSelection"), /openAppointmentDetails\(appointmentButton\.dataset\.scheduleAppointmentId\)/);
@@ -771,7 +771,7 @@ test("Cancel Edit discards locally without mutation and conflict cancel reloads 
 
 test("appointment editing remains separate from completed clinical-session records", () => {
   const renderer = functionSource("renderSchedule");
-  assert.match(renderer, /<article class="schedule-record">[\s\S]*Completed session/);
+  assert.match(renderer, /<article class="schedule-record schedule-completed-record">[\s\S]*Completed session/);
   assert.doesNotMatch(renderer, /<article[^>]*data-schedule-appointment-id/);
   const editPayload = functionSource("appointmentEditPayload");
   const saveHandler = functionSource("handleUpdateAppointment", { async: true });
@@ -873,7 +873,7 @@ test("confirmed appointments remain editable, cancellable, and visually distinct
   assert.match(schedule, /schedule-appointment-confirmed/);
   assert.match(schedule, /Confirmed appointment/);
   assert.match(schedule, /schedule-confirmed-label">Confirmed/);
-  assert.match(schedule, /<article class="schedule-record">[\s\S]*Completed session/);
+  assert.match(schedule, /<article class="schedule-record schedule-completed-record">[\s\S]*Completed session/);
   assert.match(cssSource, /\.schedule-appointment-confirmed\s*\{/);
   assert.match(cssSource, /\.schedule-confirmed-label\s*\{/);
 });

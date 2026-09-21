@@ -34,7 +34,8 @@ test("primary zone is removed and disabled from additional zones with visible er
 });
 
 test("Zones layout is responsive without horizontal overflow", () => {
-  assert.match(css, /\.provider-zone-editor[\s\S]*max-width: 720px/);
+  assert.match(css, /\.provider-configuration-editor[^}]*max-width: 720px/);
+  assert.match(html, /provider-configuration-editor provider-zone-editor/);
   assert.match(css, /\.provider-zone-options[\s\S]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
   assert.match(css, /@media \(max-width: 780px\)[\s\S]*\.provider-zone-options[^}]*repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.provider-zone-options[^}]*grid-template-columns: minmax\(0, 1fr\)/);
@@ -66,5 +67,13 @@ test("legacy provider values are displayed explicitly and require an operational
   assert.match(app, /providerZoneSaveButton\.disabled = disabled \|\| Boolean\(legacyPrimary\)/);
   assert.match(app, /Active · Version/);
   assert.match(app, /Inactive · Saving will reactivate version/);
-  assert.match(app, /Not configured/);
+  assert.match(app, /No service-area preferences configured for this provider/);
+});
+
+test("Zones shares provider configuration status, actions, and feedback styling with Availability", () => {
+  assert.match(html, /provider-configuration-toolbar provider-zone-toolbar/);
+  assert.match(html, /provider-configuration-status provider-zone-status/);
+  assert.match(html, /provider-configuration-actions provider-zone-actions/);
+  assert.match(app, /providerZoneMessage\.dataset\.tone/);
+  assert.match(css, /\.provider-configuration-status/);
 });

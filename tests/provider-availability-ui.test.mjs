@@ -21,7 +21,8 @@ test("Availability is a functional Scheduling subview with provider, date, timez
     htmlSource.indexOf('id="schedule-subview-zones"')
   );
   assert.match(panel, /Provider Availability/);
-  assert.match(panel, /Set the provider’s recurring weekly availability for scheduling/);
+  assert.match(panel, /Manage recurring provider availability/);
+  assert.match(panel, /provider-configuration-editor provider-availability-editor/);
   assert.match(panel, /id="provider-availability-provider"/);
   assert.match(panel, /name="effectiveDate"/);
   assert.match(panel, /name="timezone" value="America\/New_York"/);
@@ -86,7 +87,18 @@ test("client validation covers date, timezone, HH:MM, ordering, duplicates, over
 });
 
 test("Availability layout is responsive and avoids fixed-width weekly rows", () => {
+  assert.match(cssSource, /\.provider-configuration-editor[^}]*max-width: 720px/);
+  assert.match(cssSource, /\.provider-configuration-toolbar,[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto/);
   assert.match(cssSource, /\.provider-availability-block\s*\{[\s\S]*grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\) auto/);
   assert.match(cssSource, /@media \(max-width: 780px\)[\s\S]*\.provider-availability-toolbar,[\s\S]*\.provider-availability-block[\s\S]*grid-template-columns: 1fr/);
   assert.match(cssSource, /\.provider-availability-day\s*\{[\s\S]*min-width: 0/);
+});
+
+test("Availability uses the shared compact status, actions, and empty-state language", () => {
+  assert.match(htmlSource, /id="provider-availability-status"/);
+  assert.match(htmlSource, /id="provider-availability-save">Save changes/);
+  assert.match(htmlSource, /id="provider-availability-deactivate">Deactivate profile/);
+  assert.match(appSource, /No availability profile configured for this provider/);
+  assert.match(appSource, /providerAvailabilityStatus\.dataset\.status/);
+  assert.match(appSource, /providerAvailabilityMessage\.dataset\.tone/);
 });

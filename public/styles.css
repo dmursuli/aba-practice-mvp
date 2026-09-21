@@ -789,14 +789,38 @@ button:focus-visible {
 
 .schedule-subnav {
   display: flex;
-  gap: 8px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--line);
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #f7f9fc;
   overflow-x: auto;
+  scrollbar-width: none;
 }
+
+.schedule-subnav::-webkit-scrollbar { display: none; }
 
 .schedule-subnav .domain-tab {
   flex: 0 0 auto;
+  min-height: 36px;
+  padding: 7px 11px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.schedule-subnav .domain-tab.active,
+.schedule-subnav .domain-tab[aria-selected="true"] {
+  border-color: #bdd5f3;
+  background: #fff;
+  color: var(--teal);
+  box-shadow: 0 1px 3px rgba(16, 56, 91, 0.1);
+}
+
+.schedule-subnav .domain-tab:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.25);
+  outline-offset: 1px;
 }
 
 .schedule-subview {
@@ -880,20 +904,72 @@ button:focus-visible {
   margin: 0;
 }
 
-.provider-availability-toolbar {
-  display: grid;
-  grid-template-columns: minmax(220px, 360px) minmax(0, 1fr);
-  gap: 16px;
-  align-items: end;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--brand-soft);
+.schedule-panel .form-message:not(:empty) {
+  min-height: 0;
+  padding: 8px 10px;
+  border-left: 3px solid #94a3b8;
+  border-radius: 4px;
+  background: #f8fafc;
 }
 
-.provider-availability-toolbar p {
-  margin: 0 0 10px;
-  overflow-wrap: anywhere;
+.schedule-panel .form-message[data-tone="success"] { border-left-color: #2f855a; background: #f0fdf4; color: #276238; }
+.schedule-panel .form-message[data-tone="warning"] { border-left-color: #d97706; background: #fff7ed; color: #7c2d12; }
+.schedule-panel .form-message[data-tone="error"] { border-left-color: #c24141; background: #fff8f8; color: #9f2d2d; }
+.schedule-panel .form-message[data-tone="info"] { border-left-color: #3b82f6; background: #eff6ff; color: #334e68; }
+
+.provider-configuration-editor {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  max-width: 720px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  box-sizing: border-box;
+}
+
+.provider-configuration-toolbar,
+.provider-availability-toolbar,
+.provider-zone-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.provider-configuration-status,
+.provider-zone-status {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  min-height: 28px;
+  max-width: 320px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--brand-soft);
+  color: var(--brand-strong);
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: right;
+}
+
+.provider-configuration-status[data-status="inactive"],
+.provider-zone-status[data-status="inactive"] { background: #f3f4f6; color: #4b5563; }
+.provider-configuration-status[data-status="not-configured"],
+.provider-zone-status[data-status="not-configured"] { background: #fff7ed; color: #9a3412; }
+
+.provider-configuration-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.provider-configuration-actions {
+  margin-top: 2px;
 }
 
 .provider-availability-form,
@@ -947,44 +1023,13 @@ button:focus-visible {
 }
 
 .provider-zone-editor {
-  display: grid;
   gap: 10px;
-  width: 100%;
-  max-width: 720px;
-  min-width: 0;
-  padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: #fff;
-  box-sizing: border-box;
-}
-
-.provider-zone-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  min-width: 0;
 }
 
 .provider-zone-toolbar label,
 .provider-zone-toolbar select,
 .provider-zone-form label,
 .provider-zone-form select { min-width: 0; }
-.provider-zone-status {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: var(--brand-soft);
-  color: var(--brand-strong);
-  font-size: 0.86rem;
-  font-weight: 700;
-  white-space: nowrap;
-}
-.provider-zone-status[data-status="inactive"] { background: #f3f4f6; color: #4b5563; }
-.provider-zone-status[data-status="not-configured"] { background: #fff7ed; color: #9a3412; }
 .provider-zone-guidance,
 .provider-zone-note,
 .provider-zone-legacy { margin: 0; }
@@ -1082,13 +1127,35 @@ button:focus-visible {
   display: grid;
   gap: 14px;
   width: 100%;
-  max-width: 760px;
+  max-width: 820px;
   min-width: 0;
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #fff;
   box-sizing: border-box;
+}
+
+.staffing-form-heading,
+.staffing-results-heading > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.staffing-form-heading {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.staffing-form-heading span,
+.staffing-results-heading span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .staffing-form-grid {
@@ -1101,8 +1168,8 @@ button:focus-visible {
 .staffing-form-grid label,
 .staffing-form-grid input,
 .staffing-form-grid select { min-width: 0; }
-.staffing-client-field { grid-column: span 2; }
-.staffing-location-field { grid-column: 1 / -1; }
+.staffing-client-field,
+.staffing-location-field { grid-column: auto; }
 .staffing-form-actions { margin-top: 0; }
 .staffing-form-actions .primary-button { flex: 0 1 auto; }
 .staffing-results {
@@ -1110,6 +1177,11 @@ button:focus-visible {
   gap: 14px;
   min-width: 0;
 }
+.staffing-results-heading {
+  max-width: 960px;
+  padding: 2px 0;
+}
+.staffing-results-heading strong { color: var(--navy); }
 .staffing-empty-state {
   display: grid;
   gap: 4px;
@@ -1166,7 +1238,7 @@ button:focus-visible {
   display: grid;
   gap: 10px;
   min-width: 0;
-  padding: 12px;
+  padding: 14px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: #fff;
@@ -1176,6 +1248,12 @@ button:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+.staffing-candidate-heading > strong {
+  min-width: 0;
+  color: var(--navy);
+  font-size: 1rem;
+  overflow-wrap: anywhere;
 }
 .staffing-role-badge,
 .staffing-factor {
@@ -1211,8 +1289,17 @@ button:focus-visible {
 }
 .staffing-case-status strong { color: var(--text); }
 .staffing-case-status.case-assigned strong { color: #276238; }
-.staffing-candidate-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.staffing-case-status.case-bcba strong { color: var(--brand-strong); }
+.staffing-candidate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
 .staffing-case-action { width: fit-content; }
+.staffing-candidate-actions .primary-button,
+.staffing-candidate-actions .secondary-button { min-height: 40px; }
 .staffing-schedule-note {
   margin: 0;
   color: var(--muted);
@@ -1330,6 +1417,19 @@ button:focus-visible {
   font-size: 0.86rem;
 }
 
+.schedule-record-time {
+  color: currentColor;
+  font-size: 0.98rem;
+  line-height: 1.2;
+}
+
+.schedule-record-client {
+  color: currentColor;
+  line-height: 1.25;
+}
+
+.schedule-record-meta b { color: currentColor; }
+
 .schedule-record .schedule-record-label {
   color: var(--teal);
   font-size: 0.72rem;
@@ -1400,6 +1500,15 @@ button:focus-visible {
   outline-offset: -4px;
 }
 
+.schedule-completed-record {
+  border-color: #a7d7c5;
+  border-left-color: #2f855a;
+  background: #f0fdf4;
+  color: #24543a;
+}
+
+.schedule-completed-record .schedule-record-label { color: #2f855a; }
+
 .schedule-confirmed-label,
 .schedule-cancelled-label {
   justify-self: start;
@@ -1413,6 +1522,15 @@ button:focus-visible {
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
+
+.schedule-confirmed-label {
+  border-color: #5eb8aa;
+  color: #0f665d !important;
+  background: rgba(240, 253, 250, 0.9);
+}
+
+.schedule-appointment-cancelled .schedule-record-time,
+.schedule-appointment-cancelled .schedule-record-client { color: #475569; }
 
 .schedule-confirmed-label {
   border-color: #0f766e;
@@ -2964,11 +3082,29 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+  .schedule-subnav {
+    width: 100%;
+    box-sizing: border-box;
+    scroll-snap-type: x proximity;
+  }
+
+  .schedule-subnav .domain-tab { scroll-snap-align: start; }
+
+  .provider-configuration-toolbar,
   .provider-availability-toolbar,
   .provider-availability-block,
   .provider-zone-toolbar {
     grid-template-columns: 1fr;
   }
+
+  .provider-configuration-status,
+  .provider-zone-status {
+    justify-self: start;
+    max-width: 100%;
+    text-align: left;
+  }
+
+  .provider-configuration-fields { grid-template-columns: 1fr; }
 
   .provider-zone-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
@@ -2986,6 +3122,7 @@ button:disabled {
   .staffing-location-field { grid-column: auto; }
   .staffing-match-form { padding: 14px; }
 
+  .provider-configuration-editor,
   .provider-zone-editor { padding: 14px; }
   .provider-zone-status {
     justify-self: start;
@@ -3234,6 +3371,8 @@ button:disabled {
 
 @media (max-width: 520px) {
   .provider-zone-options { grid-template-columns: minmax(0, 1fr); }
+  .staffing-candidate-actions,
+  .staffing-candidate-actions > * { width: 100%; }
 }
 
 .workflow-board-panel {

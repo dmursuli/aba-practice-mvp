@@ -1361,7 +1361,7 @@
         <div class="section-heading">
           <p class="eyebrow">Operations</p>
           <h2 id="schedule-workspace-title">Scheduling workspace</h2>
-          <p class="muted">Coordinate the agency's scheduling operations from one workspace.</p>
+          <p class="muted">Manage appointments, staffing, and provider scheduling settings.</p>
         </div>
 
         <nav class="schedule-subnav" aria-label="Scheduling workspace views" role="tablist">
@@ -1377,7 +1377,7 @@
             <div class="section-heading">
               <p class="eyebrow">Calendar</p>
               <h3 id="schedule-title">Weekly calendar</h3>
-              <p class="muted">Read-only completed clinical records and scheduled appointments for the visible week.</p>
+              <p class="muted">View and manage scheduled services.</p>
             </div>
             <div class="schedule-week-controls" aria-label="Week navigation">
               <button type="button" class="primary-button hidden" id="schedule-add-appointment">Add Appointment</button>
@@ -1418,12 +1418,13 @@
           <div class="schedule-heading">
             <div class="section-heading">
               <p class="eyebrow">Staffing</p>
-              <h3>Find providers for a service</h3>
-              <p class="muted">Compare eligible providers using service area, availability, and existing scheduling conflicts.</p>
+              <h3>Find, staff, and schedule providers</h3>
+              <p class="muted">Choose a client need, compare eligible providers, then staff or schedule.</p>
             </div>
           </div>
           <div class="staffing-workspace">
             <form id="staffing-match-form" class="staffing-match-form">
+              <div class="staffing-form-heading"><strong>Find providers</strong><span>Client need</span></div>
               <div class="staffing-form-grid">
                 <label class="staffing-client-field">Client<select name="clientId" id="staffing-client" required><option value="">Select a client</option></select></label>
                 <label>Service<select name="cptCode" id="staffing-service" required><option value="">Select a service</option><option value="97151">97151</option><option value="97153">97153</option><option value="97155">97155</option><option value="97156">97156</option></select></label>
@@ -1437,7 +1438,7 @@
             </form>
             <p class="form-message" id="staffing-message" role="status" aria-live="polite"></p>
             <div id="staffing-results" class="staffing-results" aria-live="polite">
-              <div class="staffing-empty-state"><strong>Choose a client and service need to compare providers.</strong><span>Results do not assign anyone automatically or create appointments.</span></div>
+              <div class="staffing-empty-state"><strong>Choose a client, service, location, and time to find providers.</strong><span>Staffing and scheduling happen only when you select an action.</span></div>
             </div>
           </div>
         </section>
@@ -1447,44 +1448,40 @@
             <div class="section-heading">
               <p class="eyebrow">Provider schedule</p>
               <h3>Provider Availability</h3>
-              <p class="muted">Set the provider’s recurring weekly availability for scheduling.</p>
+              <p class="muted">Manage recurring provider availability.</p>
             </div>
           </div>
-          <div class="provider-availability-toolbar">
-            <label>
-              Provider
-              <select id="provider-availability-provider">
-                <option value="">Select a provider</option>
-              </select>
-            </label>
-            <p class="muted" id="provider-availability-status">Select an active BCBA or RBT provider.</p>
+          <div class="provider-configuration-editor provider-availability-editor">
+            <div class="provider-configuration-toolbar provider-availability-toolbar">
+              <label>
+                Provider
+                <select id="provider-availability-provider">
+                  <option value="">Select a provider</option>
+                </select>
+              </label>
+              <span class="provider-configuration-status" id="provider-availability-status">Select an active BCBA or RBT provider.</span>
+            </div>
+            <form id="provider-availability-form" class="provider-availability-form">
+              <div class="form-grid provider-configuration-fields">
+                <label>Effective date<input type="date" name="effectiveDate" required></label>
+                <label>Timezone<input name="timezone" value="America/New_York" autocomplete="off" required></label>
+              </div>
+              <div id="provider-availability-week" class="provider-availability-week" aria-label="Recurring weekly provider availability"></div>
+              <p class="form-message" id="provider-availability-message" role="status" aria-live="polite"></p>
+              <div class="button-row provider-configuration-actions">
+                <button type="submit" class="primary-button" id="provider-availability-save">Save changes</button>
+                <button type="button" class="secondary-button hidden" id="provider-availability-deactivate">Deactivate profile</button>
+              </div>
+            </form>
           </div>
-          <form id="provider-availability-form" class="provider-availability-form">
-            <div class="form-grid">
-              <label>
-                Effective date
-                <input type="date" name="effectiveDate" required>
-              </label>
-              <label>
-                Timezone
-                <input name="timezone" value="America/New_York" autocomplete="off" required>
-              </label>
-            </div>
-            <div id="provider-availability-week" class="provider-availability-week" aria-label="Recurring weekly provider availability"></div>
-            <p class="form-message" id="provider-availability-message" role="status" aria-live="polite"></p>
-            <div class="button-row">
-              <button type="submit" class="primary-button" id="provider-availability-save">Save availability</button>
-              <button type="button" class="secondary-button hidden" id="provider-availability-deactivate">Deactivate availability</button>
-            </div>
-          </form>
         </section>
 
         <section class="schedule-subview hidden" id="schedule-subview-zones" data-schedule-subview-panel="zones" role="tabpanel" aria-labelledby="schedule-tab-zones">
-          <div class="schedule-heading"><div class="section-heading"><p class="eyebrow">Provider service areas</p><h3>Provider Zones</h3><p class="muted">Set each provider’s preferred and additional acceptable service zones.</p></div></div>
-          <div class="provider-zone-editor">
-            <div class="provider-zone-toolbar">
+          <div class="schedule-heading"><div class="section-heading"><p class="eyebrow">Provider service areas</p><h3>Provider Zones</h3><p class="muted">Manage provider service-area preferences.</p></div></div>
+          <div class="provider-configuration-editor provider-zone-editor">
+            <div class="provider-configuration-toolbar provider-zone-toolbar">
               <label>Provider<select id="provider-zone-provider"><option value="">Select a provider</option></select></label>
-              <span class="provider-zone-status" id="provider-zone-status">Not configured</span>
+              <span class="provider-configuration-status provider-zone-status" id="provider-zone-status">No service-area preferences configured for this provider.</span>
             </div>
             <p class="muted provider-zone-guidance">Primary zone is the provider’s preferred service area. Additional zones are other areas the provider is willing to cover.</p>
             <form id="provider-zone-form" class="provider-zone-form">
@@ -1496,7 +1493,7 @@
               </fieldset>
               <p class="muted provider-zone-legacy hidden" id="provider-zone-legacy"></p>
               <p class="form-message" id="provider-zone-message" role="status" aria-live="polite"></p>
-              <div class="button-row provider-zone-actions"><button type="submit" class="primary-button" id="provider-zone-save">Save changes</button><button type="button" class="secondary-button hidden" id="provider-zone-deactivate">Deactivate profile</button></div>
+              <div class="button-row provider-configuration-actions provider-zone-actions"><button type="submit" class="primary-button" id="provider-zone-save">Save changes</button><button type="button" class="secondary-button hidden" id="provider-zone-deactivate">Deactivate profile</button></div>
             </form>
             <p class="provider-zone-note">Zone preferences are used for staffing and service-area planning. They do not currently block appointment scheduling.</p>
           </div>
@@ -1506,7 +1503,7 @@
           <div class="schedule-empty-state-content">
             <p class="eyebrow">Planned workspace</p>
             <h3>Capacity</h3>
-            <p class="muted">Operational supply-and-demand reporting will be introduced in a future phase. No capacity calculations are active yet.</p>
+            <p class="muted">Coming later. No capacity calculations are active.</p>
           </div>
         </section>
       </section>

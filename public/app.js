@@ -4334,17 +4334,27 @@ function renderStaffingFormOptions() {
   staffingFindProvidersButton.disabled = state.staffingMatching || !staffingClientSelect.value || !locations.length;
   staffingFindProvidersButton.textContent = state.staffingMatching ? "Finding providers…" : "Find providers";
   if (!state.staffingMatchError) {
-    staffingMessage.textContent = staffingClientSelect.value && !locations.length
-      ? "This client has no active structured service location. Add one in Client Profile before matching."
-      : "";
+    setSchedulingFeedback(
+      staffingMessage,
+      staffingClientSelect.value && !locations.length
+        ? "This client has no active structured service location. Add one in Client Profile before matching."
+        : "",
+      "warning"
+    );
   }
 }
 
+function setSchedulingFeedback(element, message, tone = "") {
+  if (!element) return;
+  element.textContent = String(message || "");
+  element.dataset.tone = message ? tone : "";
+}
+
 function staffingEmptyGroupMessage(groupKey) {
-  if (groupKey === "best_match") return "No providers meet all best-match conditions.";
-  if (groupKey === "good_match") return "No providers have an acceptable-zone match with confirmed availability.";
-  if (groupKey === "other_options") return "No additional eligible options.";
-  return "No eligible providers are outside availability or in conflict.";
+  if (groupKey === "best_match") return "No best matches for this request.";
+  if (groupKey === "good_match") return "No good matches for this request.";
+  if (groupKey === "other_options") return "No other eligible providers.";
+  return "No unavailable or conflicted providers.";
 }
 
 function staffingCandidates() {
@@ -4412,6 +4422,9 @@ function staffingCandidateCard(candidate) {
   const showCaseStatus = state.staffingMatchResult?.request?.cptCode === "97153"
     && candidate.provider?.role === "rbt"
     && candidate.caseAssignment;
+  const caseAccess = candidate.provider?.role === "bcba"
+    ? { status: "bcba", label: "BCBA clinical access" }
+    : showCaseStatus ? candidate.caseAssignment : null;
   const readiness = staffingSchedulingReadiness(candidate);
   const recurringReadiness = staffingRecurringReadiness(candidate);
   const canStaff = canStaffCandidate(candidate);
@@ -4426,19 +4439,19 @@ function staffingCandidateCard(candidate) {
         <span class="staffing-factor availability-${escapeHtml(candidate.availability.status)}">${escapeHtml(candidate.availability.label)}</span>
         <span class="staffing-factor schedule-${escapeHtml(candidate.schedule.status)}">${escapeHtml(candidate.schedule.label)}</span>
       </div>
-      ${showCaseStatus ? `
-        <div class="staffing-case-status case-${escapeHtml(candidate.caseAssignment.status)}">
-          <span>Case status</span>
-          <strong>${escapeHtml(candidate.caseAssignment.label)}</strong>
+      ${caseAccess ? `
+        <div class="staffing-case-status case-${escapeHtml(caseAccess.status)}">
+          <span>Case access</span>
+          <strong>${escapeHtml(caseAccess.label)}</strong>
         </div>
       ` : ""}
       ${readiness.missingAvailability ? '<p class="staffing-schedule-note is-warning">Availability is not configured; scheduling is permitted under the current transitional rule.</p>' : ""}
       ${readiness.reasons.map((reason) => `<p class="staffing-schedule-note is-blocked">${escapeHtml(reason)}</p>`).join("")}
       ${(canStaff || readiness.ready || recurringReadiness.ready) ? `
         <div class="staffing-candidate-actions">
-          ${canStaff ? `<button type="button" class="secondary-button staffing-case-action" data-staff-case-provider-id="${escapeHtml(candidate.provider.userId)}">Staff this case</button>` : ""}
-          ${readiness.ready ? `<button type="button" class="primary-button staffing-case-action" data-schedule-provider-id="${escapeHtml(candidate.provider.userId)}">Schedule this provider</button>` : ""}
-          ${recurringReadiness.ready ? `<button type="button" class="secondary-button staffing-case-action" data-recurring-provider-id="${escapeHtml(candidate.provider.userId)}">Create recurring schedule</button>` : ""}
+          ${canStaff ? `<button type="button" class="primary-button staffing-case-action" data-staff-case-provider-id="${escapeHtml(candidate.provider.userId)}">Staff this case</button>` : ""}
+          ${readiness.ready ? `<button type="button" class="primary-button staffing-case-action" data-schedule-provider-id="${escapeHtml(candidate.provider.userId)}">Schedule</button>` : ""}
+          ${recurringReadiness.ready ? `<button type="button" class="secondary-button staffing-case-action" data-recurring-provider-id="${escapeHtml(candidate.provider.userId)}">Recurring</button>` : ""}
         </div>
       ` : ""}
     </article>
@@ -4645,7 +4658,7 @@ async function handleConfirmStaffingSchedule() {
     } catch {
       refreshMessage = " Refresh provider matches before trying again.";
     }
-    staffingMessage.textContent = `Appointment was not created. ${error.message || "Unable to schedule this provider."}${refreshMessage}`;
+    setSchedulingFeedback(staffingMessage, `Appointment was not created. ${error.message || "Unable to schedule this provider."}${refreshMessage}`, "error");
     return;
   }
   state.staffingScheduleSubmitting = false;
@@ -4657,7 +4670,7 @@ async function handleConfirmStaffingSchedule() {
   } catch {
     // Appointment creation already succeeded; a match refresh failure must not reverse the success state.
   }
-  staffingMessage.textContent = `Appointment scheduled with ${candidate.provider.name}.`;
+  setSchedulingFeedback(staffingMessage, `Appointment scheduled with ${candidate.provider.name}.`, "success");
 }
 
 function staffingRecurringDefaultDraft(candidate, result = state.staffingMatchResult) {
@@ -4990,7 +5003,7 @@ async function handleStaffingRecurringSubmit(event) {
     } catch {
       // Series creation already succeeded; a match refresh failure must not reverse the success state.
     }
-    staffingMessage.textContent = `Recurring schedule created with ${providerName}. ${recurringSeriesSuccessMessage(result)}`;
+    setSchedulingFeedback(staffingMessage, `Recurring schedule created with ${providerName}. ${recurringSeriesSuccessMessage(result)}`, "success");
   } catch (error) {
     state.staffingRecurringSubmitting = false;
     state.staffingRecurringError = `Recurring schedule was not created. ${error.message || "Unable to create the recurring schedule."}`;
@@ -5016,7 +5029,7 @@ async function handleConfirmStaffingAssignment() {
     candidate.caseAssignment = { status: "assigned", label: "Assigned to this client" };
     state.staffingAssignmentSubmitting = false;
     closeStaffingConfirmation();
-    staffingMessage.textContent = `${candidate.provider.name} was added to ${client.name}’s treatment team. No appointment was created.`;
+    setSchedulingFeedback(staffingMessage, `${candidate.provider.name} was added to ${client.name}’s treatment team. No appointment was created.`, "success");
     renderStaffingResults();
     if (state.clientAssignmentsLoadedFor === clientId && currentClient()?.id === clientId) {
       await refreshClientAssignments();
@@ -5026,7 +5039,7 @@ async function handleConfirmStaffingAssignment() {
     if (error.status === 409) {
       candidate.caseAssignment = { status: "assigned", label: "Already assigned to this client" };
       closeStaffingConfirmation();
-      staffingMessage.textContent = `${candidate.provider.name} is already assigned to ${client.name}. No appointment was created.`;
+      setSchedulingFeedback(staffingMessage, `${candidate.provider.name} is already assigned to ${client.name}. No appointment was created.`, "info");
       renderStaffingResults();
       return;
     }
@@ -5038,29 +5051,31 @@ async function handleConfirmStaffingAssignment() {
 function renderStaffingResults() {
   if (!staffingResults || !staffingMessage) return;
   if (state.staffingMatching) {
+    setSchedulingFeedback(staffingMessage, "", "");
     staffingResults.innerHTML = '<div class="staffing-empty-state"><strong>Finding eligible providers…</strong><span>Checking service area, availability, and scheduling conflicts.</span></div>';
     return;
   }
   if (state.staffingMatchError) {
-    staffingMessage.textContent = state.staffingMatchError;
+    setSchedulingFeedback(staffingMessage, state.staffingMatchError, "error");
     staffingResults.innerHTML = '<div class="staffing-empty-state is-error"><strong>Provider matching could not be completed.</strong><span>Review the request and try again.</span></div>';
     return;
   }
   const result = state.staffingMatchResult;
   if (!result) {
-    staffingResults.innerHTML = '<div class="staffing-empty-state"><strong>Choose a client and service need to compare providers.</strong><span>Results do not assign anyone automatically or create appointments.</span></div>';
+    staffingResults.innerHTML = '<div class="staffing-empty-state"><strong>Choose a client, service, location, and time to find providers.</strong><span>Staffing and scheduling happen only when you select an action.</span></div>';
     return;
   }
   const groups = result.groups || [];
   const candidateCount = groups.reduce((total, group) => total + (group.candidates || []).length, 0);
   if (!candidateCount) {
+    setSchedulingFeedback(staffingMessage, "", "");
     staffingResults.innerHTML = '<div class="staffing-empty-state"><strong>No active providers are eligible for this service.</strong><span>No assignments or appointments were changed.</span></div>';
     return;
   }
   const zoneNotice = result.context?.serviceLocation?.hasCurrentOperationalZone === false
     ? '<p class="staffing-zone-notice">Service location does not have a current operational zone. Providers remain visible without a zone preference ranking.</p>'
     : "";
-  staffingResults.innerHTML = `${zoneNotice}${groups.map((group) => `
+  staffingResults.innerHTML = `${zoneNotice}<div class="staffing-results-heading"><div><span>Provider results</span><strong>${candidateCount} eligible provider${candidateCount === 1 ? "" : "s"}</strong></div></div>${groups.map((group) => `
     <section class="staffing-result-group" aria-labelledby="staffing-group-${escapeHtml(group.key)}">
       <div class="staffing-result-heading">
         <h4 id="staffing-group-${escapeHtml(group.key)}">${escapeHtml(group.label)}</h4>
@@ -5086,6 +5101,7 @@ function handleStaffingClientChange() {
   closeStaffingRecurring();
   state.staffingMatchResult = null;
   state.staffingMatchError = "";
+  setSchedulingFeedback(staffingMessage, "", "");
   staffingLocationSelect.value = "";
   renderStaffing();
 }
@@ -5097,6 +5113,7 @@ function handleStaffingCriteriaChange() {
   closeStaffingRecurring();
   state.staffingMatchResult = null;
   state.staffingMatchError = "";
+  setSchedulingFeedback(staffingMessage, "", "");
   renderStaffingResults();
 }
 
@@ -5201,23 +5218,31 @@ function renderProviderAvailability() {
   const profile = state.providerAvailabilityProfile;
   if (state.providerAvailabilityLoading) {
     providerAvailabilityStatus.textContent = "Loading provider availability...";
+    providerAvailabilityStatus.dataset.status = "loading";
   } else if (!hasProvider) {
     providerAvailabilityStatus.textContent = state.providerAvailabilityProviders.length
       ? "Select an active BCBA or RBT provider."
       : "No active BCBA or RBT providers are available.";
+    providerAvailabilityStatus.dataset.status = "not-configured";
   } else if (!profile) {
-    providerAvailabilityStatus.textContent = "No availability is configured for this provider.";
+    providerAvailabilityStatus.textContent = "No availability profile configured for this provider.";
+    providerAvailabilityStatus.dataset.status = "not-configured";
   } else if (!profile.active) {
     providerAvailabilityStatus.textContent = `Availability is inactive. Saving will reactivate version ${profile.version + 1}.`;
+    providerAvailabilityStatus.dataset.status = "inactive";
   } else {
     providerAvailabilityStatus.textContent = `Active availability · version ${profile.version}`;
+    providerAvailabilityStatus.dataset.status = "active";
   }
   const controlsDisabled = !hasProvider || state.providerAvailabilityLoading || state.providerAvailabilitySaving;
   Array.from(providerAvailabilityForm.elements).forEach((element) => { element.disabled = controlsDisabled; });
-  providerAvailabilitySaveButton.textContent = state.providerAvailabilitySaving ? "Saving..." : "Save availability";
+  providerAvailabilitySaveButton.textContent = state.providerAvailabilitySaving ? "Saving..." : "Save changes";
   providerAvailabilityDeactivateButton.classList.toggle("hidden", !profile?.active);
   providerAvailabilityDeactivateButton.disabled = controlsDisabled;
   providerAvailabilityMessage.textContent = state.providerAvailabilityMessage;
+  providerAvailabilityMessage.dataset.tone = !state.providerAvailabilityMessage
+    ? ""
+    : /saved|deactivated/i.test(state.providerAvailabilityMessage) ? "success" : "error";
 }
 
 async function ensureProviderAvailabilityLoaded({ force = false } = {}) {
@@ -5444,8 +5469,8 @@ function renderProviderZones() {
   const profile = state.providerZoneProfile;
   const hasProvider = Boolean(state.selectedProviderZoneUserId);
   providerZoneStatus.textContent = state.providerZonesLoading ? "Loading provider zones..." : !hasProvider
-    ? (state.providerZoneProviders.length ? "Not configured" : "No eligible providers")
-    : !profile ? "Not configured"
+    ? (state.providerZoneProviders.length ? "Select an active BCBA or RBT provider." : "No eligible providers")
+    : !profile ? "No service-area preferences configured for this provider."
       : profile.active ? `Active · Version ${profile.version}` : `Inactive · Saving will reactivate version ${profile.version + 1}`;
   providerZoneStatus.dataset.status = state.providerZonesLoading ? "loading" : !profile ? "not-configured" : profile.active ? "active" : "inactive";
   if (providerZoneLegacy) {
@@ -5461,6 +5486,9 @@ function renderProviderZones() {
   providerZoneSaveButton.textContent = state.providerZonesSaving ? "Saving..." : "Save changes";
   providerZoneDeactivateButton.classList.toggle("hidden", !profile?.active);
   providerZoneMessage.textContent = state.providerZoneMessage;
+  providerZoneMessage.dataset.tone = !state.providerZoneMessage
+    ? ""
+    : /saved|deactivated/i.test(state.providerZoneMessage) ? "success" : "error";
 }
 
 async function ensureProviderZonesLoaded({ force = false } = {}) {
@@ -7590,13 +7618,13 @@ function renderSchedule() {
   scheduleWeekRange.textContent = `${formatDate(startDate)} – ${formatDate(endDate)}`;
 
   if (state.scheduleLoading) {
-    scheduleMessage.textContent = "Loading sessions and appointments…";
+    setSchedulingFeedback(scheduleMessage, "Loading sessions and appointments…", "info");
     scheduleWeekGrid.innerHTML = '<div class="schedule-state">Loading the visible calendar week…</div>';
     return;
   }
 
   if (state.scheduleLoadError) {
-    scheduleMessage.textContent = state.scheduleLoadError;
+    setSchedulingFeedback(scheduleMessage, state.scheduleLoadError, "error");
     scheduleWeekGrid.innerHTML = '<div class="schedule-state schedule-state-error">The visible calendar week could not be loaded.</div>';
     return;
   }
@@ -7604,8 +7632,9 @@ function renderSchedule() {
   const sessions = filteredScheduleSessions();
   const appointments = filteredScheduleAppointments();
   closeUnavailableAppointmentDetails(appointments);
-  scheduleMessage.textContent = state.scheduleSuccessMessage
-    || (sessions.length || appointments.length ? "" : "No sessions or appointments for this week");
+  const scheduleFeedback = state.scheduleSuccessMessage
+    || (sessions.length || appointments.length ? "" : "No appointments scheduled for this week.");
+  setSchedulingFeedback(scheduleMessage, scheduleFeedback, state.scheduleSuccessMessage ? "success" : "info");
   state.scheduleSuccessMessage = "";
   scheduleWeekGrid.innerHTML = scheduleWeekDates().map((date) => {
     const dateValue = scheduleDateValue(date);
@@ -7623,23 +7652,24 @@ function renderSchedule() {
           ${dayAppointments.map((appointment) => `
             <button type="button" class="schedule-record schedule-appointment-record ${escapeHtml(scheduleAppointmentColorClass(appointment.serviceCode))}${appointment.status === "cancelled" ? " schedule-appointment-cancelled" : appointment.status === "confirmed" ? " schedule-appointment-confirmed" : ""}" data-schedule-appointment-id="${escapeHtml(appointment.id)}" aria-label="Open ${escapeHtml(scheduleStatusLabel(appointment.status).toLowerCase())} appointment details for ${escapeHtml(scheduleClientName(appointment.clientId))}, service ${escapeHtml(appointment.serviceCode)}">
               <span class="schedule-record-label">${appointment.status === "cancelled" ? "Cancelled appointment" : appointment.status === "confirmed" ? "Confirmed appointment" : "Scheduled appointment"}</span>
-              <strong>${escapeHtml(scheduleClientName(appointment.clientId))}</strong>
-              <span>${escapeHtml(appointment.serviceCode)} · ${escapeHtml(scheduleAppointmentTimeLabel(appointment))}</span>
-              <span>${escapeHtml(scheduleProviderName(appointment.providerUserId))}</span>
-              <span>${escapeHtml(scheduleSettingLabel(appointment.settingType))} · ${escapeHtml(scheduleStatusLabel(appointment.status))}</span>
+              <strong class="schedule-record-time">${escapeHtml(scheduleAppointmentTimeLabel(appointment))}</strong>
+              <strong class="schedule-record-client">${escapeHtml(scheduleClientName(appointment.clientId))}</strong>
+              <span class="schedule-record-meta"><b>${escapeHtml(appointment.serviceCode)}</b> · ${escapeHtml(scheduleProviderName(appointment.providerUserId))}</span>
+              <span>${escapeHtml(scheduleSettingLabel(appointment.settingType))}</span>
               ${appointment.status === "cancelled" ? '<span class="schedule-cancelled-label">Cancelled</span>' : ""}
               ${appointment.status === "confirmed" ? '<span class="schedule-confirmed-label">Confirmed</span>' : ""}
             </button>
           `).join("")}
           ${daySessions.map((session) => `
-            <article class="schedule-record">
+            <article class="schedule-record schedule-completed-record">
               <span class="schedule-record-label">Completed session</span>
-              <strong>${escapeHtml(scheduleClientName(session.clientId))}</strong>
-              <span>${escapeHtml(session.serviceCode)} · ${escapeHtml(scheduleTimeLabel(session))}</span>
+              <strong class="schedule-record-time">${escapeHtml(scheduleTimeLabel(session))}</strong>
+              <strong class="schedule-record-client">${escapeHtml(scheduleClientName(session.clientId))}</strong>
+              <span class="schedule-record-meta"><b>${escapeHtml(session.serviceCode)}</b></span>
               ${session.setting ? `<span>${escapeHtml(session.setting)}</span>` : ""}
             </article>
           `).join("")}
-          ${dayAppointments.length || daySessions.length ? "" : '<span class="schedule-day-empty">No sessions or appointments</span>'}
+          ${dayAppointments.length || daySessions.length ? "" : '<span class="schedule-day-empty">No scheduled services</span>'}
         </div>
       </section>
     `;

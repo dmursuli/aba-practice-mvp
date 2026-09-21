@@ -27,8 +27,8 @@ test("Staffing tab provides matching criteria and an explicit staffing confirmat
   for (const id of ["staffing-match-form", "staffing-client", "staffing-service", "staffing-location", "staffing-date", "staffing-start-time", "staffing-end-time", "staffing-find-providers", "staffing-results"]) {
     assert.match(panel, new RegExp(`id="${id}"`));
   }
-  assert.match(panel, /Find providers for a service/);
-  assert.match(panel, /do not assign anyone automatically or create appointments/);
+  assert.match(panel, /Find, staff, and schedule providers/);
+  assert.match(panel, /Choose a client, service, location, and time to find providers/);
   assert.doesNotMatch(panel, /<button[^>]*>\s*(?:Create appointment|Create recurring|Schedule)/i);
   for (const id of ["staffing-confirmation-modal", "staffing-confirmation-title", "staffing-confirmation-content", "staffing-confirmation-submit"]) {
     assert.match(html, new RegExp(`id="${id}"`));
@@ -79,8 +79,9 @@ test("candidate cards keep eligibility, assignment, and requested-time status se
   assert.match(card, /candidate\.zone\.label/);
   assert.match(card, /candidate\.availability\.label/);
   assert.match(card, /candidate\.schedule\.label/);
-  assert.match(card, /candidate\.caseAssignment\.label/);
-  assert.match(card, /Case status/);
+  assert.match(card, /caseAccess\.label/);
+  assert.match(card, /Case access/);
+  assert.match(card, /BCBA clinical access/);
   assert.match(card, /Staff this case/);
   assert.doesNotMatch(card, /score|percent|clientId|clientName|Create appointment/i);
 });
@@ -130,7 +131,7 @@ test("Schedule this provider requires confirmation and reuses single appointment
   const payload = functionSource("staffingAppointmentPayload");
   const confirm = functionSource("handleConfirmStaffingSchedule", { async: true });
   assert.match(card, /data-schedule-provider-id/);
-  assert.match(card, /Schedule this provider/);
+  assert.match(card, />Schedule</);
   assert.match(open, /staffingSchedulingReadiness\(candidate\)\.ready/);
   assert.match(open, /staffingScheduleSubmit\?\.focus/);
   assert.doesNotMatch(open, /createAppointment/);
@@ -155,11 +156,11 @@ test("Schedule this provider requires confirmation and reuses single appointment
   assert.match(assignmentCheck, /Staff this case before scheduling/);
 });
 
-test("Staffing card exposes separate Staff and Schedule actions without a combined action", () => {
+test("Staffing card exposes separately prioritized Staff, Schedule, and Recurring actions without a combined action", () => {
   const card = functionSource("staffingCandidateCard");
-  assert.match(card, /Staff this case/);
-  assert.match(card, /Schedule this provider/);
-  assert.match(card, /Create recurring schedule/);
+  assert.match(card, /primary-button staffing-case-action[^>]*data-staff-case-provider-id[^>]*>Staff this case/);
+  assert.match(card, /primary-button staffing-case-action[^>]*data-schedule-provider-id[^>]*>Schedule/);
+  assert.match(card, /secondary-button staffing-case-action[^>]*data-recurring-provider-id[^>]*>Recurring/);
   assert.doesNotMatch(card, /Staff and Schedule|Staff & Schedule/i);
 });
 
@@ -315,7 +316,7 @@ test("recurring Staffing confirmation keeps access, zone, availability, and atom
 });
 
 test("Staffing uses compact cards and collapses to one column without horizontal overflow", () => {
-  assert.match(css, /\.staffing-match-form[^}]*max-width: 760px/);
+  assert.match(css, /\.staffing-match-form[^}]*max-width: 820px/);
   assert.match(css, /\.staffing-candidate-list[^}]*repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /@media \(max-width: 780px\)[\s\S]*\.staffing-candidate-list[^}]*minmax\(0, 1fr\)/);
   assert.match(css, /\.staffing-candidate-card[^}]*min-width: 0/);
