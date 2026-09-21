@@ -5,10 +5,15 @@ const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8"
 const api = fs.readFileSync(new URL("../public/api.js", import.meta.url), "utf8");
 const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const css = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+const server = fs.readFileSync(new URL("../server.js", import.meta.url), "utf8");
 
 test("Zones subview is functional and contains the administrative editor", () => {
   const panel = html.slice(html.indexOf('id="schedule-subview-zones"'), html.indexOf('id="schedule-subview-capacity"'));
   assert.match(panel, /Provider Zones/); assert.match(panel, /provider-zone-provider/); assert.match(panel, /provider-zone-primary/); assert.match(panel, /provider-zone-acceptable/); assert.match(panel, /provider-zone-save/); assert.match(panel, /provider-zone-deactivate/); assert.doesNotMatch(panel, /No zone configuration/);
+  assert.match(panel, /Primary zone is the provider’s preferred service area/);
+  assert.match(panel, /do not currently block appointment scheduling/);
+  assert.match(panel, /Primary service area/);
+  assert.match(panel, /Additional service areas/);
 });
 
 test("Zones UI loads eligible providers and canonical zones and wires CRUD", () => {
@@ -27,7 +32,27 @@ test("primary zone is removed and disabled from additional zones with visible er
 });
 
 test("Zones layout is responsive without horizontal overflow", () => {
-  assert.match(css, /\.provider-zone-options[\s\S]*minmax\(0, 1fr\)/);
+  assert.match(css, /\.provider-zone-editor[\s\S]*max-width: 640px/);
+  assert.match(css, /\.provider-zone-options[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /@media \(max-width: 780px\)[\s\S]*\.provider-zone-options[\s\S]*grid-template-columns: 1fr/);
   assert.match(css, /\.provider-zone-fieldset[^}]*min-width: 0/);
+  assert.doesNotMatch(css, /\.provider-zone-options[^}]*repeat\(3/);
+});
+
+test("Client Profile receives the same canonical zones without a municipality matrix", () => {
+  const selector = html.slice(html.indexOf('id="service-location-zone"'), html.indexOf('id="service-location-primary"'));
+  assert.doesNotMatch(selector, /optgroup|Tamiami|Florida City|Miami Beach/);
+  assert.match(app, /state\.serviceZones/);
+  assert.match(app, /renderServiceLocationZoneOptions/);
+  assert.match(server, /serviceZones: SERVICE_ZONE_VALUES/);
+});
+
+test("legacy provider values are displayed explicitly and require an operational replacement before save", () => {
+  assert.match(app, /legacyPrimary/);
+  assert.match(app, /legacyAcceptable/);
+  assert.match(app, /Legacy saved area/);
+  assert.match(app, /providerZoneSaveButton\.disabled = disabled \|\| Boolean\(legacyPrimary\)/);
+  assert.match(app, /Active · Version/);
+  assert.match(app, /Inactive · Saving will reactivate version/);
+  assert.match(app, /Not configured/);
 });

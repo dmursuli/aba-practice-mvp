@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SERVICE_ZONE_VALUES } from "../lib/service-zones.mjs";
 
 process.env.DB_PATH = join(await mkdtemp(join(tmpdir(), "aba-service-locations-test-")), "db.json");
 process.env.MFA_ENABLED = "false";
@@ -140,6 +141,50 @@ test("legacy clients load without a service-location rewrite and keep defaultSet
   const persisted = await persistedDb();
   assert.equal(persisted.clients[0].defaultSetting, "Home and school");
   assert.equal(persisted.clients[0].profile.serviceLocations, undefined);
+  assert.deepEqual(result.json.serviceZones, SERVICE_ZONE_VALUES);
+});
+
+test("legacy location and appointment snapshot zones remain readable and unchanged until an operational zone is selected", async () => {
+  const legacyState = structuredClone(baseDb);
+  legacyState.clients[0].profile.serviceLocations = [{
+    id: "legacy-location",
+    name: "Legacy Home",
+    settingType: "home",
+    zone: "Tamiami",
+    address: { line1: "", line2: "", city: "", state: "FL", postalCode: "" },
+    operationalNote: "",
+    isPrimary: true,
+    isActive: true,
+    createdAt: "2026-08-01T12:00:00.000Z",
+    updatedAt: "2026-08-01T12:00:00.000Z"
+  }];
+  legacyState.appointments[0].locationSnapshot.zone = "Tamiami";
+  await resetDb(legacyState);
+  const cookie = await login();
+
+  const loaded = await request("/api/data", { cookie });
+  assert.equal(loaded.json.clients[0].profile.serviceLocations[0].zone, "Tamiami");
+  const rejected = await request("/api/clients/client-1/service-locations/legacy-location", {
+    method: "PUT",
+    cookie,
+    body: locationPayload({ name: "Legacy Home renamed", zone: "Tamiami" })
+  });
+  assert.equal(rejected.response.status, 400);
+  assert.match(rejected.json.errors.join(" "), /approved geographic zone/i);
+
+  const persisted = await persistedDb();
+  assert.equal(persisted.clients[0].profile.serviceLocations[0].zone, "Tamiami");
+  assert.equal(persisted.clients[0].profile.serviceLocations[0].name, "Legacy Home");
+  assert.equal(persisted.appointments[0].locationSnapshot.zone, "Tamiami");
+
+  const backup = await request("/api/backup", { cookie });
+  assert.equal(backup.json.data.clients[0].profile.serviceLocations[0].zone, "Tamiami");
+  assert.equal(backup.json.data.appointments[0].locationSnapshot.zone, "Tamiami");
+  const restore = await request("/api/backup/restore", { method: "POST", cookie, body: backup.json });
+  assert.equal(restore.response.status, 200);
+  const restored = await persistedDb();
+  assert.equal(restored.clients[0].profile.serviceLocations[0].zone, "Tamiami");
+  assert.equal(restored.appointments[0].locationSnapshot.zone, "Tamiami");
 });
 
 test("Home and School locations accept optional addresses, require approved zones, and receive stable IDs", async () => {

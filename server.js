@@ -5536,6 +5536,7 @@ function redactDb(db, user) {
   const { users, auditLog, appointments, recurringAppointmentSeries, providerAvailabilityProfiles, providerZoneProfiles, clientUserAssignments, ...publicDb } = db;
   return {
     ...publicDb,
+    serviceZones: SERVICE_ZONE_VALUES,
     clients: visibleClients(db, user),
     sessions: visibleSessions(db, user),
     historicalImportBatches: visibleHistoricalImportBatches(db, user)
@@ -5546,6 +5547,7 @@ function bootstrapDb(db, user) {
   const { users, auditLog, sessions, appointments, recurringAppointmentSeries, providerAvailabilityProfiles, providerZoneProfiles, clientUserAssignments, ...publicDb } = db;
   return {
     ...publicDb,
+    serviceZones: SERVICE_ZONE_VALUES,
     clients: visibleClients(db, user),
     sessions: [],
     clientSessionCounts: visibleSessionCounts(db, user),

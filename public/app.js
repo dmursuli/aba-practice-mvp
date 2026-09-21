@@ -10,6 +10,7 @@ import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehavio
 
 const state = {
   clients: [],
+  serviceZones: [],
   programs: [],
   behaviors: [],
   sessions: [],
@@ -426,6 +427,7 @@ const providerZoneStatus = document.querySelector("#provider-zone-status");
 const providerZoneForm = document.querySelector("#provider-zone-form");
 const providerZonePrimary = document.querySelector("#provider-zone-primary");
 const providerZoneAcceptable = document.querySelector("#provider-zone-acceptable");
+const providerZoneLegacy = document.querySelector("#provider-zone-legacy");
 const providerZoneMessage = document.querySelector("#provider-zone-message");
 const providerZoneSaveButton = document.querySelector("#provider-zone-save");
 const providerZoneDeactivateButton = document.querySelector("#provider-zone-deactivate");
@@ -1769,6 +1771,7 @@ function resetSensitiveState() {
   clearInactivityTimer();
   state.currentUser = null;
   state.clients = [];
+  state.serviceZones = [];
   state.programs = [];
   state.behaviors = [];
   state.sessions = [];
@@ -2643,10 +2646,24 @@ function serviceLocationEditorField(id) {
   return document.querySelector(`#${id}`);
 }
 
+function renderServiceLocationZoneOptions(currentZone = "") {
+  const select = serviceLocationEditorField("service-location-zone");
+  if (!select) return;
+  const zones = Array.isArray(state.serviceZones) ? state.serviceZones : [];
+  const legacyZone = currentZone && !zones.includes(currentZone) ? currentZone : "";
+  select.innerHTML = [
+    '<option value="">Select a zone</option>',
+    ...zones.map((zone) => `<option value="${escapeHtml(zone)}">${escapeHtml(zone)}</option>`),
+    ...(legacyZone ? [`<option value="${escapeHtml(legacyZone)}" disabled>${escapeHtml(legacyZone)} (legacy — select an operational zone)</option>`] : [])
+  ].join("");
+  select.value = currentZone;
+}
+
 function openServiceLocationEditor(locationId = "") {
   const location = storedClientServiceLocations().find((item) => item.id === locationId) || null;
   state.editingServiceLocationId = location?.id || "";
   if (serviceLocationEditorTitle) serviceLocationEditorTitle.textContent = location ? "Edit Service Location" : "Add Service Location";
+  renderServiceLocationZoneOptions(location?.zone || "");
   const values = {
     "service-location-name": location?.name || "",
     "service-location-setting-type": location?.settingType || "home",
@@ -2702,6 +2719,7 @@ async function handleSaveServiceLocation() {
   if (!String(payload.name).trim()) errors.push("Location name is required.");
   if (!String(payload.settingType).trim()) errors.push("Setting type is required.");
   if (!String(payload.zone).trim()) errors.push("Geographic zone is required.");
+  else if (!state.serviceZones.includes(String(payload.zone).trim())) errors.push("Choose one of the six operational service areas.");
   if (errors.length) {
     serviceLocationMessage.textContent = errors.join(" ");
     return;
@@ -4505,7 +4523,14 @@ function renderProviderZones() {
   const draft = state.providerZoneDraft || providerZoneDraftFromProfile(null);
   providerZoneProvider.innerHTML = ['<option value="">Select a provider</option>', ...state.providerZoneProviders.map((provider) => `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)} (${escapeHtml(provider.role.toUpperCase())})</option>`)].join("");
   providerZoneProvider.value = state.selectedProviderZoneUserId;
-  providerZonePrimary.innerHTML = ['<option value="">Select a primary zone</option>', ...state.providerZoneValues.map((zone) => `<option value="${escapeHtml(zone)}">${escapeHtml(zone)}</option>`)].join("");
+  const legacyPrimary = draft.primaryZone && !state.providerZoneValues.includes(draft.primaryZone) ? draft.primaryZone : "";
+  const legacyAcceptable = draft.acceptableZones.filter((zone) => !state.providerZoneValues.includes(zone));
+  const legacyZones = [...new Set([legacyPrimary, ...legacyAcceptable].filter(Boolean))];
+  providerZonePrimary.innerHTML = [
+    '<option value="">Select a primary service area</option>',
+    ...state.providerZoneValues.map((zone) => `<option value="${escapeHtml(zone)}">${escapeHtml(zone)}</option>`),
+    ...(legacyPrimary ? [`<option value="${escapeHtml(legacyPrimary)}" disabled>${escapeHtml(legacyPrimary)} (legacy — select an operational zone)</option>`] : [])
+  ].join("");
   providerZonePrimary.value = draft.primaryZone;
   providerZoneAcceptable.innerHTML = state.providerZoneValues.map((zone) => `
     <label class="provider-zone-option"><input type="checkbox" value="${escapeHtml(zone)}" ${draft.acceptableZones.includes(zone) ? "checked" : ""} ${zone === draft.primaryZone ? "disabled" : ""}><span>${escapeHtml(zone)}</span></label>
@@ -4513,12 +4538,20 @@ function renderProviderZones() {
   const profile = state.providerZoneProfile;
   const hasProvider = Boolean(state.selectedProviderZoneUserId);
   providerZoneStatus.textContent = state.providerZonesLoading ? "Loading provider zones..." : !hasProvider
-    ? (state.providerZoneProviders.length ? "Select an active BCBA or RBT provider." : "No active BCBA or RBT providers are available.")
-    : !profile ? "No zone preferences are configured for this provider."
-      : profile.active ? `Active zone preferences · version ${profile.version}` : `Zone preferences are inactive. Saving will reactivate version ${profile.version + 1}.`;
+    ? (state.providerZoneProviders.length ? "Not configured" : "No eligible providers")
+    : !profile ? "Not configured"
+      : profile.active ? `Active · Version ${profile.version}` : `Inactive · Saving will reactivate version ${profile.version + 1}`;
+  providerZoneStatus.dataset.status = state.providerZonesLoading ? "loading" : !profile ? "not-configured" : profile.active ? "active" : "inactive";
+  if (providerZoneLegacy) {
+    providerZoneLegacy.classList.toggle("hidden", !legacyZones.length);
+    providerZoneLegacy.textContent = legacyZones.length
+      ? `Legacy saved area${legacyZones.length === 1 ? "" : "s"}: ${legacyZones.join(", ")}. Select operational service areas before saving; the stored profile remains unchanged until then.`
+      : "";
+  }
   const disabled = !hasProvider || state.providerZonesLoading || state.providerZonesSaving;
   providerZoneProvider.disabled = state.providerZonesLoading || state.providerZonesSaving;
   Array.from(providerZoneForm.elements).forEach((element) => { element.disabled = disabled || (element.type === "checkbox" && element.value === draft.primaryZone); });
+  providerZoneSaveButton.disabled = disabled || Boolean(legacyPrimary);
   providerZoneSaveButton.textContent = state.providerZonesSaving ? "Saving..." : "Save zone preferences";
   providerZoneDeactivateButton.classList.toggle("hidden", !profile?.active);
   providerZoneMessage.textContent = state.providerZoneMessage;

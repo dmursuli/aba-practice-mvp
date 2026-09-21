@@ -159,9 +159,11 @@ test("Client Profile provides structured Service Location management without del
   for (const value of ["home", "school", "clinic", "community", "other"]) {
     assert.match(section, new RegExp(`<option value="${value}">`));
   }
-  for (const zone of ["Homestead", "West Kendall", "Coral Gables", "Doral", "Aventura", "Miami Beach"]) {
-    assert.match(section, new RegExp(`<option value="${zone}">`));
-  }
+  assert.doesNotMatch(section, /optgroup|Tamiami|Coral Gables|Aventura|Miami Beach/);
+  const zoneOptions = functionSource("renderServiceLocationZoneOptions");
+  assert.match(zoneOptions, /state\.serviceZones/);
+  assert.match(zoneOptions, /legacy — select an operational zone/);
+  assert.match(serverSource, /serviceZones: SERVICE_ZONE_VALUES/);
   assert.doesNotMatch(section, /Delete Service Location|data-service-location-action="delete"/i);
   assert.match(functionSource("renderClientServiceLocations"), /No structured Service Locations are saved/);
   assert.match(functionSource("handleServiceLocationAction", { async: true }), /deactivateClientServiceLocation/);

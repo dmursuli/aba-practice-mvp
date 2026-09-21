@@ -21,10 +21,12 @@ async function request(path, { method = "GET", body, cookie } = {}) { const head
 async function login(username = "admin", password = "admin123") { const result = await request("/api/auth/login", { method: "POST", body: { username, password } }); assert.equal(result.response.status, 200); return result.cookie; }
 const payload = (overrides = {}) => ({ providerUserId: "user-rbt", primaryZone: "West Kendall", acceptableZones: ["Doral", "Kendall"], ...overrides });
 
-test("zone model reuses canonical service zones, normalizes duplicates, and rejects invalid or primary duplication", () => {
-  assert.ok(SERVICE_ZONE_VALUES.includes("West Kendall"));
-  assert.deepEqual(sanitizeProviderZoneInput(payload({ acceptableZones: ["Kendall", "Doral", "Kendall"] })).profile.acceptableZones, ["Kendall", "Doral"]);
+test("zone model exposes exactly the six operational areas and rejects invalid, duplicate, or primary selections", () => {
+  assert.deepEqual(SERVICE_ZONE_VALUES, ["Kendall", "West Kendall", "Doral", "Cutler Bay", "Homestead", "Miami Lakes"]);
+  assert.match(sanitizeProviderZoneInput(payload({ primaryZone: "" })).errors.join(" "), /approved primary zone/);
+  assert.match(sanitizeProviderZoneInput(payload({ acceptableZones: ["Kendall", "Doral", "Kendall"] })).errors.join(" "), /unique/);
   assert.match(sanitizeProviderZoneInput(payload({ primaryZone: "Unknown" })).errors.join(" "), /approved primary zone/);
+  assert.match(sanitizeProviderZoneInput(payload({ acceptableZones: ["Tamiami"] })).errors.join(" "), /approved geographic zone/);
   assert.match(sanitizeProviderZoneInput(payload({ acceptableZones: ["West Kendall"] })).errors.join(" "), /cannot also/);
 });
 
@@ -73,6 +75,49 @@ test("inactive providers are rejected and canonical zones are returned to the UI
   assert.deepEqual(list.json.zones, SERVICE_ZONE_VALUES);
   assert.ok(!list.json.providers.some((provider) => provider.id === "user-rbt"));
   assert.equal((await request("/api/provider-zones", { method: "POST", cookie: admin, body: payload() })).response.status, 400);
+});
+
+test("legacy provider zone profiles remain readable and unchanged until explicitly replaced with operational zones", async () => {
+  await reset();
+  const admin = await login();
+  const state = await db();
+  const legacyProfile = {
+    id: "legacy-zones",
+    providerUserId: "user-rbt",
+    primaryZone: "Tamiami",
+    acceptableZones: ["Doral", "Florida City"],
+    active: true,
+    version: 4,
+    createdAt: "2026-08-01T12:00:00.000Z",
+    updatedAt: "2026-08-01T12:00:00.000Z",
+    updatedByUserId: "user-admin"
+  };
+  state.providerZoneProfiles = [legacyProfile];
+  await writeFile(dbPath, `${JSON.stringify(state, null, 2)}\n`);
+
+  const loaded = await request("/api/provider-zones/user-rbt", { cookie: admin });
+  assert.equal(loaded.response.status, 200);
+  assert.deepEqual(loaded.json.profile, legacyProfile);
+  assert.deepEqual((await db()).providerZoneProfiles, [legacyProfile]);
+  const legacyBackup = await request("/api/backup", { cookie: admin });
+  assert.deepEqual(legacyBackup.json.data.providerZoneProfiles, [legacyProfile]);
+
+  const invalidLegacyUpdate = await request("/api/provider-zones/user-rbt", {
+    method: "PUT",
+    cookie: admin,
+    body: { primaryZone: "Tamiami", acceptableZones: ["Doral"], expectedVersion: 4 }
+  });
+  assert.equal(invalidLegacyUpdate.response.status, 400);
+  assert.deepEqual((await db()).providerZoneProfiles, [legacyProfile]);
+
+  const replaced = await request("/api/provider-zones/user-rbt", {
+    method: "PUT",
+    cookie: admin,
+    body: { primaryZone: "West Kendall", acceptableZones: ["Doral"], expectedVersion: 4 }
+  });
+  assert.equal(replaced.response.status, 200);
+  assert.equal(replaced.json.primaryZone, "West Kendall");
+  assert.equal(replaced.json.version, 5);
 });
 
 test("backup and restore preserve zone profiles while legacy backups default safely", async () => {
