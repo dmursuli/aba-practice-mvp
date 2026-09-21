@@ -10,11 +10,17 @@ import {
   expandActiveRecurringSeries,
   expandBoundedRecurrence,
   governingRecurringSeriesRevision,
+  localDateTimeToZonedTimestamp,
   sanitizeRecurrenceAppointmentIdentity,
   sanitizeRecurringSeriesRecord
 } from "./lib/scheduling-recurrence.mjs";
 import { sanitizeProviderAvailabilityInput } from "./lib/provider-availability.mjs";
 import { appointmentStatusBlocksScheduling, validateProviderScheduling } from "./lib/scheduling-conflicts.mjs";
+import { evaluateProviderMatches } from "./lib/provider-matching.mjs";
+import {
+  providerRoleIsEligibleForService,
+  SCHEDULING_SERVICE_CODES
+} from "./lib/scheduling-provider-eligibility.mjs";
 import { SERVICE_ZONE_SET, SERVICE_ZONE_VALUES, sanitizeProviderZoneInput } from "./lib/service-zones.mjs";
 import {
   duplicateBehaviorIds,
@@ -43,7 +49,7 @@ const sessions = new Map();
 const preservedDrafts = new Map();
 const AGENCIES = ["Triumph ABA", "One Clinical Care"];
 const DEFAULT_AGENCY = AGENCIES[0];
-const APPOINTMENT_SERVICE_CODES = new Set(["97151", "97153", "97155", "97156"]);
+const APPOINTMENT_SERVICE_CODES = new Set(SCHEDULING_SERVICE_CODES);
 const APPOINTMENT_STATUSES = new Set(["scheduled", "confirmed", "completed", "cancelled", "no_show"]);
 const APPOINTMENT_CANCELLATION_REASONS_BY_CATEGORY = new Map([
   ["client", new Set(["client_cancelled", "illness", "vacation", "family_emergency", "no_show", "other"])],
@@ -52,13 +58,6 @@ const APPOINTMENT_CANCELLATION_REASONS_BY_CATEGORY = new Map([
 ]);
 const SHORT_OPERATIONAL_NOTE_MAX_LENGTH = 360;
 const RECURRING_SERIES_MAX_APPOINTMENT_IDS_IN_AUDIT = 50;
-const APPOINTMENT_PROVIDER_ROLES = {
-  "97151": new Set(["bcba"]),
-  "97153": new Set(["rbt"]),
-  "97155": new Set(["bcba"]),
-  "97156": new Set(["bcba"])
-};
-
 function envNumber(name, fallback) {
   const raw = Number(process.env[name]);
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
@@ -1181,6 +1180,44 @@ export function createAppServer() {
       await writeDb(db);
       const includeSessions = ["1", "true", "visible"].includes(String(url.searchParams.get("includeSessions") || "").toLowerCase());
       sendJson(res, 200, includeSessions ? redactDb(db, user) : bootstrapDb(db, user));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/scheduling/provider-matches") {
+      const db = await readSchedulingDb();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const payload = await readBody(req);
+      const normalized = providerMatchingRequest(payload, db);
+      if (normalized.errors.length) {
+        sendJson(res, 400, { errors: normalized.errors });
+        return;
+      }
+      const serviceZone = String(normalized.serviceLocation.zone || "").trim();
+      const matches = evaluateProviderMatches({
+        users: db.users || [],
+        appointments: db.appointments || [],
+        providerAvailabilityProfiles: db.providerAvailabilityProfiles || [],
+        providerZoneProfiles: db.providerZoneProfiles || [],
+        serviceCode: normalized.request.cptCode,
+        serviceZone,
+        scheduledStartAt: normalized.scheduledStartAt,
+        scheduledEndAt: normalized.scheduledEndAt,
+        timeZone: normalized.request.timezone
+      });
+      sendJson(res, 200, {
+        request: normalized.request,
+        context: {
+          serviceLocation: {
+            id: normalized.serviceLocation.id,
+            label: normalized.serviceLocation.name || normalized.serviceLocation.label || "Service location",
+            zone: serviceZone,
+            hasCurrentOperationalZone: matches.serviceZoneCurrent
+          },
+          scheduledStartAt: normalized.scheduledStartAt,
+          scheduledEndAt: normalized.scheduledEndAt
+        },
+        groups: matches.groups
+      });
       return;
     }
 
@@ -3821,6 +3858,50 @@ function visibleAppointments(db, user) {
   return ["admin", "bcba"].includes(user?.role) ? (db.appointments || []) : [];
 }
 
+function providerMatchingRequest(payload, db) {
+  const request = {
+    clientId: String(payload?.clientId || "").trim(),
+    cptCode: String(payload?.cptCode || "").trim(),
+    serviceLocationId: String(payload?.serviceLocationId || "").trim(),
+    date: String(payload?.date || "").trim(),
+    startTime: String(payload?.startTime || "").trim(),
+    endTime: String(payload?.endTime || "").trim(),
+    timezone: String(payload?.timezone || "").trim()
+  };
+  const errors = [];
+  const client = (db.clients || []).find((item) => item.id === request.clientId);
+  if (!client) errors.push("Select an existing client.");
+  else if (client.status !== "active") errors.push("Client must be active.");
+  if (!APPOINTMENT_SERVICE_CODES.has(request.cptCode)) {
+    errors.push("Service code must be one of 97151, 97153, 97155, or 97156.");
+  }
+  const serviceLocation = clientServiceLocationRecords(client)
+    .find((item) => item.id === request.serviceLocationId);
+  if (!request.serviceLocationId || !serviceLocation || serviceLocation.isActive === false) {
+    errors.push("Choose an active service location belonging to the selected client.");
+  }
+  if (!isValidDateOnly(request.date)) errors.push("Date must be a valid YYYY-MM-DD date.");
+  const validStart = /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(request.startTime);
+  const validEnd = /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(request.endTime);
+  if (!validStart) errors.push("Start time must use HH:MM in 24-hour time.");
+  if (!validEnd) errors.push("End time must use HH:MM in 24-hour time.");
+  if (validStart && validEnd && request.endTime <= request.startTime) {
+    errors.push("End time must be after start time; cross-midnight matching is not supported.");
+  }
+  if (!isValidIanaTimeZone(request.timezone)) errors.push("Timezone must be a valid IANA timezone.");
+
+  let scheduledStartAt = "";
+  let scheduledEndAt = "";
+  if (!errors.length) {
+    const start = localDateTimeToZonedTimestamp(request.date, request.startTime, request.timezone);
+    const end = localDateTimeToZonedTimestamp(request.date, request.endTime, request.timezone);
+    errors.push(...start.errors, ...end.errors);
+    scheduledStartAt = start.timestamp;
+    scheduledEndAt = end.timestamp;
+  }
+  return { request, client, serviceLocation, scheduledStartAt, scheduledEndAt, errors: [...new Set(errors)] };
+}
+
 class RecurringSeriesRequestError extends Error {
   constructor(status, errors) {
     super(errors[0] || "Recurring series request failed.");
@@ -4613,8 +4694,8 @@ function createRecurringSeriesOperation(payload, db, actor, { requestId } = {}) 
   if (!provider) errors.push("An existing provider user is required.");
   else {
     if (provider.active === false) errors.push("Provider must be active.");
-    const permittedRoles = APPOINTMENT_PROVIDER_ROLES[fields.serviceCode];
-    if (permittedRoles && !permittedRoles.has(provider.role)) {
+    if (APPOINTMENT_SERVICE_CODES.has(fields.serviceCode)
+      && !providerRoleIsEligibleForService(provider.role, fields.serviceCode)) {
       errors.push(`Provider role is not permitted for service ${fields.serviceCode}.`);
     }
   }
@@ -5006,8 +5087,8 @@ function validateAppointmentRecord(appointment, db, actor) {
       return;
     }
     if (provider.active === false) errors.push(`Provider ${assignment.userId} must be active.`);
-    const permittedRoles = APPOINTMENT_PROVIDER_ROLES[appointment.serviceCode];
-    if (permittedRoles && !permittedRoles.has(provider.role)) {
+    if (APPOINTMENT_SERVICE_CODES.has(appointment.serviceCode)
+      && !providerRoleIsEligibleForService(provider.role, appointment.serviceCode)) {
       errors.push(`Provider ${assignment.userId} role is not permitted for service ${appointment.serviceCode}.`);
     }
   });

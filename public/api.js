@@ -179,6 +179,15 @@ export async function deactivateProviderZones(providerUserId, expectedVersion) {
   return parseResponse(response);
 }
 
+export async function findSchedulingProviderMatches(criteria) {
+  const response = await fetch("/api/scheduling/provider-matches", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(criteria)
+  });
+  return parseResponse(response);
+}
+
 export async function createAppointment(appointment) {
   const response = await fetch("/api/appointments", {
     method: "POST",

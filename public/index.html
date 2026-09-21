@@ -1414,11 +1414,31 @@
           <div id="schedule-week-grid" class="schedule-week-grid" aria-label="Monday through Sunday sessions and appointments calendar"></div>
         </div>
 
-        <section class="schedule-empty-state hidden" id="schedule-subview-staffing" data-schedule-subview-panel="staffing" role="tabpanel" aria-labelledby="schedule-tab-staffing">
-          <div class="schedule-empty-state-content">
-            <p class="eyebrow">Planned workspace</p>
-            <h3>Staffing</h3>
-            <p class="muted">Staffing queues, eligibility review, and matching support will be introduced in future phases. No staffing business logic is active yet.</p>
+        <section class="schedule-subview hidden" id="schedule-subview-staffing" data-schedule-subview-panel="staffing" role="tabpanel" aria-labelledby="schedule-tab-staffing">
+          <div class="schedule-heading">
+            <div class="section-heading">
+              <p class="eyebrow">Staffing</p>
+              <h3>Find providers for a service</h3>
+              <p class="muted">Compare eligible providers using service area, availability, and existing scheduling conflicts.</p>
+            </div>
+          </div>
+          <div class="staffing-workspace">
+            <form id="staffing-match-form" class="staffing-match-form">
+              <div class="staffing-form-grid">
+                <label class="staffing-client-field">Client<select name="clientId" id="staffing-client" required><option value="">Select a client</option></select></label>
+                <label>Service<select name="cptCode" id="staffing-service" required><option value="">Select a service</option><option value="97151">97151</option><option value="97153">97153</option><option value="97155">97155</option><option value="97156">97156</option></select></label>
+                <label class="staffing-location-field">Service location<select name="serviceLocationId" id="staffing-location" required><option value="">Select a client first</option></select></label>
+                <label>Date<input type="date" name="date" id="staffing-date" required></label>
+                <label>Start time<input type="time" name="startTime" id="staffing-start-time" required></label>
+                <label>End time<input type="time" name="endTime" id="staffing-end-time" required></label>
+              </div>
+              <input type="hidden" name="timezone" value="America/New_York">
+              <div class="button-row staffing-form-actions"><button type="submit" class="primary-button" id="staffing-find-providers">Find providers</button></div>
+            </form>
+            <p class="form-message" id="staffing-message" role="status" aria-live="polite"></p>
+            <div id="staffing-results" class="staffing-results" aria-live="polite">
+              <div class="staffing-empty-state"><strong>Choose a client and service need to compare providers.</strong><span>Results are recommendations only and will not assign or schedule anyone.</span></div>
+            </div>
           </div>
         </section>
 

@@ -1,4 +1,4 @@
-import { assignClientProvider, cancelAppointment, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { assignClientProvider, cancelAppointment, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
@@ -56,6 +56,9 @@ const state = {
   scheduleLoadError: "",
   scheduleRequestId: 0,
   activeScheduleSubview: "calendar",
+  staffingMatchResult: null,
+  staffingMatching: false,
+  staffingMatchError: "",
   providerAvailabilityProviders: [],
   selectedProviderAvailabilityUserId: "",
   providerAvailabilityProfile: null,
@@ -415,6 +418,12 @@ const scheduleMessage = document.querySelector("#schedule-message");
 const scheduleWeekGrid = document.querySelector("#schedule-week-grid");
 const scheduleSubviewButtons = document.querySelectorAll("[data-schedule-subview-button]");
 const scheduleAddAppointmentButton = document.querySelector("#schedule-add-appointment");
+const staffingMatchForm = document.querySelector("#staffing-match-form");
+const staffingClientSelect = document.querySelector("#staffing-client");
+const staffingLocationSelect = document.querySelector("#staffing-location");
+const staffingFindProvidersButton = document.querySelector("#staffing-find-providers");
+const staffingMessage = document.querySelector("#staffing-message");
+const staffingResults = document.querySelector("#staffing-results");
 const providerAvailabilityProvider = document.querySelector("#provider-availability-provider");
 const providerAvailabilityStatus = document.querySelector("#provider-availability-status");
 const providerAvailabilityForm = document.querySelector("#provider-availability-form");
@@ -1443,6 +1452,9 @@ function bindEvents() {
   scheduleServiceFilter?.addEventListener("change", handleScheduleFilterChange);
   scheduleWeekGrid?.addEventListener("click", handleScheduleAppointmentSelection);
   scheduleAddAppointmentButton?.addEventListener("click", openAppointmentForm);
+  staffingClientSelect?.addEventListener("change", handleStaffingClientChange);
+  staffingMatchForm?.addEventListener("input", handleStaffingCriteriaChange);
+  staffingMatchForm?.addEventListener("submit", handleFindStaffingProviders);
   providerAvailabilityProvider?.addEventListener("change", handleProviderAvailabilityProviderChange);
   providerAvailabilityForm?.addEventListener("submit", handleSaveProviderAvailability);
   providerAvailabilityForm?.addEventListener("input", syncProviderAvailabilityDraftFromForm);
@@ -1809,6 +1821,9 @@ function resetSensitiveState() {
   state.scheduleLoading = false;
   state.scheduleLoadError = "";
   state.scheduleRequestId += 1;
+  state.staffingMatchResult = null;
+  state.staffingMatching = false;
+  state.staffingMatchError = "";
   state.providerAvailabilityProviders = [];
   state.selectedProviderAvailabilityUserId = "";
   state.providerAvailabilityProfile = null;
@@ -4216,8 +4231,159 @@ async function switchScheduleSubview(subview) {
     panel.classList.toggle("hidden", panel.dataset.scheduleSubviewPanel !== selectedSubview);
   });
   if (selectedSubview === "calendar") await ensureScheduleWeekLoaded();
+  if (selectedSubview === "staffing") renderStaffing();
   if (selectedSubview === "availability") await ensureProviderAvailabilityLoaded();
   if (selectedSubview === "zones") await ensureProviderZonesLoaded();
+}
+
+function staffingActiveClients() {
+  return (state.clients || [])
+    .filter((client) => client.status !== "archived")
+    .sort((left, right) => String(left.name || "").localeCompare(String(right.name || "")));
+}
+
+function staffingActiveLocations(clientId = staffingClientSelect?.value || "") {
+  const client = (state.clients || []).find((item) => item.id === clientId);
+  return (client?.profile?.serviceLocations || []).filter((location) => location.isActive !== false);
+}
+
+function renderStaffingFormOptions() {
+  if (!staffingMatchForm || !staffingClientSelect || !staffingLocationSelect) return;
+  const selectedClientId = staffingClientSelect.value;
+  const clients = staffingActiveClients();
+  staffingClientSelect.innerHTML = [
+    '<option value="">Select a client</option>',
+    ...clients.map((client) => `<option value="${escapeHtml(client.id)}">${escapeHtml(client.name)}</option>`)
+  ].join("");
+  if (clients.some((client) => client.id === selectedClientId)) staffingClientSelect.value = selectedClientId;
+
+  const selectedLocationId = staffingLocationSelect.value;
+  const locations = staffingActiveLocations();
+  staffingLocationSelect.innerHTML = !staffingClientSelect.value
+    ? '<option value="">Select a client first</option>'
+    : locations.length
+      ? ['<option value="">Select a service location</option>', ...locations.map((location) => (
+        `<option value="${escapeHtml(location.id)}">${escapeHtml(location.name || location.label || "Service location")} · ${escapeHtml(location.zone || "Zone not set")}</option>`
+      ))].join("")
+      : '<option value="">No active service locations</option>';
+  if (locations.some((location) => location.id === selectedLocationId)) staffingLocationSelect.value = selectedLocationId;
+  staffingLocationSelect.disabled = !staffingClientSelect.value || !locations.length || state.staffingMatching;
+  if (!staffingMatchForm.elements.date.value) staffingMatchForm.elements.date.value = scheduleDateValue(new Date());
+  staffingFindProvidersButton.disabled = state.staffingMatching || !staffingClientSelect.value || !locations.length;
+  staffingFindProvidersButton.textContent = state.staffingMatching ? "Finding providers…" : "Find providers";
+  if (!state.staffingMatchError) {
+    staffingMessage.textContent = staffingClientSelect.value && !locations.length
+      ? "This client has no active structured service location. Add one in Client Profile before matching."
+      : "";
+  }
+}
+
+function staffingEmptyGroupMessage(groupKey) {
+  if (groupKey === "best_match") return "No providers meet all best-match conditions.";
+  if (groupKey === "good_match") return "No providers have an acceptable-zone match with confirmed availability.";
+  if (groupKey === "other_options") return "No additional eligible options.";
+  return "No eligible providers are outside availability or in conflict.";
+}
+
+function staffingCandidateCard(candidate) {
+  return `
+    <article class="staffing-candidate-card">
+      <div class="staffing-candidate-heading">
+        <strong>${escapeHtml(candidate.provider.name)}</strong>
+        <span class="staffing-role-badge">${escapeHtml(String(candidate.provider.role || "").toUpperCase())}</span>
+      </div>
+      <div class="staffing-candidate-factors">
+        <span class="staffing-factor zone-${escapeHtml(candidate.zone.status)}">${escapeHtml(candidate.zone.label)}</span>
+        <span class="staffing-factor availability-${escapeHtml(candidate.availability.status)}">${escapeHtml(candidate.availability.label)}</span>
+        <span class="staffing-factor schedule-${escapeHtml(candidate.schedule.status)}">${escapeHtml(candidate.schedule.label)}</span>
+      </div>
+    </article>
+  `;
+}
+
+function renderStaffingResults() {
+  if (!staffingResults || !staffingMessage) return;
+  if (state.staffingMatching) {
+    staffingResults.innerHTML = '<div class="staffing-empty-state"><strong>Finding eligible providers…</strong><span>Checking service area, availability, and scheduling conflicts.</span></div>';
+    return;
+  }
+  if (state.staffingMatchError) {
+    staffingMessage.textContent = state.staffingMatchError;
+    staffingResults.innerHTML = '<div class="staffing-empty-state is-error"><strong>Provider matching could not be completed.</strong><span>Review the request and try again.</span></div>';
+    return;
+  }
+  const result = state.staffingMatchResult;
+  if (!result) {
+    staffingResults.innerHTML = '<div class="staffing-empty-state"><strong>Choose a client and service need to compare providers.</strong><span>Results are recommendations only and will not assign or schedule anyone.</span></div>';
+    return;
+  }
+  const groups = result.groups || [];
+  const candidateCount = groups.reduce((total, group) => total + (group.candidates || []).length, 0);
+  if (!candidateCount) {
+    staffingResults.innerHTML = '<div class="staffing-empty-state"><strong>No active providers are eligible for this service.</strong><span>No assignments or appointments were changed.</span></div>';
+    return;
+  }
+  const zoneNotice = result.context?.serviceLocation?.hasCurrentOperationalZone === false
+    ? '<p class="staffing-zone-notice">Service location does not have a current operational zone. Providers remain visible without a zone preference ranking.</p>'
+    : "";
+  staffingResults.innerHTML = `${zoneNotice}${groups.map((group) => `
+    <section class="staffing-result-group" aria-labelledby="staffing-group-${escapeHtml(group.key)}">
+      <div class="staffing-result-heading">
+        <h4 id="staffing-group-${escapeHtml(group.key)}">${escapeHtml(group.label)}</h4>
+        <span>${group.candidates.length}</span>
+      </div>
+      <div class="staffing-candidate-list">
+        ${group.candidates.length
+          ? group.candidates.map(staffingCandidateCard).join("")
+          : `<p class="staffing-group-empty">${escapeHtml(staffingEmptyGroupMessage(group.key))}</p>`}
+      </div>
+    </section>
+  `).join("")}`;
+}
+
+function renderStaffing() {
+  renderStaffingFormOptions();
+  renderStaffingResults();
+}
+
+function handleStaffingClientChange() {
+  state.staffingMatchResult = null;
+  state.staffingMatchError = "";
+  staffingLocationSelect.value = "";
+  renderStaffing();
+}
+
+function handleStaffingCriteriaChange() {
+  if (state.staffingMatching) return;
+  state.staffingMatchResult = null;
+  state.staffingMatchError = "";
+  renderStaffingResults();
+}
+
+async function handleFindStaffingProviders(event) {
+  event.preventDefault();
+  if (!staffingMatchForm || state.staffingMatching) return;
+  const formData = new FormData(staffingMatchForm);
+  state.staffingMatching = true;
+  state.staffingMatchError = "";
+  state.staffingMatchResult = null;
+  renderStaffing();
+  try {
+    state.staffingMatchResult = await findSchedulingProviderMatches({
+      clientId: String(formData.get("clientId") || ""),
+      cptCode: String(formData.get("cptCode") || ""),
+      serviceLocationId: String(formData.get("serviceLocationId") || ""),
+      date: String(formData.get("date") || ""),
+      startTime: String(formData.get("startTime") || ""),
+      endTime: String(formData.get("endTime") || ""),
+      timezone: String(formData.get("timezone") || "America/New_York")
+    });
+  } catch (error) {
+    state.staffingMatchError = error.message || "Unable to find provider matches.";
+  } finally {
+    state.staffingMatching = false;
+    renderStaffing();
+  }
 }
 
 const providerAvailabilityWeekdays = [

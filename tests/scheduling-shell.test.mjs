@@ -45,7 +45,8 @@ test("Scheduling workspace has five subviews with Calendar active", () => {
   assert.equal(subviewButtons.length, 5);
   assert.equal(subviewPanels.length, 5);
   assert.match(htmlSource, /data-schedule-subview-button="calendar"[^>]*aria-selected="true"/);
-  assert.match(htmlSource, /data-schedule-subview-panel="staffing"[\s\S]*No staffing business logic is active yet/);
+  assert.match(htmlSource, /data-schedule-subview-panel="staffing"[\s\S]*Find providers for a service/);
+  assert.match(htmlSource, /id="staffing-match-form"/);
   assert.match(htmlSource, /data-schedule-subview-panel="availability"[\s\S]*Provider Availability/);
   assert.match(htmlSource, /id="provider-availability-provider"/);
   assert.match(htmlSource, /data-schedule-subview-panel="zones"[\s\S]*Provider Zones/);
@@ -74,6 +75,7 @@ test("workspace subnavigation changes panels and loads only the selected Schedul
   assert.match(block, /button\.setAttribute\("aria-selected", String\(isActive\)\)/);
   assert.match(block, /panel\.classList\.toggle\("hidden"/);
   assert.match(block, /if \(selectedSubview === "calendar"\) await ensureScheduleWeekLoaded\(\);/);
+  assert.match(block, /if \(selectedSubview === "staffing"\) renderStaffing\(\);/);
   assert.match(block, /if \(selectedSubview === "availability"\) await ensureProviderAvailabilityLoaded\(\);/);
   assert.match(block, /if \(selectedSubview === "zones"\) await ensureProviderZonesLoaded\(\);/);
 });
