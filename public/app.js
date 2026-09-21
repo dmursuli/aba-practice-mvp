@@ -59,6 +59,9 @@ const state = {
   staffingMatchResult: null,
   staffingMatching: false,
   staffingMatchError: "",
+  staffingAssignmentCandidateId: "",
+  staffingAssignmentSubmitting: false,
+  staffingAssignmentError: "",
   providerAvailabilityProviders: [],
   selectedProviderAvailabilityUserId: "",
   providerAvailabilityProfile: null,
@@ -424,6 +427,12 @@ const staffingLocationSelect = document.querySelector("#staffing-location");
 const staffingFindProvidersButton = document.querySelector("#staffing-find-providers");
 const staffingMessage = document.querySelector("#staffing-message");
 const staffingResults = document.querySelector("#staffing-results");
+const staffingConfirmationModal = document.querySelector("#staffing-confirmation-modal");
+const staffingConfirmationTitle = document.querySelector("#staffing-confirmation-title");
+const staffingConfirmationContent = document.querySelector("#staffing-confirmation-content");
+const staffingConfirmationMessage = document.querySelector("#staffing-confirmation-message");
+const staffingConfirmationSubmit = document.querySelector("#staffing-confirmation-submit");
+const staffingConfirmationCloseButtons = document.querySelectorAll("[data-close-staffing-confirmation]");
 const providerAvailabilityProvider = document.querySelector("#provider-availability-provider");
 const providerAvailabilityStatus = document.querySelector("#provider-availability-status");
 const providerAvailabilityForm = document.querySelector("#provider-availability-form");
@@ -1455,6 +1464,9 @@ function bindEvents() {
   staffingClientSelect?.addEventListener("change", handleStaffingClientChange);
   staffingMatchForm?.addEventListener("input", handleStaffingCriteriaChange);
   staffingMatchForm?.addEventListener("submit", handleFindStaffingProviders);
+  staffingResults?.addEventListener("click", handleStaffingResultClick);
+  staffingConfirmationSubmit?.addEventListener("click", handleConfirmStaffingAssignment);
+  staffingConfirmationCloseButtons.forEach((button) => button.addEventListener("click", closeStaffingConfirmation));
   providerAvailabilityProvider?.addEventListener("change", handleProviderAvailabilityProviderChange);
   providerAvailabilityForm?.addEventListener("submit", handleSaveProviderAvailability);
   providerAvailabilityForm?.addEventListener("input", syncProviderAvailabilityDraftFromForm);
@@ -1497,6 +1509,7 @@ function bindEvents() {
   });
   window.addEventListener("aba-auth-error", (event) => handleAuthFailureEvent(event.detail));
   window.addEventListener("keydown", handleAppointmentDetailsKeydown);
+  window.addEventListener("keydown", handleStaffingConfirmationKeydown);
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) {
       if (!state.currentUser && !state.authChallenge) showLogin();
@@ -1824,6 +1837,11 @@ function resetSensitiveState() {
   state.staffingMatchResult = null;
   state.staffingMatching = false;
   state.staffingMatchError = "";
+  state.staffingAssignmentCandidateId = "";
+  state.staffingAssignmentSubmitting = false;
+  state.staffingAssignmentError = "";
+  staffingConfirmationModal?.classList.add("hidden");
+  staffingConfirmationModal?.setAttribute("aria-hidden", "true");
   state.providerAvailabilityProviders = [];
   state.selectedProviderAvailabilityUserId = "";
   state.providerAvailabilityProfile = null;
@@ -4285,7 +4303,28 @@ function staffingEmptyGroupMessage(groupKey) {
   return "No eligible providers are outside availability or in conflict.";
 }
 
+function staffingCandidates() {
+  return (state.staffingMatchResult?.groups || []).flatMap((group) => group.candidates || []);
+}
+
+function staffingCandidate(providerUserId) {
+  return staffingCandidates().find((candidate) => candidate.provider.userId === providerUserId) || null;
+}
+
+function canStaffCandidate(candidate) {
+  return Boolean(
+    candidate
+    && state.staffingMatchResult?.request?.cptCode === "97153"
+    && state.staffingMatchResult?.permissions?.canManageClientAssignments
+    && candidate.provider?.role === "rbt"
+    && candidate.caseAssignment?.status === "not_assigned"
+  );
+}
+
 function staffingCandidateCard(candidate) {
+  const showCaseStatus = state.staffingMatchResult?.request?.cptCode === "97153"
+    && candidate.provider?.role === "rbt"
+    && candidate.caseAssignment;
   return `
     <article class="staffing-candidate-card">
       <div class="staffing-candidate-heading">
@@ -4297,8 +4336,109 @@ function staffingCandidateCard(candidate) {
         <span class="staffing-factor availability-${escapeHtml(candidate.availability.status)}">${escapeHtml(candidate.availability.label)}</span>
         <span class="staffing-factor schedule-${escapeHtml(candidate.schedule.status)}">${escapeHtml(candidate.schedule.label)}</span>
       </div>
+      ${showCaseStatus ? `
+        <div class="staffing-case-status case-${escapeHtml(candidate.caseAssignment.status)}">
+          <span>Case status</span>
+          <strong>${escapeHtml(candidate.caseAssignment.label)}</strong>
+        </div>
+        ${canStaffCandidate(candidate) ? `<button type="button" class="secondary-button staffing-case-action" data-staff-case-provider-id="${escapeHtml(candidate.provider.userId)}">Staff this case</button>` : ""}
+      ` : ""}
     </article>
   `;
+}
+
+function renderStaffingConfirmation() {
+  if (!staffingConfirmationModal || !staffingConfirmationContent || !staffingConfirmationSubmit) return;
+  const candidate = staffingCandidate(state.staffingAssignmentCandidateId);
+  const request = state.staffingMatchResult?.request;
+  const client = (state.clients || []).find((item) => item.id === request?.clientId);
+  if (!candidate || !client) {
+    closeStaffingConfirmation();
+    return;
+  }
+  staffingConfirmationTitle.textContent = `Staff ${candidate.provider.name} to ${client.name}?`;
+  staffingConfirmationContent.innerHTML = `
+    <div class="staffing-confirmation-provider">
+      <strong>${escapeHtml(candidate.provider.name)}</strong>
+      <span>${escapeHtml(roleLabel(candidate.provider.role))}</span>
+    </div>
+    <div class="staffing-candidate-factors">
+      <span class="staffing-factor zone-${escapeHtml(candidate.zone.status)}">${escapeHtml(candidate.zone.label)}</span>
+      <span class="staffing-factor availability-${escapeHtml(candidate.availability.status)}">${escapeHtml(candidate.availability.label)}</span>
+      <span class="staffing-factor schedule-${escapeHtml(candidate.schedule.status)}">${escapeHtml(candidate.schedule.label)}</span>
+    </div>
+    <p>This will add ${escapeHtml(candidate.provider.name)} to ${escapeHtml(client.name)}’s treatment team and grant the RBT access to ${escapeHtml(client.name)}’s assigned clinical records according to the existing client-assignment rules.</p>
+    <p class="muted">Case assignment is separate from availability for this requested time. No appointment will be created.</p>
+  `;
+  staffingConfirmationMessage.textContent = state.staffingAssignmentError;
+  staffingConfirmationSubmit.disabled = state.staffingAssignmentSubmitting;
+  staffingConfirmationSubmit.textContent = state.staffingAssignmentSubmitting ? "Staffing…" : "Confirm staffing";
+  staffingConfirmationCloseButtons.forEach((button) => { button.disabled = state.staffingAssignmentSubmitting; });
+}
+
+function openStaffingConfirmation(providerUserId) {
+  const candidate = staffingCandidate(providerUserId);
+  if (!canStaffCandidate(candidate) || !staffingConfirmationModal) return;
+  state.staffingAssignmentCandidateId = providerUserId;
+  state.staffingAssignmentError = "";
+  state.staffingAssignmentSubmitting = false;
+  staffingConfirmationModal.classList.remove("hidden");
+  staffingConfirmationModal.setAttribute("aria-hidden", "false");
+  renderStaffingConfirmation();
+  staffingConfirmationSubmit?.focus();
+}
+
+function closeStaffingConfirmation() {
+  if (state.staffingAssignmentSubmitting || !staffingConfirmationModal) return;
+  const providerUserId = state.staffingAssignmentCandidateId;
+  state.staffingAssignmentCandidateId = "";
+  state.staffingAssignmentError = "";
+  staffingConfirmationModal.classList.add("hidden");
+  staffingConfirmationModal.setAttribute("aria-hidden", "true");
+  if (providerUserId) {
+    staffingResults?.querySelector(`[data-staff-case-provider-id="${CSS.escape(providerUserId)}"]`)?.focus();
+  }
+}
+
+function handleStaffingResultClick(event) {
+  const button = event.target.closest("[data-staff-case-provider-id]");
+  if (button) openStaffingConfirmation(button.dataset.staffCaseProviderId);
+}
+
+function handleStaffingConfirmationKeydown(event) {
+  if (event.key === "Escape" && !staffingConfirmationModal?.classList.contains("hidden")) closeStaffingConfirmation();
+}
+
+async function handleConfirmStaffingAssignment() {
+  const candidate = staffingCandidate(state.staffingAssignmentCandidateId);
+  const clientId = state.staffingMatchResult?.request?.clientId;
+  const client = (state.clients || []).find((item) => item.id === clientId);
+  if (!canStaffCandidate(candidate) || !clientId || !client || state.staffingAssignmentSubmitting) return;
+  state.staffingAssignmentSubmitting = true;
+  state.staffingAssignmentError = "";
+  renderStaffingConfirmation();
+  try {
+    await assignClientProvider(clientId, candidate.provider.userId);
+    candidate.caseAssignment = { status: "assigned", label: "Assigned to this client" };
+    state.staffingAssignmentSubmitting = false;
+    closeStaffingConfirmation();
+    staffingMessage.textContent = `${candidate.provider.name} was added to ${client.name}’s treatment team. No appointment was created.`;
+    renderStaffingResults();
+    if (state.clientAssignmentsLoadedFor === clientId && currentClient()?.id === clientId) {
+      await refreshClientAssignments();
+    }
+  } catch (error) {
+    state.staffingAssignmentSubmitting = false;
+    if (error.status === 409) {
+      candidate.caseAssignment = { status: "assigned", label: "Already assigned to this client" };
+      closeStaffingConfirmation();
+      staffingMessage.textContent = `${candidate.provider.name} is already assigned to ${client.name}. No appointment was created.`;
+      renderStaffingResults();
+      return;
+    }
+    state.staffingAssignmentError = error.message || "Unable to staff this case.";
+    renderStaffingConfirmation();
+  }
 }
 
 function renderStaffingResults() {
@@ -4314,7 +4454,7 @@ function renderStaffingResults() {
   }
   const result = state.staffingMatchResult;
   if (!result) {
-    staffingResults.innerHTML = '<div class="staffing-empty-state"><strong>Choose a client and service need to compare providers.</strong><span>Results are recommendations only and will not assign or schedule anyone.</span></div>';
+    staffingResults.innerHTML = '<div class="staffing-empty-state"><strong>Choose a client and service need to compare providers.</strong><span>Results do not assign anyone automatically or create appointments.</span></div>';
     return;
   }
   const groups = result.groups || [];
@@ -4347,6 +4487,7 @@ function renderStaffing() {
 }
 
 function handleStaffingClientChange() {
+  closeStaffingConfirmation();
   state.staffingMatchResult = null;
   state.staffingMatchError = "";
   staffingLocationSelect.value = "";
@@ -4355,6 +4496,7 @@ function handleStaffingClientChange() {
 
 function handleStaffingCriteriaChange() {
   if (state.staffingMatching) return;
+  closeStaffingConfirmation();
   state.staffingMatchResult = null;
   state.staffingMatchError = "";
   renderStaffingResults();

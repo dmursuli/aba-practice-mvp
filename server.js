@@ -1198,6 +1198,8 @@ export function createAppServer() {
         appointments: db.appointments || [],
         providerAvailabilityProfiles: db.providerAvailabilityProfiles || [],
         providerZoneProfiles: db.providerZoneProfiles || [],
+        clientUserAssignments: db.clientUserAssignments || [],
+        clientId: normalized.request.clientId,
         serviceCode: normalized.request.cptCode,
         serviceZone,
         scheduledStartAt: normalized.scheduledStartAt,
@@ -1216,6 +1218,7 @@ export function createAppServer() {
           scheduledStartAt: normalized.scheduledStartAt,
           scheduledEndAt: normalized.scheduledEndAt
         },
+        permissions: { canManageClientAssignments: true },
         groups: matches.groups
       });
       return;

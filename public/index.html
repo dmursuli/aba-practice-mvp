@@ -1437,7 +1437,7 @@
             </form>
             <p class="form-message" id="staffing-message" role="status" aria-live="polite"></p>
             <div id="staffing-results" class="staffing-results" aria-live="polite">
-              <div class="staffing-empty-state"><strong>Choose a client and service need to compare providers.</strong><span>Results are recommendations only and will not assign or schedule anyone.</span></div>
+              <div class="staffing-empty-state"><strong>Choose a client and service need to compare providers.</strong><span>Results do not assign anyone automatically or create appointments.</span></div>
             </div>
           </div>
         </section>
@@ -2386,6 +2386,25 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
             <button type="submit" class="primary-button" id="appointment-submit">Create Appointment</button>
           </div>
         </form>
+      </section>
+    </div>
+
+    <div id="staffing-confirmation-modal" class="modal-shell hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-staffing-confirmation></div>
+      <section class="modal-panel staffing-confirmation-panel" role="dialog" aria-modal="true" aria-labelledby="staffing-confirmation-title">
+        <div class="block-heading">
+          <div>
+            <p class="eyebrow">Case staffing</p>
+            <h3 id="staffing-confirmation-title">Confirm staffing</h3>
+          </div>
+          <button type="button" class="secondary-button" data-close-staffing-confirmation>Close</button>
+        </div>
+        <div id="staffing-confirmation-content"></div>
+        <p class="form-message appointment-form-error" id="staffing-confirmation-message" role="alert" aria-live="assertive"></p>
+        <div class="form-actions">
+          <button type="button" class="secondary-button" data-close-staffing-confirmation>Cancel</button>
+          <button type="button" class="primary-button" id="staffing-confirmation-submit">Confirm staffing</button>
+        </div>
       </section>
     </div>
 

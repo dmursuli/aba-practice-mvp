@@ -1199,6 +1199,34 @@ button:focus-visible {
 .staffing-factor.zone-service_zone_not_current,
 .staffing-factor.zone-not_configured,
 .staffing-factor.availability-not_configured { background: #fff7ed; color: #9a3412; }
+.staffing-case-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+.staffing-case-status strong { color: var(--text); }
+.staffing-case-status.case-assigned strong { color: #276238; }
+.staffing-case-action { justify-self: start; }
+.staffing-confirmation-panel { width: min(620px, calc(100vw - 32px)); }
+.staffing-confirmation-provider {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.staffing-confirmation-provider span { color: var(--muted); font-weight: 700; }
+.staffing-confirmation-panel .staffing-candidate-factors { margin-bottom: 14px; }
+.staffing-confirmation-panel p { line-height: 1.5; }
 .staffing-group-empty { grid-column: 1 / -1; margin: 0; color: var(--muted); }
 
 .schedule-week-grid {

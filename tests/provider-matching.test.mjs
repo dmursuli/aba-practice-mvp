@@ -46,6 +46,8 @@ function evaluate(overrides = {}) {
     appointments: [],
     providerAvailabilityProfiles: [],
     providerZoneProfiles: [],
+    clientUserAssignments: [],
+    clientId: "client-1",
     serviceCode: "97153",
     serviceZone: "Kendall",
     ...interval,
@@ -71,6 +73,36 @@ test("service eligibility includes only active role-compatible providers without
   assert.deepEqual(candidates(evaluate({ users, serviceCode: "97155" })).map((item) => item.provider.userId), ["bcba-1"]);
   assert.deepEqual(candidates(evaluate({ users, serviceCode: "97151" })).map((item) => item.provider.userId), ["bcba-1"]);
   assert.deepEqual(candidates(evaluate({ users, serviceCode: "97156" })).map((item) => item.provider.userId), ["bcba-1"]);
+});
+
+test("RBT assignment status is factual context and never changes matching eligibility or grouping", () => {
+  const users = [user("assigned", "Assigned RBT"), user("unassigned", "Unassigned RBT")];
+  const providerZoneProfiles = users.map((provider) => zone(provider.id, "Kendall"));
+  const providerAvailabilityProfiles = users.map((provider) => availability(provider.id));
+  const before = evaluate({ users, providerZoneProfiles, providerAvailabilityProfiles });
+  const after = evaluate({
+    users,
+    providerZoneProfiles,
+    providerAvailabilityProfiles,
+    clientUserAssignments: [{ id: "assignment-1", clientId: "client-1", userId: "assigned" }]
+  });
+
+  assert.deepEqual(candidate(before, "assigned").caseAssignment, { status: "not_assigned", label: "Not assigned" });
+  assert.deepEqual(candidate(after, "assigned").caseAssignment, { status: "assigned", label: "Already assigned to this client" });
+  assert.deepEqual(candidate(after, "unassigned").caseAssignment, { status: "not_assigned", label: "Not assigned" });
+  assert.equal(candidate(before, "assigned").group, candidate(after, "assigned").group);
+  assert.equal(candidate(before, "unassigned").group, candidate(after, "unassigned").group);
+  assert.equal(candidates(before).length, candidates(after).length);
+});
+
+test("BCBA matching remains independent of RBT client assignment records", () => {
+  const result = evaluate({
+    users: [user("bcba-1", "Bailey BCBA", "bcba")],
+    serviceCode: "97155",
+    clientUserAssignments: [{ id: "legacy-bcba-assignment", clientId: "client-1", userId: "bcba-1" }]
+  });
+  assert.equal(candidates(result).length, 1);
+  assert.equal(candidate(result, "bcba-1").caseAssignment, null);
 });
 
 test("zone evaluation distinguishes primary, acceptable, outside, missing, and legacy location zones", () => {

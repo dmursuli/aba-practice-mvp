@@ -21,14 +21,19 @@ function functionSource(name, { async = false } = {}) {
   throw new Error(`Unable to read ${name}`);
 }
 
-test("Staffing tab provides the complete read-only matching request form", () => {
+test("Staffing tab provides matching criteria and an explicit staffing confirmation", () => {
   const panel = html.slice(html.indexOf('id="schedule-subview-staffing"'), html.indexOf('id="schedule-subview-availability"'));
   for (const id of ["staffing-match-form", "staffing-client", "staffing-service", "staffing-location", "staffing-date", "staffing-start-time", "staffing-end-time", "staffing-find-providers", "staffing-results"]) {
     assert.match(panel, new RegExp(`id="${id}"`));
   }
   assert.match(panel, /Find providers for a service/);
-  assert.match(panel, /recommendations only and will not assign or schedule anyone/);
-  assert.doesNotMatch(panel, /Assign provider|Create appointment|Create recurring/i);
+  assert.match(panel, /do not assign anyone automatically or create appointments/);
+  assert.doesNotMatch(panel, /<button[^>]*>\s*(?:Create appointment|Create recurring|Schedule)/i);
+  for (const id of ["staffing-confirmation-modal", "staffing-confirmation-title", "staffing-confirmation-content", "staffing-confirmation-submit"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(html, /role="dialog"/);
+  assert.match(html, /aria-modal="true"/);
 });
 
 test("Staffing follows the selected client's active structured service locations", () => {
@@ -60,14 +65,43 @@ test("Find Providers calls the matching API and renders loading, error, legacy-z
   assert.match(results, /staffing-result-group/);
 });
 
-test("candidate cards show factual factors without scores, client details, or automatic actions", () => {
+test("candidate cards keep eligibility, assignment, and requested-time status separate", () => {
   const card = functionSource("staffingCandidateCard");
   assert.match(card, /candidate\.provider\.name/);
   assert.match(card, /candidate\.provider\.role/);
   assert.match(card, /candidate\.zone\.label/);
   assert.match(card, /candidate\.availability\.label/);
   assert.match(card, /candidate\.schedule\.label/);
-  assert.doesNotMatch(card, /score|percent|clientId|clientName|Assign provider|Create appointment/i);
+  assert.match(card, /candidate\.caseAssignment\.label/);
+  assert.match(card, /Case status/);
+  assert.match(card, /Staff this case/);
+  assert.doesNotMatch(card, /score|percent|clientId|clientName|Create appointment/i);
+});
+
+test("Staff this case is limited to unassigned 97153 RBT candidates and does not depend on time readiness", () => {
+  const eligibility = functionSource("canStaffCandidate");
+  assert.match(eligibility, /cptCode === "97153"/);
+  assert.match(eligibility, /canManageClientAssignments/);
+  assert.match(eligibility, /role === "rbt"/);
+  assert.match(eligibility, /caseAssignment\?\.status === "not_assigned"/);
+  assert.doesNotMatch(eligibility, /availability|schedule|zone/);
+});
+
+test("staffing requires confirmation, reuses the assignment API, updates the card, and creates no appointment", () => {
+  const open = functionSource("openStaffingConfirmation");
+  const confirm = functionSource("handleConfirmStaffingAssignment", { async: true });
+  const keyboard = functionSource("handleStaffingConfirmationKeydown");
+  assert.match(open, /classList\.remove\("hidden"\)/);
+  assert.match(open, /staffingConfirmationSubmit\?\.focus/);
+  assert.match(confirm, /assignClientProvider\(clientId, candidate\.provider\.userId\)/);
+  assert.match(confirm, /status: "assigned"/);
+  assert.match(confirm, /No appointment was created/);
+  assert.match(confirm, /error\.status === 409/);
+  assert.match(confirm, /refreshClientAssignments/);
+  assert.doesNotMatch(confirm, /createAppointment|createRecurringSeries/);
+  assert.match(keyboard, /event\.key === "Escape"/);
+  assert.match(functionSource("renderStaffingConfirmation"), /grant the RBT access/);
+  assert.match(functionSource("renderStaffingConfirmation"), /No appointment will be created/);
 });
 
 test("Staffing uses compact cards and collapses to one column without horizontal overflow", () => {
@@ -75,4 +109,5 @@ test("Staffing uses compact cards and collapses to one column without horizontal
   assert.match(css, /\.staffing-candidate-list[^}]*repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /@media \(max-width: 780px\)[\s\S]*\.staffing-candidate-list[^}]*minmax\(0, 1fr\)/);
   assert.match(css, /\.staffing-candidate-card[^}]*min-width: 0/);
+  assert.match(css, /\.staffing-confirmation-panel[^}]*calc\(100vw - 32px\)/);
 });

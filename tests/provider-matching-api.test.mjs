@@ -144,3 +144,126 @@ test("matching returns normalized context, preserves legacy zones, and never per
   assert.ok(result.json.groups.flatMap((group) => group.candidates).every((item) => item.zone.status === "service_zone_not_current"));
   assert.deepEqual(await db(), before);
 });
+
+test("matching reports existing assignment state without changing ranking or persisting results", async () => {
+  await resetDb();
+  const admin = await login();
+  const unassigned = await match(admin);
+  const unassignedCandidate = unassigned.json.groups.flatMap((group) => group.candidates)[0];
+  const originalGroup = unassignedCandidate.group;
+  assert.deepEqual(unassignedCandidate.caseAssignment, { status: "not_assigned", label: "Not assigned" });
+  assert.equal(unassigned.json.permissions.canManageClientAssignments, true);
+
+  const state = await db();
+  state.clientUserAssignments.push({
+    id: "assignment-existing",
+    clientId: "client-1",
+    userId: unassignedCandidate.provider.userId,
+    createdAt: "2026-09-20T12:00:00.000Z",
+    createdByUserId: "user-admin"
+  });
+  await writeFile(dbPath, `${JSON.stringify(state, null, 2)}\n`);
+  const before = await db();
+  const assigned = await match(admin);
+  const assignedCandidate = assigned.json.groups.flatMap((group) => group.candidates)[0];
+  assert.deepEqual(assignedCandidate.caseAssignment, { status: "assigned", label: "Already assigned to this client" });
+  assert.equal(assignedCandidate.group, originalGroup);
+  assert.deepEqual(await db(), before);
+});
+
+test("Staffing reuses the authoritative assignment mutation and changes no scheduling records", async () => {
+  await resetDb();
+  const admin = await login();
+  const before = await db();
+  const result = await match(admin);
+  const rbt = result.json.groups.flatMap((group) => group.candidates)[0].provider;
+
+  const assigned = await request("/api/clients/client-1/assignments", {
+    method: "POST",
+    cookie: admin,
+    body: { userId: rbt.userId }
+  });
+  assert.equal(assigned.response.status, 201);
+  assert.equal(assigned.json.assignment.clientId, "client-1");
+  assert.equal(assigned.json.assignment.userId, rbt.userId);
+
+  const persisted = await db();
+  assert.equal(persisted.clientUserAssignments.length, 1);
+  assert.equal(persisted.auditLog.filter((entry) => entry.action === "client-provider-assigned").length, 1);
+  assert.deepEqual(persisted.appointments, before.appointments);
+  assert.deepEqual(persisted.recurringAppointmentSeries, before.recurringAppointmentSeries);
+  assert.deepEqual(persisted.providerAvailabilityProfiles, before.providerAvailabilityProfiles);
+  assert.deepEqual(persisted.providerZoneProfiles, before.providerZoneProfiles);
+
+  const duplicate = await request("/api/clients/client-1/assignments", {
+    method: "POST",
+    cookie: admin,
+    body: { userId: rbt.userId }
+  });
+  assert.equal(duplicate.response.status, 409);
+  assert.equal((await db()).clientUserAssignments.length, 1);
+});
+
+test("existing assignment authorization and validation remain authoritative for Staffing", async () => {
+  await resetDb();
+  const admin = await login();
+  const state = await db();
+  const rbt = state.users.find((user) => user.role === "rbt");
+  const bcba = state.users.find((user) => user.role === "bcba");
+  rbt.agency = "Provider Legacy Agency";
+  state.clients[0].agency = "Client Legacy Agency";
+  await writeFile(dbPath, `${JSON.stringify(state, null, 2)}\n`);
+
+  const bcbaCookie = await login("bcba", "bcba123");
+  const byBcba = await request("/api/clients/client-1/assignments", {
+    method: "POST",
+    cookie: bcbaCookie,
+    body: { userId: rbt.id }
+  });
+  assert.equal(byBcba.response.status, 201);
+
+  await resetDb();
+  const resetAdmin = await login();
+  const roles = [
+    [await login("rbt", "rbt123"), 403],
+    [await login("readonly", "readonly123"), 403],
+    ["", 401]
+  ];
+  for (const [cookie, status] of roles) {
+    const denied = await request("/api/clients/client-1/assignments", {
+      method: "POST",
+      cookie,
+      body: { userId: "user-rbt" }
+    });
+    assert.equal(denied.response.status, status);
+  }
+
+  const invalidClient = await request("/api/clients/missing/assignments", {
+    method: "POST",
+    cookie: resetAdmin,
+    body: { userId: "user-rbt" }
+  });
+  assert.equal(invalidClient.response.status, 403);
+  const invalidProvider = await request("/api/clients/client-1/assignments", {
+    method: "POST",
+    cookie: resetAdmin,
+    body: { userId: "missing" }
+  });
+  assert.equal(invalidProvider.response.status, 400);
+
+  const inactiveState = await db();
+  inactiveState.users.find((user) => user.id === "user-rbt").active = false;
+  await writeFile(dbPath, `${JSON.stringify(inactiveState, null, 2)}\n`);
+  const inactive = await request("/api/clients/client-1/assignments", {
+    method: "POST",
+    cookie: resetAdmin,
+    body: { userId: "user-rbt" }
+  });
+  assert.equal(inactive.response.status, 400);
+
+  const bcbaMatch = await match(resetAdmin, criteria({ cptCode: "97155" }));
+  const candidates = bcbaMatch.json.groups.flatMap((group) => group.candidates);
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].provider.userId, bcba.id);
+  assert.equal(candidates[0].caseAssignment, null);
+});
