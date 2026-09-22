@@ -565,18 +565,26 @@ button:focus-visible {
 
 .parent-goal-controls {
   display: grid;
-  grid-template-columns: minmax(220px, 1.5fr) repeat(4, minmax(90px, 0.8fr)) 82px minmax(126px, auto) 34px;
-  gap: 10px;
-  align-items: end;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
 }
 
-.parent-goal-master-button { white-space: nowrap; }
-.parent-goal-mastered-row { display: grid; gap: 12px; }
-.parent-goal-mastered-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.parent-goal-mastered-heading > div { display: grid; gap: 4px; }
-.parent-goal-mastered-heading strong { color: var(--navy); }
+.parent-goal-collection { display: grid; gap: 5px; min-width: 0; }
+.parent-goal-collection-main { display: flex; align-items: end; justify-content: space-between; gap: 12px 20px; min-width: 0; }
+.parent-goal-collection-main .skill-response-row { flex: 1 1 auto; min-width: 0; }
+.parent-goal-prompt-field { flex: 0 1 190px; min-width: 150px; }
+.parent-goal-collection .skill-response-row,
+.parent-goal-collection .skill-running-summary { grid-column: auto; grid-row: auto; }
+.parent-goal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.parent-goal-master-button { min-height: 36px; padding: 6px 9px; white-space: nowrap; color: var(--ink-muted); background: #ffffff; border-color: var(--line); font-weight: 700; }
+.parent-goal-delete-button { align-self: auto; min-height: 36px; padding: 6px 9px; }
+.parent-goal-mastered-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 13px 14px; border-color: #b9d7b4; background: #fbfdf9; }
+.parent-goal-mastered-heading { display: flex; align-items: center; }
+.parent-goal-mastered-goal { max-width: 100%; color: var(--navy); font-size: 1rem; line-height: 1.4; overflow-wrap: anywhere; }
 .parent-goal-status { display: inline-flex; padding: 4px 9px; border-radius: 999px; background: #dcefd4; color: #276238; font-size: 0.76rem; font-weight: 800; }
 .parent-goal-mastered-target { display: grid; gap: 3px; }
+.parent-goal-mastered-target p { margin: 0; color: var(--ink); line-height: 1.4; overflow-wrap: anywhere; }
 .parent-goal-mastered-target span,
 .parent-goal-mastered-date { color: var(--muted); font-size: 0.82rem; }
 .parent-goal-mastered-date { margin: 0; }
@@ -3381,17 +3389,10 @@ button:disabled {
     gap: 10px;
   }
 
-  .parent-goal-controls {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .parent-goal-controls .metric-pill,
-  .parent-goal-controls .icon-button,
-  .parent-goal-master-button {
-    min-height: 48px;
-  }
-
-  .parent-goal-master-button { grid-column: 1 / -1; }
+  .parent-goal-collection-main { align-items: stretch; flex-direction: column; }
+  .parent-goal-collection-main .skill-response-row,
+  .parent-goal-prompt-field { flex: 1 1 auto; width: 100%; min-width: 0; }
+  .parent-goal-actions { justify-content: flex-start; flex-wrap: wrap; }
 
   input,
   select,

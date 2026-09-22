@@ -52,6 +52,32 @@ export function parentTrainingGoalMasteryDate(goal = {}) {
   return /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : "";
 }
 
+function nonNegativeParentTrainingCount(value) {
+  const count = Number(value || 0);
+  return Number.isFinite(count) ? Math.max(0, count) : 0;
+}
+
+export function parentTrainingCollectionMetrics(goal = {}) {
+  const independent = nonNegativeParentTrainingCount(goal.independent);
+  const prompted = nonNegativeParentTrainingCount(goal.prompted);
+  const opportunities = independent + prompted;
+  return {
+    independent,
+    prompted,
+    opportunities,
+    fidelity: opportunities > 0 ? Math.round((independent / opportunities) * 100) : 0
+  };
+}
+
+export function adjustParentTrainingResponse(goal = {}, response = "", step = 1) {
+  const counts = parentTrainingCollectionMetrics(goal);
+  if (!['independent', 'prompted'].includes(response)) return counts;
+  return parentTrainingCollectionMetrics({
+    ...counts,
+    [response]: Math.max(0, counts[response] + (step < 0 ? -1 : 1))
+  });
+}
+
 export function filterMasteredGoalsForPeriod(goals = [], startDate = "", endDate = "") {
   const seen = new Set();
   return goals.filter((goal) => {

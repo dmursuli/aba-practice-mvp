@@ -2,7 +2,7 @@ import { assignClientProvider, cancelAppointment, createAppointment, createProvi
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
-import { buildEditableParentTrainingSummary, explicitParentTrainingGoalState, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingGoalKey, parentTrainingGoalLabel, parentTrainingGoalLifecycleState, parentTrainingGoalMasteryDate, summarizeParentTrainingReport } from "./parent-training-report.js";
+import { adjustParentTrainingResponse, buildEditableParentTrainingSummary, explicitParentTrainingGoalState, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingCollectionMetrics, parentTrainingGoalKey, parentTrainingGoalLabel, parentTrainingGoalLifecycleState, parentTrainingGoalMasteryDate, summarizeParentTrainingReport } from "./parent-training-report.js";
 import { calculateRbtFidelity, setRbtFidelityResponse } from "./rbt-fidelity.js";
 import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, isLegacyGeneratedSkillAcquisitionSummary, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, summarizeSkillAcquisitionReport } from "./report-utils.js";
 import { format97155TargetChangeSummary, generateSoapNote, planChangesFor97155Session, summarize97155TargetChanges } from "./soap.js";
@@ -2394,15 +2394,15 @@ function addParentGoalRow(goal = {}, { goalIndex = "" } = {}) {
   if (parentGoalLifecycle(normalizedGoal) === "mastered") {
     const row = document.createElement("article");
     const masteryDate = parentTrainingGoalMasteryDate(normalizedGoal);
-    row.className = "data-row parent-goal-row parent-goal-mastered-row mastered-target";
+    row.className = "data-row parent-goal-row parent-goal-mastered-row";
     row.dataset.parentGoalState = "mastered";
     row.dataset.parentGoalIndex = String(goalIndex);
     row.innerHTML = `
       <div class="parent-goal-mastered-heading">
-        <div><span class="eyebrow">Mastered parent-training goal</span><strong>${escapeHtml(normalizedGoal.goalName)}</strong></div>
         <span class="parent-goal-status">Mastered</span>
       </div>
-      <div class="parent-goal-mastered-target"><span>Target</span><strong>${escapeHtml(normalizedGoal.targetName)}</strong></div>
+      <strong class="parent-goal-mastered-goal">${escapeHtml(normalizedGoal.goalName)}</strong>
+      <div class="parent-goal-mastered-target"><span>Target</span><p>${escapeHtml(normalizedGoal.targetName)}</p></div>
       ${masteryDate ? `<p class="parent-goal-mastered-date">Mastered ${escapeHtml(formatDate(masteryDate))}</p>` : ""}
     `;
     parentGoalList.append(row);
@@ -2416,10 +2416,11 @@ function addParentGoalRow(goal = {}, { goalIndex = "" } = {}) {
   row.dataset.parentGoalIndex = String(goalIndex);
   row.querySelector('[data-field="goalName"]').value = goal.goalName || "";
   row.querySelector('[data-field="targetName"]').value = goal.targetName || "";
-  row.querySelector('[data-field="opportunities"]').value = goal.opportunities ?? 5;
+  row.querySelector('[data-field="opportunities"]').value = goal.opportunities ?? 0;
   row.querySelector('[data-field="independent"]').value = goal.independent ?? 0;
   row.querySelector('[data-field="prompted"]').value = goal.prompted ?? 0;
   row.querySelector('[data-field="promptLevel"]').value = goal.promptLevel || "verbal";
+  row.responseHistory = [];
   row.querySelector("[data-remove]").addEventListener("click", () => {
     row.remove();
     renderParentGoalTabs();
@@ -2427,6 +2428,10 @@ function addParentGoalRow(goal = {}, { goalIndex = "" } = {}) {
   row.querySelector("[data-mark-parent-goal-mastered]")?.addEventListener("click", () => {
     void handleMarkParentGoalMastered(row);
   });
+  row.querySelectorAll("[data-parent-goal-response]").forEach((button) => {
+    button.addEventListener("click", () => recordParentGoalResponse(row, button.dataset.parentGoalResponse, Number(button.dataset.responseStep || 1)));
+  });
+  row.querySelector("[data-undo-parent-goal-response]")?.addEventListener("click", () => undoParentGoalResponse(row));
   row.querySelectorAll("input, select").forEach((input) => {
     input.addEventListener("input", () => updateParentGoalScore(row));
     input.addEventListener("change", () => updateParentGoalScore(row));
@@ -2498,11 +2503,20 @@ function preloadServiceHourRows() {
 
 function updateParentGoalScore(row) {
   if (row.dataset.parentGoalEditable !== "true") return;
-  const opportunities = Number(row.querySelector('[data-field="opportunities"]').value || 0);
-  const independent = Number(row.querySelector('[data-field="independent"]').value || 0);
-  const prompted = Number(row.querySelector('[data-field="prompted"]').value || 0);
-  const denominator = opportunities || independent + prompted;
-  const score = denominator > 0 ? Math.round((independent / denominator) * 100) : 0;
+  const counts = parentTrainingCollectionMetrics(readDataRow(row));
+  row.querySelector('[data-field="opportunities"]').value = String(counts.opportunities);
+  row.querySelector('[data-field="independent"]').value = String(counts.independent);
+  row.querySelector('[data-field="prompted"]').value = String(counts.prompted);
+  row.querySelector("[data-parent-goal-independent-summary]").textContent = String(counts.independent);
+  row.querySelector("[data-parent-goal-prompted-summary]").textContent = String(counts.prompted);
+  row.querySelector("[data-parent-goal-opportunities-summary]").textContent = String(counts.opportunities);
+  row.querySelectorAll('[data-parent-goal-response="independent"][data-response-step="-1"]').forEach((button) => {
+    button.disabled = counts.independent <= 0;
+  });
+  row.querySelectorAll('[data-parent-goal-response="prompted"][data-response-step="-1"]').forEach((button) => {
+    button.disabled = counts.prompted <= 0;
+  });
+  const score = counts.fidelity;
   row.querySelector("[data-parent-goal-score]").textContent = `${score}%`;
   const goal = normalizeParentGoal(readDataRow(row));
   const review = parentGoalReview(goal);
@@ -2512,6 +2526,31 @@ function updateParentGoalScore(row) {
   if (reviewBox) reviewBox.innerHTML = review.message;
   row.dataset.parentGoalState = "active";
   applyParentGoalFilter();
+}
+
+function recordParentGoalResponse(row, response, step = 1) {
+  if (!['independent', 'prompted'].includes(response)) return;
+  const current = parentTrainingCollectionMetrics(readDataRow(row));
+  if (step < 0 && current[response] <= 0) return;
+  const next = adjustParentTrainingResponse(current, response, step);
+  row.querySelector(`[data-field="${response}"]`).value = String(next[response]);
+  if (step < 0) {
+    const historyIndex = row.responseHistory.lastIndexOf(response);
+    if (historyIndex >= 0) row.responseHistory.splice(historyIndex, 1);
+  } else {
+    row.responseHistory.push(response);
+  }
+  row.querySelector("[data-undo-parent-goal-response]").disabled = row.responseHistory.length === 0;
+  updateParentGoalScore(row);
+}
+
+function undoParentGoalResponse(row) {
+  const response = row.responseHistory.pop();
+  if (!response) return;
+  const next = adjustParentTrainingResponse(readDataRow(row), response, -1);
+  row.querySelector(`[data-field="${response}"]`).value = String(next[response]);
+  row.querySelector("[data-undo-parent-goal-response]").disabled = row.responseHistory.length === 0;
+  updateParentGoalScore(row);
 }
 
 function parentGoalLifecycle(goal) {

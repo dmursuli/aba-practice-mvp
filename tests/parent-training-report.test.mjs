@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildEditableParentTrainingSummary, explicitParentTrainingGoalState, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingGoalIdentity, parentTrainingGoalKey, parentTrainingGoalLabel, parentTrainingGoalLifecycleState, parentTrainingGoalMasteryDate, summarizeParentTrainingReport } from '../public/parent-training-report.js';
+import { adjustParentTrainingResponse, buildEditableParentTrainingSummary, explicitParentTrainingGoalState, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingCollectionMetrics, parentTrainingGoalIdentity, parentTrainingGoalKey, parentTrainingGoalLabel, parentTrainingGoalLifecycleState, parentTrainingGoalMasteryDate, summarizeParentTrainingReport } from '../public/parent-training-report.js';
 import { removeParentGoalPointFromSession } from '../public/session-utils.js';
 
 test('parent-training lifecycle supports canonical and legacy mastery without inventing dates', () => {
@@ -13,6 +13,24 @@ test('parent-training lifecycle supports canonical and legacy mastery without in
   assert.equal(parentTrainingGoalLifecycleState({}, { legacyMastered: false }), 'active');
   assert.equal(parentTrainingGoalMasteryDate({ masteredAt: '2026-09-02T12:00:00.000Z' }), '2026-09-02');
   assert.equal(parentTrainingGoalMasteryDate({ status: 'mastered' }), '');
+});
+
+test('parent-training response controls keep opportunities and fidelity synchronized', () => {
+  let counts = parentTrainingCollectionMetrics({ independent: 3, prompted: 1, opportunities: 99 });
+  assert.deepEqual(counts, { independent: 3, prompted: 1, opportunities: 4, fidelity: 75 });
+
+  counts = adjustParentTrainingResponse(counts, 'independent', 1);
+  assert.deepEqual(counts, { independent: 4, prompted: 1, opportunities: 5, fidelity: 80 });
+  counts = adjustParentTrainingResponse(counts, 'independent', -1);
+  assert.deepEqual(counts, { independent: 3, prompted: 1, opportunities: 4, fidelity: 75 });
+  counts = adjustParentTrainingResponse(counts, 'prompted', 1);
+  assert.deepEqual(counts, { independent: 3, prompted: 2, opportunities: 5, fidelity: 60 });
+  counts = adjustParentTrainingResponse(counts, 'prompted', -1);
+  assert.deepEqual(counts, { independent: 3, prompted: 1, opportunities: 4, fidelity: 75 });
+
+  assert.deepEqual(adjustParentTrainingResponse({}, 'independent', -1), { independent: 0, prompted: 0, opportunities: 0, fidelity: 0 });
+  assert.deepEqual(adjustParentTrainingResponse({}, 'prompted', -1), { independent: 0, prompted: 0, opportunities: 0, fidelity: 0 });
+  assert.deepEqual(parentTrainingCollectionMetrics({ independent: 0, prompted: 0 }), { independent: 0, prompted: 0, opportunities: 0, fidelity: 0 });
 });
 
 test('parent-training summary deduplicates goals and caregivers across sessions', () => {
