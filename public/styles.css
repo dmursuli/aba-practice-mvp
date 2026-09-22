@@ -210,7 +210,6 @@ textarea {
 
 .app-shell {
   display: block;
-  padding: 18px;
 }
 
 .entry-panel {
@@ -218,6 +217,10 @@ textarea {
   margin: 0 auto;
 }
 
+.app-shell,
+.workflow-shell,
+.health-shell,
+.soap-shell,
 .plan-shell,
 .graphs-shell,
 .report-shell,
@@ -233,7 +236,6 @@ textarea {
   display: grid;
   grid-template-columns: minmax(300px, 0.85fr) minmax(420px, 1.15fr);
   gap: 18px;
-  padding: 18px;
 }
 
 .soap-shell.hidden {
@@ -3305,8 +3307,19 @@ button:disabled {
     padding: 10px 12px;
   }
 
-  .app-shell {
-    padding: 10px;
+  .app-shell,
+  .workflow-shell,
+  .health-shell,
+  .soap-shell,
+  .plan-shell,
+  .graphs-shell,
+  .report-shell,
+  .audit-shell,
+  .user-shell,
+  .parent-shell,
+  .client-shell,
+  .schedule-shell {
+    padding: 14px;
   }
 
   .data-row,
