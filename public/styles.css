@@ -79,12 +79,10 @@ textarea {
 }
 
 .topbar {
-  min-height: 168px;
   display: grid;
-  grid-template-columns: 1fr minmax(180px, 320px);
-  align-items: center;
-  gap: 24px;
-  padding: 28px clamp(16px, 4vw, 48px);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px clamp(16px, 4vw, 48px);
   background: linear-gradient(180deg, #ffffff 0%, #f4f8fd 100%);
   border-bottom: 1px solid var(--line);
 }
@@ -104,22 +102,31 @@ textarea {
 }
 
 .topbar h1 {
-  font-size: clamp(2rem, 4vw, 3.2rem);
-  line-height: 1.05;
+  font-size: clamp(1.25rem, 2vw, 1.5rem);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
 }
 
 .workspace-toolbar {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 280px) minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
-  margin-top: 14px;
+  gap: 12px 24px;
+}
+
+.workspace-identity {
+  min-width: 0;
+}
+
+.workspace-identity .eyebrow {
+  margin-bottom: 3px;
 }
 
 .workspace-client-picker {
   display: grid;
-  gap: 6px;
-  max-width: 280px;
+  gap: 4px;
+  min-width: 0;
+  width: 100%;
 }
 
 .workspace-client-picker span {
@@ -130,7 +137,8 @@ textarea {
 }
 
 .workspace-client-picker select {
-  min-width: 220px;
+  min-width: 0;
+  max-width: 100%;
   width: 100%;
   background: #ffffff;
 }
@@ -139,10 +147,13 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 18px;
+  min-width: 0;
 }
 
 .view-tab {
+  position: relative;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #ffffff;
@@ -158,22 +169,34 @@ textarea {
   color: var(--teal);
 }
 
-.header-image {
-  width: 100%;
-  height: 124px;
-  object-fit: cover;
-  border-radius: 8px;
-  border: 1px solid #c7d8ef;
+.view-tab.active::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 3px;
+  height: 3px;
+  border-radius: 2px;
+  background: currentColor;
 }
 
 .user-box {
-  display: grid;
-  gap: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
 }
 
 .user-box strong {
-  display: block;
-  margin-bottom: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.user-box button {
+  flex: 0 0 auto;
 }
 
 .eyebrow {
@@ -3251,33 +3274,29 @@ button:disabled {
   }
 
   .topbar {
-    min-height: auto;
-    gap: 16px;
-    padding: 16px 14px 14px;
+    gap: 12px;
+    padding: 12px 14px;
     align-items: start;
   }
 
-  .topbar h1 {
-    font-size: 2rem;
+  .workspace-toolbar {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
   }
 
-  .header-image {
-    display: none;
+  .workspace-client-picker {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 
   .user-box {
     gap: 6px;
   }
 
-  .workspace-toolbar {
-    margin-top: 10px;
-  }
-
   .view-switcher {
     flex-wrap: wrap;
     overflow-x: visible;
     padding-bottom: 4px;
-    margin-top: 14px;
   }
 
   .view-tab {
@@ -3422,6 +3441,9 @@ button:disabled {
 }
 
 @media (max-width: 520px) {
+  .workspace-toolbar { grid-template-columns: minmax(0, 1fr); }
+  .workspace-client-picker { grid-column: auto; grid-row: auto; }
+  .user-box { justify-content: flex-start; }
   .provider-zone-options { grid-template-columns: minmax(0, 1fr); }
   .capacity-client-row,
   .capacity-metrics { grid-template-columns: minmax(0, 1fr); }

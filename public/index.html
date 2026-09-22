@@ -54,40 +54,37 @@
 
     <div id="app-root" class="hidden">
     <header class="topbar">
-      <div>
-        <p class="eyebrow">Triumph Behavioral</p>
-        <h1>Triumph Workspace</h1>
-        <div class="workspace-toolbar">
-          <label class="workspace-client-picker">
-            <span>Client</span>
-            <select id="workspace-client-select" aria-label="Active client"></select>
-          </label>
+      <div class="workspace-toolbar">
+        <div class="workspace-identity">
+          <p class="eyebrow">Triumph Behavioral</p>
+          <h1>Triumph Workspace</h1>
         </div>
-        <nav class="view-switcher" aria-label="Workspace views">
-          <button type="button" class="view-tab" data-view-button="clients">Clients</button>
-          <button type="button" class="view-tab" data-view-button="users">Users</button>
-          <button type="button" class="view-tab active" data-view-button="session">Session</button>
-          <button type="button" class="view-tab" data-view-button="schedule">Scheduling</button>
-          <button type="button" class="view-tab" data-view-button="intake">Intake Interview</button>
-          <button type="button" class="view-tab" data-view-button="workflow">Workflow</button>
-          <button type="button" class="view-tab" data-view-button="plan">Treatment plan</button>
-          <button type="button" class="view-tab" data-view-button="parent">Parent Training</button>
-          <button type="button" class="view-tab" data-view-button="graphs">Graphs</button>
-          <button type="button" class="view-tab" data-view-button="import">Historical Import</button>
-          <button type="button" class="view-tab" data-view-button="report">Funder Report</button>
-          <button type="button" class="view-tab" data-view-button="soap">SOAP Notes</button>
-          <button type="button" class="view-tab" data-view-button="billing">Billing</button>
-          <button type="button" class="view-tab" data-view-button="health">Data Health</button>
-          <button type="button" class="view-tab" data-view-button="audit">Audit Log</button>
-        </nav>
-      </div>
-      <div class="user-box">
-        <img class="header-image" src="https://images.unsplash.com/photo-1600880292203-757bb62b4baf?auto=format&fit=crop&w=520&q=80" alt="Clinician workspace">
-        <div>
+        <label class="workspace-client-picker">
+          <span>Client</span>
+          <select id="workspace-client-select" aria-label="Active client"></select>
+        </label>
+        <div class="user-box">
           <strong id="current-user-label"></strong>
           <button type="button" class="secondary-button" id="logout-button">Logout</button>
         </div>
       </div>
+      <nav class="view-switcher" aria-label="Workspace views">
+        <button type="button" class="view-tab" data-view-button="clients">Clients</button>
+        <button type="button" class="view-tab" data-view-button="users">Users</button>
+        <button type="button" class="view-tab active" data-view-button="session" aria-current="page">Session</button>
+        <button type="button" class="view-tab" data-view-button="schedule">Scheduling</button>
+        <button type="button" class="view-tab" data-view-button="intake">Intake Interview</button>
+        <button type="button" class="view-tab" data-view-button="workflow">Workflow</button>
+        <button type="button" class="view-tab" data-view-button="plan">Treatment plan</button>
+        <button type="button" class="view-tab" data-view-button="parent">Parent Training</button>
+        <button type="button" class="view-tab" data-view-button="graphs">Graphs</button>
+        <button type="button" class="view-tab" data-view-button="import">Historical Import</button>
+        <button type="button" class="view-tab" data-view-button="report">Funder Report</button>
+        <button type="button" class="view-tab" data-view-button="soap">SOAP Notes</button>
+        <button type="button" class="view-tab" data-view-button="billing">Billing</button>
+        <button type="button" class="view-tab" data-view-button="health">Data Health</button>
+        <button type="button" class="view-tab" data-view-button="audit">Audit Log</button>
+      </nav>
     </header>
 
     <main class="app-shell" data-view-panel="session">

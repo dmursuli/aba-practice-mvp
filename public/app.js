@@ -4380,7 +4380,10 @@ async function switchView(view) {
   }
   if (view !== "schedule") closeAppointmentDetails();
   document.querySelectorAll("[data-view-button]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.viewButton === view);
+    const isActive = button.dataset.viewButton === view;
+    button.classList.toggle("active", isActive);
+    if (isActive) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
   });
   document.querySelectorAll("[data-view-panel]").forEach((panel) => {
     panel.classList.toggle("hidden", panel.dataset.viewPanel !== view);
