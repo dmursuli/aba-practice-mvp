@@ -1306,6 +1306,9 @@ function bindEvents() {
   document.querySelectorAll("[data-view-button]").forEach((button) => {
     button.addEventListener("click", (event) => handleViewTabClick(event, button.dataset.viewButton));
   });
+  document.querySelectorAll("[data-navigation-category]").forEach((button) => {
+    button.addEventListener("click", () => syncWorkspaceNavigationGroups(button.dataset.navigationCategory));
+  });
   document.querySelector("#add-program").addEventListener("click", () => addFirstAvailableTargetRow());
   document.querySelector("#add-maintenance-target").addEventListener("click", () => addFirstAvailableTargetRow("maintenance"));
   document.querySelector("#add-behavior").addEventListener("click", () => addFirstAvailableBehaviorRow());
@@ -4385,6 +4388,7 @@ async function switchView(view) {
     if (isActive) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   });
+  syncWorkspaceNavigationGroups();
   document.querySelectorAll("[data-view-panel]").forEach((panel) => {
     panel.classList.toggle("hidden", panel.dataset.viewPanel !== view);
   });
@@ -7942,6 +7946,36 @@ function handleReportSectionNavClick(event) {
     section.open = true;
   }
   section.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function syncWorkspaceNavigationGroups(category = "") {
+  const nav = document.querySelector(".view-switcher");
+  if (!nav) return;
+  const grouped = ["admin", "bcba"].includes(state.currentUser?.role);
+  const groups = [...nav.querySelectorAll("[data-navigation-group]")];
+  const availableGroups = groups.filter((group) => group.querySelector("[data-view-button]:not(.hidden)"));
+  const currentCategory = nav.querySelector("[data-view-button].active")?.closest("[data-navigation-group]")?.dataset.navigationGroup;
+  const requestedCategory = category || currentCategory;
+  const selectedCategory = availableGroups.find((group) => group.dataset.navigationGroup === requestedCategory)?.dataset.navigationGroup
+    || availableGroups[0]?.dataset.navigationGroup || "";
+  nav.classList.toggle("is-grouped", grouped);
+  nav.querySelector(".navigation-categories")?.classList.toggle("hidden", !grouped);
+  nav.querySelectorAll("[data-navigation-category]").forEach((button) => {
+    const available = availableGroups.some((group) => group.dataset.navigationGroup === button.dataset.navigationCategory);
+    button.classList.toggle("hidden", !available);
+    button.setAttribute("aria-pressed", String(grouped && button.dataset.navigationCategory === selectedCategory));
+  });
+  groups.forEach((group) => {
+    const available = availableGroups.includes(group);
+    group.classList.toggle("hidden", !available || (grouped && group.dataset.navigationGroup !== selectedCategory));
+    if (grouped && available) {
+      group.setAttribute("role", "group");
+      group.setAttribute("aria-labelledby", `navigation-${group.dataset.navigationGroup}-label`);
+    } else {
+      group.removeAttribute("role");
+      group.removeAttribute("aria-labelledby");
+    }
+  });
 }
 
 function applyRoleAccess() {

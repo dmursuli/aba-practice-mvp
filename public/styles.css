@@ -150,6 +150,48 @@ textarea {
   min-width: 0;
 }
 
+.view-nav-group {
+  display: contents;
+}
+
+.navigation-categories {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 3px;
+}
+
+.navigation-category {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.navigation-category[aria-pressed="true"] {
+  color: var(--brand-deep);
+  background: var(--brand-soft);
+  border-bottom-color: currentColor;
+}
+
+.view-switcher.is-grouped .view-nav-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
 .view-tab {
   position: relative;
   max-width: 100%;

@@ -69,21 +69,32 @@
         </div>
       </div>
       <nav class="view-switcher" aria-label="Workspace views">
-        <button type="button" class="view-tab" data-view-button="clients">Clients</button>
-        <button type="button" class="view-tab" data-view-button="users">Users</button>
-        <button type="button" class="view-tab active" data-view-button="session" aria-current="page">Session</button>
-        <button type="button" class="view-tab" data-view-button="schedule">Scheduling</button>
-        <button type="button" class="view-tab" data-view-button="intake">Intake Interview</button>
-        <button type="button" class="view-tab" data-view-button="workflow">Workflow</button>
-        <button type="button" class="view-tab" data-view-button="plan">Treatment plan</button>
-        <button type="button" class="view-tab" data-view-button="parent">Parent Training</button>
-        <button type="button" class="view-tab" data-view-button="graphs">Graphs</button>
-        <button type="button" class="view-tab" data-view-button="import">Historical Import</button>
-        <button type="button" class="view-tab" data-view-button="report">Funder Report</button>
-        <button type="button" class="view-tab" data-view-button="soap">SOAP Notes</button>
-        <button type="button" class="view-tab" data-view-button="billing">Billing</button>
-        <button type="button" class="view-tab" data-view-button="health">Data Health</button>
-        <button type="button" class="view-tab" data-view-button="audit">Audit Log</button>
+        <div class="navigation-categories hidden" role="group" aria-label="Navigation categories">
+          <button type="button" class="navigation-category" id="navigation-clinical-label" data-navigation-category="clinical" aria-controls="navigation-clinical" aria-pressed="false">Clinical</button>
+          <button type="button" class="navigation-category" id="navigation-operations-label" data-navigation-category="operations" aria-controls="navigation-operations" aria-pressed="false">Operations</button>
+          <button type="button" class="navigation-category" id="navigation-administration-label" data-navigation-category="administration" aria-controls="navigation-administration" aria-pressed="false">Administration</button>
+        </div>
+        <div class="view-nav-group" id="navigation-clinical" data-navigation-group="clinical">
+          <button type="button" class="view-tab" data-view-button="clients">Clients</button>
+          <button type="button" class="view-tab active" data-view-button="session" aria-current="page">Session</button>
+          <button type="button" class="view-tab" data-view-button="intake">Intake Interview</button>
+          <button type="button" class="view-tab" data-view-button="workflow">Workflow</button>
+          <button type="button" class="view-tab" data-view-button="plan">Treatment plan</button>
+          <button type="button" class="view-tab" data-view-button="parent">Parent Training</button>
+          <button type="button" class="view-tab" data-view-button="graphs">Graphs</button>
+          <button type="button" class="view-tab" data-view-button="report">Funder Report</button>
+          <button type="button" class="view-tab" data-view-button="soap">SOAP Notes</button>
+        </div>
+        <div class="view-nav-group" id="navigation-operations" data-navigation-group="operations">
+          <button type="button" class="view-tab" data-view-button="schedule">Scheduling</button>
+          <button type="button" class="view-tab" data-view-button="billing">Billing</button>
+        </div>
+        <div class="view-nav-group" id="navigation-administration" data-navigation-group="administration">
+          <button type="button" class="view-tab" data-view-button="users">Users</button>
+          <button type="button" class="view-tab" data-view-button="import">Historical Import</button>
+          <button type="button" class="view-tab" data-view-button="health">Data Health</button>
+          <button type="button" class="view-tab" data-view-button="audit">Audit Log</button>
+        </div>
       </nav>
     </header>
 
