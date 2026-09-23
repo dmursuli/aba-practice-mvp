@@ -9370,7 +9370,6 @@ function graphPhaseConfig(graphKey, series = [], automaticMarkers = []) {
 
 function graphTreatmentPhaseLine(graphKey, series = []) {
   const override = treatmentPhaseRecordForGraph(graphKey);
-  const dates = [...new Set((series || []).flatMap((item) => (item.points || []).map((point) => point.x)).filter(Boolean))].sort();
   if (override?.deleted) {
     return {
       id: override.id,
@@ -9387,7 +9386,7 @@ function graphTreatmentPhaseLine(graphKey, series = []) {
   if (override?.hidden) {
     return {
       id: override.id,
-      date: override.date || dates[1] || "",
+      date: override.date || "",
       label: override.label || "Treatment",
       lineStyle: override.lineStyle === "dashed" ? "dashed" : "solid",
       note: override.note || "",
@@ -9408,56 +9407,7 @@ function graphTreatmentPhaseLine(graphKey, series = []) {
       phaseType: "baselineToTreatment"
     };
   }
-  if (dates.length < 2) return null;
-  return {
-    id: `${graphKey}:treatment`,
-    date: dates[1],
-    label: "Treatment",
-    lineStyle: "solid",
-    note: "",
-    hidden: false,
-    sourceType: "autoTreatment",
-    phaseType: "baselineToTreatment"
-  };
-}
-
-function ensurePersistedTreatmentPhaseLine(graphKey, series = []) {
-  const existing = treatmentPhaseRecordForGraph(graphKey);
-  if (existing) return false;
-  const dates = [...new Set((series || []).flatMap((item) => (item.points || []).map((point) => point.x)).filter(Boolean))].sort();
-  if (dates.length < 2) return false;
-  const autoLine = buildTreatmentPhaseLineRecord(graphKey, {
-    date: dates[1],
-    label: "Treatment",
-    lineStyle: "solid",
-    note: "",
-    source: "auto",
-    hidden: false,
-    deleted: false
-  });
-  if (!autoLine) return false;
-  setTreatmentPhaseOverrideForGraph(graphKey, autoLine);
-  return true;
-}
-
-async function persistMissingTreatmentPhaseLines(graphEntries = []) {
-  const client = currentClient();
-  if (!client || !graphEntries.length) return;
-  let changed = false;
-  graphEntries.forEach(({ graphKey, series }) => {
-    changed = ensurePersistedTreatmentPhaseLine(graphKey, series) || changed;
-  });
-  if (!changed) return;
-  window.setTimeout(async () => {
-    try {
-      await persistGraphPhaseLinesForCurrentClient();
-    } catch (error) {
-      console.error("Could not persist generated treatment phase lines", error);
-      if (graphsMessage) {
-        graphsMessage.textContent = `Could not save generated treatment phase lines: ${error.message}`;
-      }
-    }
-  }, 0);
+  return null;
 }
 
 function renderCustomPhaseLineManager(graphKey, series, options = {}) {
@@ -9498,31 +9448,32 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
         <div class="graph-phase-line-item graph-phase-line-item-treatment">
           <div>
             <strong>${escapeHtml(treatmentRecord.label || "Treatment")}</strong>
-            <span>Deleted - analytics use each target's first observation as baseline.</span>
+            <span>Deleted - observations have no configured phase.</span>
             ${treatmentRecord.note ? `<p class="graph-phase-line-note">${escapeHtml(treatmentRecord.note)}</p>` : ""}
           </div>
           ${options.readOnly ? "" : `
             <div class="graph-phase-line-actions">
-              <button type="button" class="secondary-button" data-reset-treatment-phase-line="${escapeHtml(graphKey)}">Reset to default</button>
+              <button type="button" class="secondary-button" data-reset-treatment-phase-line="${escapeHtml(graphKey)}">Clear treatment configuration</button>
             </div>
           `}
         </div>
       `
     : !treatmentLine
-      ? `<p class="muted">No explicit treatment phase line. Analytics use each target's first observation as baseline and later observations as treatment.</p>`
+      ? `<p class="muted">No explicit treatment phase line. Observations are not classified as Baseline or Treatment.</p>
+          ${options.readOnly ? "" : `<button type="button" class="secondary-button" data-edit-treatment-phase-line="${escapeHtml(graphKey)}">Add treatment phase line</button>`}`
     : treatmentLine.hidden
       ? `
         <div class="graph-phase-line-item graph-phase-line-item-treatment">
           <div>
             <strong>${escapeHtml(treatmentLine.label || "Treatment")}</strong>
-            <span>Hidden - analytics use each target's first observation as baseline.</span>
+            <span>Hidden - observations have no configured phase.</span>
             ${treatmentLine.note ? `<p class="graph-phase-line-note">${escapeHtml(treatmentLine.note)}</p>` : ""}
           </div>
           ${options.readOnly ? "" : `
             <div class="graph-phase-line-actions">
               <button type="button" class="secondary-button" data-edit-treatment-phase-line="${escapeHtml(graphKey)}">Edit</button>
               <button type="button" class="delete-button" data-delete-treatment-phase-line="${escapeHtml(graphKey)}">Delete</button>
-              <button type="button" class="secondary-button" data-reset-treatment-phase-line="${escapeHtml(graphKey)}">Reset to default</button>
+              <button type="button" class="secondary-button" data-reset-treatment-phase-line="${escapeHtml(graphKey)}">Clear treatment configuration</button>
             </div>
           `}
         </div>
@@ -9539,13 +9490,13 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
               <button type="button" class="secondary-button" data-edit-treatment-phase-line="${escapeHtml(graphKey)}">Edit</button>
               <button type="button" class="delete-button" data-hide-treatment-phase-line="${escapeHtml(graphKey)}">Hide</button>
               <button type="button" class="delete-button" data-delete-treatment-phase-line="${escapeHtml(graphKey)}">Delete</button>
-              <button type="button" class="secondary-button" data-reset-treatment-phase-line="${escapeHtml(graphKey)}">Reset to default</button>
+              <button type="button" class="secondary-button" data-reset-treatment-phase-line="${escapeHtml(graphKey)}">Clear treatment configuration</button>
             </div>
           `}
         </div>
       `;
 
-  const treatmentEditableLine = treatmentLine || treatmentRecord;
+  const treatmentEditableLine = treatmentLine || treatmentRecord || { date: "", label: "Treatment", lineStyle: "solid" };
   const treatmentFormMarkup = !options.readOnly && editingTreatment && treatmentEditableLine
     ? `
       <form class="graph-phase-line-form" data-phase-line-form="${escapeHtml(graphKey)}" data-phase-line-kind="treatment" data-start-date="${escapeHtml(range.startDate)}" data-end-date="${escapeHtml(range.endDate)}">
@@ -12519,17 +12470,11 @@ async function handleGraphPhaseLineClick(event) {
   const resetTreatment = event.target.closest("[data-reset-treatment-phase-line]");
   if (resetTreatment) {
     const graphKey = resetTreatment.dataset.resetTreatmentPhaseLine;
-    if (!window.confirm("Reset the treatment phase line to the default baseline-to-treatment rule?")) return;
-    const series = phaseLineSeriesFromPanel(resetTreatment.closest(".chart-panel"));
-    const dates = [...new Set(series.flatMap((item) => (item.points || []).map((point) => point.x)).filter(Boolean))].sort();
-    if (dates.length < 2) {
-      graphsMessage.textContent = "Not enough graph data are available to reset the treatment phase line.";
-      return;
-    }
+    if (!window.confirm("Clear the treatment phase configuration? Observations will no longer be classified as Baseline or Treatment.")) return;
     setTreatmentPhaseOverrideForGraph(graphKey, null);
     markReportDraftDirty();
     await persistGraphPhaseLineUiChange({
-      successMessage: "Treatment phase line reset to default.",
+      successMessage: "Treatment phase configuration cleared.",
       failureMessage: "Could not save treatment phase line changes",
       control: resetTreatment
     });
@@ -13192,7 +13137,6 @@ function renderCharts() {
   const range = behaviorGraphRange();
   const sessions = filterSessionsByGraphRange(allSessions, range);
   const scope = graphScopeVisibility(state.activeGraphTab);
-  const graphEntriesNeedingPersistence = [];
   renderGraphScopeTabs();
   if (graphsMessage) {
     graphsMessage.textContent = state.sessionsLoadError || "";
@@ -13213,6 +13157,7 @@ function renderCharts() {
       skillCharts.innerHTML = "";
       behaviorCharts.innerHTML = "";
       drawParentTrainingChartSet(sessions, parentTrainingCharts, "parent-training-chart", {
+        layoutMode: "graphs",
         readOnly: false,
         reportField: "parentTrainingSummary",
         emptyMessage: "No caregiver training graph data available."
@@ -13225,25 +13170,13 @@ function renderCharts() {
     renderBehaviorGraphControls();
     const allBehaviorSeries = behaviorChartSeries(allSessions);
     const visibleIds = visibleBehaviorIds();
-    graphEntriesNeedingPersistence.push({
-      graphKey: graphTrendKey("behavior", "overview"),
-      series: allBehaviorSeries.filter((series) => visibleIds.includes(series.meta?.behaviorId))
-    });
-    allBehaviorSeries
-      .filter((series) => visibleIds.includes(series.meta?.behaviorId))
-      .forEach((series) => {
-      graphEntriesNeedingPersistence.push({
-        graphKey: graphTrendKey("behavior", series.meta?.behaviorId || series.name),
-        series: [series]
-      });
-      });
-    void persistMissingTreatmentPhaseLines(graphEntriesNeedingPersistence);
     const behaviorSeries = filterSeriesPointsByDateRange(allBehaviorSeries, range, {
       includeSeriesIds: visibleIds
     });
     const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
     const behaviorOverviewPhaseConfig = graphPhaseConfig(behaviorOverviewGraphKey, behaviorSeries);
     drawLineChart(document.querySelector("#behavior-chart"), behaviorSeries, {
+      layoutMode: "graphs",
       yStep: 1,
       yLabel: "frequency",
       emptyMessage: "Save a session to graph behavior frequency",
@@ -13295,6 +13228,7 @@ function renderCharts() {
       }
     }
     drawBehaviorChartSet(sessions, behaviorCharts, "behavior-single-chart", {
+      layoutMode: "graphs",
       range,
       allSeries: allBehaviorSeries,
       visibleBehaviorIds: visibleBehaviorIds()
@@ -13465,6 +13399,7 @@ function renderSkillCharts(sessions) {
       </article>
     `;
     drawLineChart(skillCharts.querySelector("canvas"), [], {
+      layoutMode: "graphs",
       maxY: 100,
       yStep: 10,
       yLabel: "% independence",
@@ -13474,13 +13409,6 @@ function renderSkillCharts(sessions) {
   }
 
   const visibleGroups = groups.filter((group) => !state.activeGraphDomain || group.domain === state.activeGraphDomain);
-  const graphEntriesNeedingPersistence = visibleGroups
-    .flatMap((group) => group.charts)
-    .map((chart) => ({
-      graphKey: graphTrendKey("skill", chart.program.id),
-      series: chart.series
-    }));
-  void persistMissingTreatmentPhaseLines(graphEntriesNeedingPersistence);
   skillCharts.innerHTML = visibleGroups.map((group) => `
     <section class="graph-domain-group">
       <div class="plan-domain-heading">
@@ -13507,6 +13435,7 @@ function renderSkillCharts(sessions) {
     const phaseConfig = graphPhaseConfig(graphKey, chart.series, masteryMarkersForProgram(chart.program.id));
     const chartSettings = skillChartSettings(chart);
     drawLineChart(skillCharts.querySelector(`[data-program-chart="${chart.program.id}"]`), chart.series, {
+      layoutMode: "graphs",
       ...chartSettings,
       phaseMarkers: phaseConfig.phaseMarkers,
       treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
@@ -13716,7 +13645,7 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
         </label>
       </div>
       <p class="graph-analysis-note">Analysis based on ${escapeHtml(options.rangeLabel || analysis.rangeLabel || "selected date range")}.</p>
-      ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">No explicit treatment phase line; using each target’s first observation as baseline.</p>' : ""}
+      ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">No explicit treatment phase line; observations are not classified as Baseline or Treatment.</p>' : ""}
       ${options.treatmentBeforeRange ? '<p class="graph-analysis-note">Treatment phase began before selected range.</p>' : ""}
       ${showTrendLine && analysis.trendLineMessage ? `<p class="graph-analysis-note">${escapeHtml(analysis.trendLineMessage)}</p>` : ""}
       ${analysis.analyses.map((entry) => `
@@ -13761,7 +13690,7 @@ function renderReportGraphAnalysisMarkup(analysis, options = {}) {
   return `
     <section class="report-graph-analysis" aria-label="Graph Analysis">
       <p class="graph-analysis-note">Analysis based on ${escapeHtml(options.rangeLabel || analysis.rangeLabel || "selected date range")}.</p>
-      ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">No explicit treatment phase line; using each target’s first observation as baseline.</p>' : ""}
+      ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">No explicit treatment phase line; observations are not classified as Baseline or Treatment.</p>' : ""}
       ${analysis.analyses.map((entry) => `
         <p class="report-graph-analysis-line">
           <strong>${escapeHtml(entry.label)}:</strong>
@@ -14029,6 +13958,7 @@ function drawBehaviorChartSet(sessions, container, chartAttribute, options = {})
     const graphKey = graphTrendKey("behavior", chart.behaviorId);
     const phaseConfig = graphPhaseConfig(graphKey, chart.series);
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${index}"]`), chart.series, {
+      layoutMode: options.layoutMode,
       yStep: 1,
       yLabel: "frequency",
       emptyMessage: "No behavior data for this behavior",
@@ -14088,15 +14018,6 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute, options
   const reportField = options.reportField || "parentTrainingSummary";
   const emptyMessage = options.emptyMessage || "No caregiver training graph data available.";
 
-  if (!isReadOnly) {
-    void persistMissingTreatmentPhaseLines(
-      charts.map((chart) => ({
-        graphKey: graphTrendKey("parent", chart.goalKey),
-        series: chart.series
-      }))
-    );
-  }
-
   if (!charts.length) {
     container.innerHTML = `<p>${escapeHtml(emptyMessage)}</p>`;
     return;
@@ -14117,6 +14038,7 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute, options
     const graphKey = graphTrendKey("parent", chart.goalKey);
     const phaseConfig = graphPhaseConfig(graphKey, chart.series);
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${index}"]`), chart.series, {
+      layoutMode: options.layoutMode,
       maxY: 100,
       yStep: 10,
       yLabel: "caregiver fidelity %",

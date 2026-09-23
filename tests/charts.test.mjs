@@ -69,43 +69,18 @@ function environmentalChangeMarker(date, lineStyle = 'dashed') {
 }
 
 for (const [label, make] of [['skill acquisition', skillLikeSeries], ['behavior reduction', behaviorLikeSeries]]) {
-  test(`${label}: one data point renders baseline only with no treatment line`, () => {
-    const model = buildClinicalGraphModel(make([
-      { x: '2026-06-01', y: 40, phase: 'intervention' }
-    ]));
-
-    assert.equal(model.showGridLines, false);
-    assert.equal(model.phaseBoundary, null);
-    assert.deepEqual(model.phaseMarkers, []);
-    assert.equal(derivedPointPhase(0, model.phaseBoundary), 'baseline');
-  });
-
-  test(`${label}: two data points render a solid treatment line after point one`, () => {
-    const model = buildClinicalGraphModel(make([
-      { x: '2026-06-01', y: 40, phase: 'intervention' },
-      { x: '2026-06-03', y: 60, phase: 'intervention' }
-    ]));
-
-    assert.ok(model.phaseBoundary);
-    assert.equal(model.phaseBoundary.phaseType, 'baselineToTreatment');
-    assert.equal(model.phaseBoundary.lineStyle, 'solid');
-    assert.equal(model.phaseBoundary.leftIndex, 0);
-    assert.equal(model.phaseBoundary.rightIndex, 1);
-    assert.equal(derivedPointPhase(0, model.phaseBoundary), 'baseline');
-    assert.equal(derivedPointPhase(1, model.phaseBoundary), 'intervention');
-  });
-
-  test(`${label}: multiple data points keep the first point baseline and later points treatment`, () => {
-    const model = buildClinicalGraphModel(make([
-      { x: '2026-06-01', y: 20 },
-      { x: '2026-06-03', y: 40 },
+  test(`${label}: observations have no phase without configured boundaries`, () => {
+    for (const points of [[{ x: '2026-06-01', y: 40 }], [
+      { x: '2026-06-01', y: 0, phase: 'baseline' },
+      { x: '2026-06-03', y: 40, phase: 'intervention' },
       { x: '2026-06-05', y: 60 }
-    ]));
-
-    assert.ok(model.phaseBoundary);
-    assert.equal(derivedPointPhase(0, model.phaseBoundary), 'baseline');
-    assert.equal(derivedPointPhase(1, model.phaseBoundary), 'intervention');
-    assert.equal(derivedPointPhase(2, model.phaseBoundary), 'intervention');
+    ]]) {
+      const model = buildClinicalGraphModel(make(points));
+      assert.equal(model.showGridLines, false);
+      assert.equal(model.phaseBoundary, null);
+      assert.deepEqual(model.phaseMarkers, []);
+      model.dates.forEach((_, index) => assert.equal(derivedPointPhase(index, model.phaseBoundary), null));
+    }
   });
 
   test(`${label}: mastered marker appears only after treatment starts`, () => {
@@ -115,7 +90,7 @@ for (const [label, make] of [['skill acquisition', skillLikeSeries], ['behavior 
         { x: '2026-06-03', y: 40 },
         { x: '2026-06-05', y: 80 }
       ]),
-      { phaseMarkers: targetMasteredMarker('2026-06-03') }
+      { treatmentPhaseLine: { date: '2026-06-03' }, phaseMarkers: targetMasteredMarker('2026-06-03') }
     );
 
     assert.equal(treatmentModel.phaseMarkers.length, 1);
@@ -128,7 +103,7 @@ for (const [label, make] of [['skill acquisition', skillLikeSeries], ['behavior 
         { x: '2026-06-01', y: 20 },
         { x: '2026-06-03', y: 40 }
       ]),
-      { phaseMarkers: targetMasteredMarker('2026-06-01') }
+      { treatmentPhaseLine: { date: '2026-06-03' }, phaseMarkers: targetMasteredMarker('2026-06-01') }
     );
 
     assert.deepEqual(baselineModel.phaseMarkers, []);
@@ -141,7 +116,7 @@ for (const [label, make] of [['skill acquisition', skillLikeSeries], ['behavior 
         { x: '2026-06-03', y: 3 },
         { x: '2026-06-05', y: 2 }
       ]),
-      { phaseMarkers: objectiveChangeMarker('2026-06-05') }
+      { treatmentPhaseLine: { date: '2026-06-03' }, phaseMarkers: objectiveChangeMarker('2026-06-05') }
     );
 
     assert.equal(treatmentModel.phaseMarkers.length, 1);
@@ -153,7 +128,7 @@ for (const [label, make] of [['skill acquisition', skillLikeSeries], ['behavior 
         { x: '2026-06-01', y: 5 },
         { x: '2026-06-03', y: 3 }
       ]),
-      { phaseMarkers: objectiveChangeMarker('2026-06-01') }
+      { treatmentPhaseLine: { date: '2026-06-03' }, phaseMarkers: objectiveChangeMarker('2026-06-01') }
     );
 
     assert.deepEqual(baselineModel.phaseMarkers, []);
@@ -165,7 +140,7 @@ for (const [label, make] of [['skill acquisition', skillLikeSeries], ['behavior 
         { x: '2026-06-01', y: 5 },
         { x: '2026-06-03', y: 3 }
       ]),
-      { phaseMarkers: baselineConditionChangeMarker('2026-06-01') }
+      { treatmentPhaseLine: { date: '2026-06-03' }, phaseMarkers: baselineConditionChangeMarker('2026-06-01') }
     );
 
     assert.equal(model.phaseMarkers.length, 1);
@@ -181,7 +156,7 @@ for (const [label, make] of [['skill acquisition', skillLikeSeries], ['behavior 
         { x: '2026-06-03', y: 15 },
         { x: '2026-06-05', y: 25 }
       ]),
-      { phaseMarkers: environmentalChangeMarker('2026-06-01', 'solid') }
+      { treatmentPhaseLine: { date: '2026-06-03' }, phaseMarkers: environmentalChangeMarker('2026-06-01', 'solid') }
     );
 
     assert.ok(model.phaseBoundary);
@@ -235,8 +210,8 @@ for (const [label, make] of [['skill acquisition', skillLikeSeries], ['behavior 
     );
 
     assert.equal(model.phaseBoundary, null);
-    assert.equal(derivedPointPhase(0, model.phaseBoundary), 'baseline');
-    assert.equal(derivedPointPhase(1, model.phaseBoundary), 'baseline');
+    assert.equal(derivedPointPhase(0, model.phaseBoundary), null);
+    assert.equal(derivedPointPhase(1, model.phaseBoundary), null);
   });
 
   test(`${label}: deleted treatment phase override suppresses automatic regeneration`, () => {
@@ -264,7 +239,7 @@ test('grid configuration stays disabled while axes and phase model remain availa
   const model = buildClinicalGraphModel(skillLikeSeries([
     { x: '2026-06-01', y: 10 },
     { x: '2026-06-03', y: 20 }
-  ]));
+  ]), { treatmentPhaseLine: { date: '2026-06-03' } });
 
   assert.equal(model.showGridLines, false);
   assert.ok(model.phaseBoundary);
@@ -449,12 +424,12 @@ test('graph layout uses responsive width without data-length based canvas sizing
   assert.match(appSource, /data-reset-treatment-phase-line/);
   assert.match(appSource, /data-phase-line-kind=\"treatment\"/);
   assert.doesNotMatch(appSource, /Treatment phase line unavailable; baseline\/treatment analysis may be limited\./);
-  assert.match(appSource, /using each target.s first observation as baseline/i);
+  assert.doesNotMatch(appSource, /first observation as baseline/i);
   assert.match(appSource, /showPointMarkers: state\.behaviorGraphShowPoints/);
   assert.match(appSource, /<div class="graph-canvas-scroll">/);
   assert.doesNotMatch(appSource, /showAllDateLabels: true/);
   assert.match(chartSource, /canvas\.style\.width = "100%"/);
-  assert.match(chartSource, /canvas\.style\.maxWidth = `\$\{MAX_DESKTOP_CANVAS_WIDTH\}px`/);
+  assert.match(chartSource, /canvas\.style\.maxWidth = `\$\{responsive \? 1040 : MAX_DESKTOP_CANVAS_WIDTH\}px`/);
   assert.match(chartSource, /canvas\.style\.height = "auto"/);
   assert.match(chartSource, /canvas\.style\.marginInline = "auto"/);
   assert.doesNotMatch(chartSource, /dateCount \* DENSE_SCROLL_PIXELS_PER_DATE/);
@@ -478,7 +453,7 @@ test('skill graph analysis reports baseline, treatment, trend, and mastery metri
       { x: '2026-06-09', y: 90 }
     ]
   }], {
-    graphType: 'skill',
+    treatmentPhaseLine: { date: '2026-06-03' }, graphType: 'skill',
     phaseMarkers: [{
       date: '2026-06-09',
       label: 'Target mastered',
@@ -510,7 +485,7 @@ test('behavior graph analysis reports reduction, overlap, and immediacy metrics'
       { x: '2026-06-09', y: 2 }
     ]
   }], {
-    graphType: 'behavior'
+    treatmentPhaseLine: { date: '2026-06-03' }, graphType: 'behavior'
   });
 
   assert.equal(analysis.graphType, 'behavior');
@@ -533,7 +508,7 @@ test('behavior interpretation uses increase wording when treatment rises above b
       { x: '2026-06-05', y: 9 }
     ]
   }], {
-    graphType: 'behavior'
+    treatmentPhaseLine: { date: '2026-06-03' }, graphType: 'behavior'
   });
 
   assert.match(analysis.analyses[0].interpretation, /increase from baseline/i);
@@ -550,7 +525,7 @@ test('editing the treatment phase line recalculates behavior baseline and treatm
       { x: '2026-06-05', y: 4 }
     ]
   }];
-  const defaultAnalysis = buildGraphAnalysis(series, { graphType: 'behavior' });
+  const defaultAnalysis = buildGraphAnalysis(series, { treatmentPhaseLine: { date: '2026-06-03' }, graphType: 'behavior' });
   const shiftedAnalysis = buildGraphAnalysis(series, {
     graphType: 'behavior',
     treatmentPhaseLine: {
@@ -574,7 +549,7 @@ test('graph analysis uses insufficient-data messaging when treatment data are to
       { x: '2026-06-01', y: 30 },
       { x: '2026-06-03', y: 50 }
     ]
-  }], { graphType: 'skill' });
+  }], { treatmentPhaseLine: { date: '2026-06-03' }, graphType: 'skill' });
 
   assert.equal(analysis.analyses[0].baselineLevel, 30);
   assert.equal(analysis.analyses[0].treatmentLevel, 50);
@@ -660,7 +635,7 @@ test('graph analysis identifies trend-line eligibility when a series has five tr
       { x: '2026-06-09', y: 60 },
       { x: '2026-06-11', y: 70 }
     ]
-  }], { graphType: 'skill' });
+  }], { treatmentPhaseLine: { date: '2026-06-03' }, graphType: 'skill' });
 
   assert.equal(analysis.trendLineEligible, true);
   assert.equal(analysis.analyses[0].trendLineEligible, true);
@@ -676,7 +651,7 @@ test('graph analysis permits a progressive trend line with fewer than five treat
       { x: '2026-06-05', y: 4 },
       { x: '2026-06-07', y: 2 }
     ]
-  }], { graphType: 'behavior' });
+  }], { treatmentPhaseLine: { date: '2026-06-03' }, graphType: 'behavior' });
 
   assert.equal(analysis.trendLineEligible, true);
   assert.equal(analysis.analyses[0].trendLineEligible, true);
@@ -805,7 +780,7 @@ test('baseline and treatment comparison calculate with one point in each phase f
       { x: '2026-06-01', y: 8 },
       { x: '2026-06-03', y: 3 }
     ]
-  }], { graphType: 'behavior' });
+  }], { treatmentPhaseLine: { date: '2026-06-03' }, graphType: 'behavior' });
 
   assert.equal(analysis.analyses[0].baselineLevel, 8);
   assert.equal(analysis.analyses[0].treatmentLevel, 3);
@@ -821,7 +796,7 @@ test('baseline mean of zero does not cause divide-by-zero errors', () => {
       { x: '2026-06-01', y: 0 },
       { x: '2026-06-03', y: 20 }
     ]
-  }], { graphType: 'skill' });
+  }], { treatmentPhaseLine: { date: '2026-06-03' }, graphType: 'skill' });
 
   assert.equal(analysis.analyses[0].baselineLevel, 0);
   assert.equal(analysis.analyses[0].difference, 20);
@@ -836,7 +811,7 @@ test('graph analysis panel data remains available when some metrics are unavaila
       { x: '2026-06-01', y: 45 },
       { x: '2026-06-03', y: 50 }
     ]
-  }], { graphType: 'skill' });
+  }], { treatmentPhaseLine: { date: '2026-06-03' }, graphType: 'skill' });
 
   assert.equal(analysis.analyses.length, 1);
   assert.equal(analysis.analyses[0].baselineLevel, 45);
@@ -859,7 +834,7 @@ test('skill analysis still calculates baseline level when stored phase labels ma
       { x: '2026-06-01', y: 25, phase: 'intervention' },
       { x: '2026-06-03', y: 55, phase: 'intervention' }
     ]
-  }], { graphType: 'skill' });
+  }], { treatmentPhaseLine: { date: '2026-06-03' }, graphType: 'skill' });
 
   assert.equal(analysis.analyses[0].baselineLevel, 25);
   assert.equal(analysis.analyses[0].treatmentLevel, 55);
@@ -873,14 +848,14 @@ test('behavior analysis still calculates baseline level when stored phase labels
       { x: '2026-06-01', y: 7, phase: 'intervention' },
       { x: '2026-06-03', y: 4, phase: 'intervention' }
     ]
-  }], { graphType: 'behavior' });
+  }], { treatmentPhaseLine: { date: '2026-06-03' }, graphType: 'behavior' });
 
   assert.equal(analysis.analyses[0].baselineLevel, 7);
   assert.equal(analysis.analyses[0].treatmentLevel, 4);
   assert.match(analysis.analyses[0].interpretation, /Baseline frequency averaged 7 based on 1 baseline data point/i);
 });
 
-test('missing phase line still classifies the first target observation as baseline', () => {
+test('missing phase line leaves phase-specific analysis unavailable', () => {
   const analysis = buildGraphAnalysis([{
     name: 'Independent work',
     meta: { targetId: 'fallback-target' },
@@ -898,12 +873,12 @@ test('missing phase line still classifies the first target observation as baseli
   }], { graphType: 'skill', suppressAutoTreatmentBoundary: true });
 
   assert.equal(analysis.phaseBoundary, null);
-  assert.equal(analysis.analyses[0].baselineLevel, 90);
-  assert.equal(analysis.analyses[0].treatmentLevel, 80);
+  assert.equal(analysis.analyses[0].baselineLevel, null);
+  assert.equal(analysis.analyses[0].treatmentLevel, null);
   assert.equal(analysis.analyses[0].currentLevel, 80);
-  assert.equal(analysis.analyses[0].difference, -10);
-  assert.equal(analysis.analyses[0].percentChange, '-11.1%');
-  assert.doesNotMatch(analysis.analyses[0].interpretation, /Treatment data are unavailable/i);
+  assert.equal(analysis.analyses[0].difference, null);
+  assert.equal(analysis.analyses[0].percentChange, 'Unavailable');
+  assert.equal(analysis.analyses[0].baselineAvailable, false);
 });
 
 test('trend direction uses all treatment points and only one is insufficient', () => {
@@ -913,7 +888,7 @@ test('trend direction uses all treatment points and only one is insufficient', (
       { x: '2026-08-01', y: 50 },
       ...values.map((y, index) => ({ x: `2026-08-${String(index + 2).padStart(2, '0')}`, y }))
     ]
-  }], { graphType: 'skill' }).analyses[0].trendDirection;
+  }], { treatmentPhaseLine: { date: '2026-08-02' }, graphType: 'skill' }).analyses[0].trendDirection;
 
   assert.equal(trendFor([90]), 'Insufficient data');
   assert.equal(trendFor([90, 90]), 'Flat');
@@ -946,8 +921,8 @@ test('sparse targets retain their own first observation and never receive fabric
 
   assert.deepEqual(model.dates, ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-05']);
   assert.deepEqual(series[1].points.map((point) => point.x), ['2026-09-03', '2026-09-05']);
-  assert.equal(analysis.analyses[1].baselineLevel, 40);
-  assert.equal(analysis.analyses[1].treatmentLevel, 60);
+  assert.equal(analysis.analyses[1].baselineLevel, null);
+  assert.equal(analysis.analyses[1].treatmentLevel, null);
 });
 
 test('target colors use stable graph-local series order and reset for unrelated graphs', () => {
@@ -1089,7 +1064,7 @@ test('dense graphs thin date labels without dropping points or using severe rota
     assert.equal(dateLabels[0], '1/1/2026');
     assert.equal(dateLabels.at(-1), '2/9/2026');
     assert.equal(recorder.calls.arcs, points.length);
-    assert.ok(recorder.calls.rotations.length >= 5);
+    assert.equal(recorder.calls.rotations.length, dateLabels.length >= 5 ? dateLabels.length : 0);
     assert.ok(recorder.calls.rotations.every((angle) => angle === -Math.PI / 6));
   } finally {
     globalThis.window = previousWindow;
@@ -1213,7 +1188,7 @@ test('treatment heading remains once without a duplicate rotated boundary label'
     const recorder = makeCanvasRecorder();
     drawLineChart(recorder.canvas, [{ name: 'Boundary target', points: [
       { x: '2026-09-01', y: 10 }, { x: '2026-09-02', y: 20 }
-    ] }]);
+    ] }], { treatmentPhaseLine: { date: '2026-09-02' } });
     assert.equal(recorder.calls.text.filter((value) => value === 'Baseline').length, 1);
     assert.equal(recorder.calls.text.filter((value) => value === 'Treatment').length, 1);
   } finally {
@@ -1228,7 +1203,7 @@ test('y-axis title clears tick labels and phase headings center over their inter
     const recorder = makeCanvasRecorder();
     drawLineChart(recorder.canvas, [{ name: 'Phase target', points: [
       { x: '2026-09-01', y: 10 }, { x: '2026-09-02', y: 20 }
-    ] }], { maxY: 100, yLabel: '% independence' });
+    ] }], { treatmentPhaseLine: { date: '2026-09-02' }, maxY: 100, yLabel: '% independence' });
 
     assert.ok(recorder.calls.translations.some(({ x, y }) => x === 12 && y === 220));
     assert.deepEqual(
@@ -1257,4 +1232,29 @@ test('moving-average and raw series use the same graph-local target color', () =
   } finally {
     globalThis.window = previousWindow;
   }
+});
+
+test('unconfigured renderer has no inferred phase labels, boundary stroke, tooltip phase or first-point line break', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  try {
+    const series = [{ name: 'Unconfigured', points: [
+      {x:'2026-01-01',y:0,phase:'baseline'}, {x:'2026-01-03',y:50}, {x:'2026-01-05',y:100}
+    ] }];
+    const before=structuredClone(series), recorder=makeCanvasRecorder();
+    drawLineChart(recorder.canvas,series,{maxY:100});
+    assert.ok(!recorder.calls.text.includes('Baseline') && !recorder.calls.text.includes('Treatment'));
+    assert.equal(recorder.calls.strokes.filter(s=>s.color==='#1f2933').length,0);
+    assert.equal(recorder.calls.strokes.filter(s=>s.color==='#167c80').length,2);
+    recorder.canvas.onmousemove({clientX:92,clientY:372});
+    assert.match(recorder.canvas.title,/Unconfigured: 0/);
+    assert.doesNotMatch(recorder.canvas.title,/Phase:/);
+    assert.deepEqual(series,before);
+    const explicit=makeCanvasRecorder();
+    drawLineChart(explicit.canvas,series,{maxY:100,treatmentPhaseLine:{date:'2026-01-03',lineStyle:'dashed'}});
+    assert.equal(explicit.calls.text.filter(x=>x==='Baseline').length,1);
+    assert.equal(explicit.calls.text.filter(x=>x==='Treatment').length,1);
+    assert.equal(explicit.calls.strokes.filter(s=>s.color==='#1f2933').length,1);
+    assert.equal(explicit.calls.strokes.filter(s=>s.color==='#167c80').length,1);
+  } finally { globalThis.window=previousWindow; }
 });

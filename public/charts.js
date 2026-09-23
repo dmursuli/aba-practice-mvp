@@ -16,23 +16,24 @@ const PLOT_RIGHT_MARGIN = 20;
 export function drawLineChart(canvas, series, options = {}) {
   if (!canvas) return;
   canvas.__clinicalGraphRenderState = { series, options: { ...options } };
+  const responsive = options.layoutMode === "graphs";
   const ctx = canvas.getContext("2d");
   const allPoints = series.flatMap((item) => item.points);
   const seriesStyles = buildSeriesStyles(series);
   canvas.style.width = "100%";
-  canvas.style.maxWidth = `${MAX_DESKTOP_CANVAS_WIDTH}px`;
+  canvas.style.maxWidth = `${responsive ? 1040 : MAX_DESKTOP_CANVAS_WIDTH}px`;
   canvas.style.height = "auto";
   canvas.style.marginInline = "auto";
   const rect = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.max(320, Math.floor(rect.width * dpr));
+  canvas.width = Math.max(responsive ? 1 : 320, Math.floor(rect.width * dpr));
   canvas.height = Math.floor(CLINICAL_CHART_HEIGHT * dpr);
   ctx.scale(dpr, dpr);
 
   const width = canvas.width / dpr;
-  const height = canvas.height / dpr;
+  let height = canvas.height / dpr;
   const availablePlotWidth = width - PLOT_LEFT_MARGIN - PLOT_RIGHT_MARGIN;
-  const plotWidth = Math.min(availablePlotWidth, MAX_DESKTOP_PLOT_WIDTH);
+  const plotWidth = responsive ? availablePlotWidth : Math.min(availablePlotWidth, MAX_DESKTOP_PLOT_WIDTH);
   const margin = { top: 52, right: PLOT_RIGHT_MARGIN, bottom: 68, left: PLOT_LEFT_MARGIN };
   let plotHeight = height - margin.top - margin.bottom;
 
@@ -48,7 +49,15 @@ export function drawLineChart(canvas, series, options = {}) {
 
   const model = buildClinicalGraphModel(series, options);
   const { dates, phaseBoundary, phaseMarkers } = model;
-  const dateTicks = buildDateTicks(series, {
+  const layout = buildChartLayout(dates, margin.left, plotWidth, phaseBoundary, phaseMarkers);
+  const xPositions = layout.dateXPositions;
+  ctx.font = "11px system-ui, sans-serif";
+  const dateLabelLayout = responsive
+    ? layoutDateTicks(dates, xPositions, (text) => ctx.measureText(text).width, 8, width - 8)
+    : null;
+  const dateTicks = responsive
+    ? dateLabelLayout.ticks
+    : buildDateTicks(series, {
     ...options,
     dates,
     phaseDates: [
@@ -57,15 +66,13 @@ export function drawLineChart(canvas, series, options = {}) {
     ],
     availableWidth: plotWidth
   });
-  const useAngledDates = dateTicks.length >= 5;
+  const useAngledDates = responsive ? dateLabelLayout.angle !== 0 : dateTicks.length >= 5;
   if (useAngledDates) {
-    margin.bottom = 92;
+    margin.bottom = responsive ? Math.max(68, Math.ceil(dateLabelLayout.height + 32)) : 92;
     plotHeight = height - margin.top - margin.bottom;
   }
   const maxY = Math.max(options.maxY || 0, ...allPoints.map((point) => point.y), 1);
   const yTop = options.maxY || Math.max(options.yStep || 1, Math.ceil(maxY * 1.15));
-  const layout = buildChartLayout(dates, margin.left, plotWidth, phaseBoundary, phaseMarkers);
-  const xPositions = layout.dateXPositions;
   const phaseLineX = phaseBoundary ? phaseLinePosition(phaseBoundary, xPositions) : null;
   const phaseMarkerXs = markerPositions(phaseMarkers, dates, xPositions, layout.markerXByDate);
   const breakLines = [
@@ -73,22 +80,73 @@ export function drawLineChart(canvas, series, options = {}) {
     ...phaseMarkerXs
   ];
 
-  drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options);
-  drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions);
-  drawPhaseMarkers(ctx, margin, plotHeight, phaseMarkers, dates, xPositions, layout.markerXByDate);
+  let phaseLabels = [];
+  if (responsive) {
+    const labels = [];
+    if (Number.isFinite(phaseLineX)) {
+      labels.push({ text: "Baseline", anchorX: margin.left + (phaseLineX - margin.left) / 2, color: "#1f2933" });
+      labels.push({ text: phaseBoundary.label || "Treatment", anchorX: phaseLineX + (margin.left + plotWidth - phaseLineX) / 2, color: "#1f2933" });
+    }
+    phaseMarkers.forEach((marker) => {
+      const anchorX = xPositionForMarkerDateWithMode(marker, dates, xPositions, layout.markerXByDate);
+      if (marker.label && Number.isFinite(anchorX)) labels.push({ text: marker.label, anchorX, color: "#7a4f00", marker: true });
+    });
+    ctx.font = "12px system-ui, sans-serif";
+    phaseLabels = layoutPhaseLabels(labels, margin.left, margin.left + plotWidth, (text) => ctx.measureText(text).width);
+    const labelBottom = Math.max(0, ...phaseLabels.map((label) => label.top + label.height));
+    const extraHeight = Math.max(0, labelBottom + 12 - margin.top);
+    margin.top += extraHeight;
+    height += extraHeight;
+    canvas.height = Math.round(height * dpr);
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+  }
 
-  dateTicks.forEach(({ date, index }) => {
+  drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options);
+  drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions, !responsive);
+  drawPhaseMarkers(ctx, margin, plotHeight, phaseMarkers, dates, xPositions, layout.markerXByDate, !responsive);
+  // Draw annotation leaders first, then opaque label backgrounds, so a leader
+  // from a higher lane cannot run through another label's text.
+  phaseLabels.forEach((label) => {
+    if (label.marker && Math.abs(label.left + label.width / 2 - label.anchorX) > 8) {
+      ctx.save();
+      ctx.strokeStyle = "#a6aeb5";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(label.left + label.width / 2, label.top + label.height + 2);
+      ctx.lineTo(label.anchorX, margin.top - 4);
+      ctx.stroke();
+      ctx.restore();
+    }
+  });
+  phaseLabels.forEach((label) => {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(label.left - 2, label.top, label.width + 4, label.height);
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.fillStyle = label.color;
+    ctx.textAlign = "left";
+    label.lines.forEach((line, index) => ctx.fillText(line, label.left, label.top + 12 + index * 16));
+  });
+
+  dateTicks.forEach(({ date, index, labelX }) => {
     const x = xPositions[index];
     ctx.fillStyle = "#59656f";
-    ctx.font = "10px system-ui, sans-serif";
+    ctx.font = `${responsive ? 11 : 10}px system-ui, sans-serif`;
     ctx.textAlign = useAngledDates ? "right" : "center";
     ctx.save();
-    if (useAngledDates) {
+    if (responsive && useAngledDates) {
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.translate(labelX, margin.top + plotHeight + 16 + dateLabelLayout.height / 2);
+      ctx.rotate(dateLabelLayout.angle);
+      ctx.fillText(formatGraphDate(date), 0, 0);
+    } else if (useAngledDates) {
       ctx.translate(x - 4, margin.top + plotHeight + 52);
       ctx.rotate(-Math.PI / 6);
       ctx.fillText(formatGraphDate(date), 0, 0);
     } else {
-      ctx.fillText(formatGraphDate(date), x, margin.top + plotHeight + 30);
+      ctx.fillText(formatGraphDate(date), labelX ?? x, margin.top + plotHeight + 30);
     }
     ctx.restore();
   });
@@ -180,7 +238,7 @@ export function redrawLineChartTrend(canvas, showTrendLine) {
 export function buildClinicalGraphModel(series, options = {}) {
   const allPoints = series.flatMap((item) => item.points || []);
   const dates = [...new Set(allPoints.map((point) => point.x))].sort();
-  const phaseBoundary = resolveTreatmentPhaseBoundary(dates, options.treatmentPhaseLine, options.suppressAutoTreatmentBoundary);
+  const phaseBoundary = resolveTreatmentPhaseBoundary(dates, options.treatmentPhaseLine);
   const phaseMarkers = normalizePhaseMarkers(options.phaseMarkers || [], dates, phaseBoundary);
   return {
     dates,
@@ -234,7 +292,7 @@ export function buildGraphAnalysis(series, options = {}) {
 
 export function buildMovingAverageSeriesSet(series, options = {}) {
   const dates = options.dates || [...new Set(series.flatMap((item) => (item.points || []).map((point) => point.x)))].sort();
-  const phaseBoundary = options.phaseBoundary || buildBaselineToTreatmentBoundary(dates);
+  const phaseBoundary = options.phaseBoundary || null;
   const windowSize = options.windowSize || MOVING_AVERAGE_WINDOW;
   return (series || []).map((item) => ({
     name: item.name,
@@ -259,6 +317,63 @@ export function filterSeriesPointsByDateRange(series, range = {}, options = {}) 
       ))
     }))
     .filter((item) => (item.points || []).length);
+}
+
+// Label selection only: observation positions and the clinical model are untouched.
+export function layoutDateTicks(dates, positions, measureText, left, right) {
+  const horizontal = buildPixelDateTicks(dates, positions, measureText, left, right);
+  if (horizontal.length === dates.length) return { ticks: horizontal, angle: 0, height: 14 };
+  const angle = -Math.PI / 6;
+  const angled = buildPixelDateTicks(dates, positions, measureText, left, right, angle);
+  if (angled.length < horizontal.length) return { ticks: horizontal, angle: 0, height: 14 };
+  return { ticks: angled, angle, height: Math.max(14, ...angled.map(tick => tick.labelHeight)) };
+}
+
+export function buildPixelDateTicks(dates, positions, measureText, left, right, angle = 0) {
+  const accepted = [];
+  const gap = angle ? 4 : 10;
+  const priority = dates.length > 1 ? [0, dates.length - 1, ...dates.map((_, i) => i).slice(1, -1)] : dates.map((_, i) => i);
+  priority.forEach((index) => {
+    const textWidth = measureText(formatGraphDate(dates[index]));
+    // Conservative rotated bounds for centered 11px date text, including descenders.
+    const labelWidth = textWidth * Math.cos(angle) + 14 * Math.abs(Math.sin(angle));
+    const labelHeight = textWidth * Math.abs(Math.sin(angle)) + 14 * Math.cos(angle);
+    const labelX = Math.max(left + labelWidth / 2, Math.min(right - labelWidth / 2, positions[index]));
+    const start = labelX - labelWidth / 2;
+    const end = labelX + labelWidth / 2;
+    if (labelWidth > right - left || accepted.some((tick) => start < tick.labelX + tick.labelWidth / 2 + gap && end > tick.labelX - tick.labelWidth / 2 - gap)) return;
+    accepted.push({ date: dates[index], index, labelX, labelWidth, labelHeight });
+  });
+  return accepted.sort((a, b) => a.index - b.index);
+}
+
+export function layoutPhaseLabels(labels, left, right, measureText) {
+  const maxWidth = Math.max(1, Math.min(180, right - left));
+  const rows = [];
+  const result = labels.map((label) => {
+    const lines = [];
+    let line = "";
+    // Character fallback also accommodates long unbroken labels on narrow plots.
+    for (const word of String(label.text).split(/\s+/)) {
+      if (line && measureText(`${line} ${word}`) <= maxWidth) { line += ` ${word}`; continue; }
+      if (line) lines.push(line);
+      line = "";
+      for (const character of word) {
+        if (line && measureText(line + character) > maxWidth) { lines.push(line); line = ""; }
+        line += character;
+      }
+    }
+    if (line) lines.push(line);
+    const width = Math.max(0, ...lines.map(measureText));
+    const start = Math.max(left, Math.min(right - width, label.anchorX - width / 2));
+    let rowIndex = rows.findIndex((row) => row.items.every((item) => start >= item.left + item.width + 10 || start + width + 10 <= item.left));
+    if (rowIndex < 0) { rowIndex = rows.length; rows.push({ items: [], height: 0 }); }
+    const item = { ...label, lines, left: start, width, height: lines.length * 16, rowIndex };
+    rows[rowIndex].items.push(item);
+    rows[rowIndex].height = Math.max(rows[rowIndex].height, item.height);
+    return item;
+  });
+  return result.map((item) => ({ ...item, top: 8 + rows.slice(0, item.rowIndex).reduce((sum, row) => sum + row.height + 6, 0) }));
 }
 
 export function buildDateTicks(series, options = {}) {
@@ -291,7 +406,7 @@ export function shouldShowPointMarkers(series, options = {}) {
 
 export function buildMovingAveragePoints(points, options = {}) {
   const dates = options.dates || [...new Set((points || []).map((point) => point.x))].sort();
-  const phaseBoundary = options.phaseBoundary || buildBaselineToTreatmentBoundary(dates);
+  const phaseBoundary = options.phaseBoundary || null;
   const windowSize = options.windowSize || MOVING_AVERAGE_WINDOW;
   const normalized = (points || [])
     .slice()
@@ -328,7 +443,7 @@ function analyzeSingleSeries(series, options) {
       const phase = classifySeriesPointPhase(point, pointIndex, options.phaseBoundary, options.dates);
       const normalizedPoint = { ...point, dateIndex, phase };
       if (phase === "baseline") baselinePoints.push(normalizedPoint);
-      else treatmentPoints.push(normalizedPoint);
+      else if (phase === "intervention") treatmentPoints.push(normalizedPoint);
       return normalizedPoint;
     });
   const baselineValues = baselinePoints.map((point) => Number(point.y || 0));
@@ -397,7 +512,7 @@ function analyzeSingleSeries(series, options) {
     baselineLevel: roundMetric(baselineAverage),
     treatmentAverage: roundMetric(treatmentAverage),
     treatmentLevel: roundMetric(treatmentAverage),
-    currentLevel: roundMetric(treatmentCurrent ?? baselineCurrent),
+    currentLevel: roundMetric(treatmentCurrent ?? baselineCurrent ?? normalized.at(-1)?.y),
     trendDirection: trend.direction,
     trendConfidence: trend.confidence,
     variability,
@@ -420,54 +535,37 @@ function analyzeSingleSeries(series, options) {
   };
 }
 
-export function buildBaselineToTreatmentBoundary(dates) {
-  if (!Array.isArray(dates) || dates.length < 2) return null;
-  return {
-    date: dates[1],
-    label: "Treatment",
-    leftIndex: 0,
-    rightIndex: 1,
-    lineStyle: "solid",
-    phaseType: "baselineToTreatment",
-    sourceType: "autoTreatment"
-  };
-}
-
-export function resolveTreatmentPhaseBoundary(dates, treatmentPhaseLine = null, suppressAutoTreatmentBoundary = false) {
-  if (!Array.isArray(dates) || dates.length < 2) return null;
-  if (treatmentPhaseLine?.hidden) return null;
-  if (treatmentPhaseLine?.sourceType === "autoTreatment" && suppressAutoTreatmentBoundary) return null;
+export function resolveTreatmentPhaseBoundary(dates, treatmentPhaseLine = null) {
+  if (!Array.isArray(dates) || !dates.length) return null;
+  if (treatmentPhaseLine?.hidden || treatmentPhaseLine?.deleted) return null;
   if (treatmentPhaseLine?.date) {
-    const rightIndex = dates.findIndex((date) => date >= treatmentPhaseLine.date);
-    if (rightIndex > 0) {
-      return {
-        date: dates[rightIndex],
-        configuredDate: treatmentPhaseLine.date,
-        label: treatmentPhaseLine.label || "Treatment",
-        leftIndex: rightIndex - 1,
-        rightIndex,
-        lineStyle: treatmentPhaseLine.lineStyle === "dashed" ? "dashed" : "solid",
-        note: treatmentPhaseLine.note || "",
-        phaseType: "baselineToTreatment",
-        sourceType: treatmentPhaseLine.sourceType || treatmentPhaseLine.phaseType || "userTreatmentOverride"
-      };
-    }
-    return null;
+    const foundIndex = dates.findIndex((date) => date >= treatmentPhaseLine.date);
+    const rightIndex = foundIndex < 0 ? dates.length : foundIndex;
+    return {
+      date: dates[rightIndex] || treatmentPhaseLine.date,
+      configuredDate: treatmentPhaseLine.date,
+      label: treatmentPhaseLine.label || "Treatment",
+      leftIndex: rightIndex - 1,
+      rightIndex,
+      lineStyle: treatmentPhaseLine.lineStyle === "dashed" ? "dashed" : "solid",
+      note: treatmentPhaseLine.note || "",
+      phaseType: "baselineToTreatment",
+      sourceType: treatmentPhaseLine.sourceType || treatmentPhaseLine.phaseType || "userTreatmentOverride"
+    };
   }
-  if (suppressAutoTreatmentBoundary) return null;
-  return buildBaselineToTreatmentBoundary(dates);
+  return null;
 }
 
 export function normalizePhaseMarkers(markers = [], dates = [], phaseBoundary = null) {
   if (!Array.isArray(markers) || !markers.length) return [];
-  const treatmentStartDate = phaseBoundary ? dates[phaseBoundary.rightIndex] : null;
+  const treatmentStartDate = phaseBoundary ? phaseBoundary.configuredDate || dates[phaseBoundary.rightIndex] : null;
   return markers
     .map((marker) => normalizePhaseMarker(marker))
     .filter(Boolean)
     .filter((marker) => {
       if (!marker.date) return false;
       if (!phaseBoundary) {
-        return marker.phaseType === "baselineConditionChange" || marker.phaseType === "environmentalChange";
+        return true;
       }
       if (marker.phaseType === "baselineConditionChange" || marker.phaseType === "environmentalChange") return true;
       if (!treatmentStartDate) return false;
@@ -510,19 +608,18 @@ function phaseMarkerOrder(marker) {
 }
 
 export function derivedPointPhase(dateIndex, phaseBoundary = null) {
-  if (!phaseBoundary) return "baseline";
+  if (!phaseBoundary) return null;
   return dateIndex <= phaseBoundary.leftIndex ? "baseline" : "intervention";
 }
 
 export function classifySeriesPointPhase(point, pointIndex, phaseBoundary = null, dates = []) {
-  const hasExplicitBoundary = phaseBoundary && phaseBoundary.sourceType !== "autoTreatment";
+  const hasExplicitBoundary = Boolean(phaseBoundary);
   if (hasExplicitBoundary) {
     const pointDate = point?.x || dates[pointIndex];
     const treatmentDate = phaseBoundary.configuredDate || phaseBoundary.date || dates[phaseBoundary.rightIndex];
     return pointDate && treatmentDate && pointDate >= treatmentDate ? "intervention" : "baseline";
   }
-  if (point?.phase === "baseline") return "baseline";
-  return pointIndex === 0 ? "baseline" : "intervention";
+  return null;
 }
 
 function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options) {
@@ -555,10 +652,11 @@ function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, optio
   }
 }
 
-function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions) {
+function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions, showLabels = true) {
   if (!phaseBoundary) return null;
 
   const lineX = phaseLinePosition(phaseBoundary, xPositions);
+  if (!Number.isFinite(lineX)) return null;
 
   ctx.save();
   ctx.strokeStyle = "#1f2933";
@@ -575,14 +673,14 @@ function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPosit
   ctx.textAlign = "center";
   const plotLeft = margin.left;
   const plotRight = margin.left + plotWidth;
-  ctx.fillText("Baseline", plotLeft + (lineX - plotLeft) / 2, margin.top - 14);
-  ctx.fillText(phaseBoundary.label || "Treatment", lineX + (plotRight - lineX) / 2, margin.top - 14);
+  if (showLabels) ctx.fillText("Baseline", plotLeft + (lineX - plotLeft) / 2, margin.top - 14);
+  if (showLabels) ctx.fillText(phaseBoundary.label || "Treatment", lineX + (plotRight - lineX) / 2, margin.top - 14);
   ctx.restore();
 
   return lineX;
 }
 
-function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions, markerXByDate = new Map()) {
+function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions, markerXByDate = new Map(), showLabels = true) {
   markers.forEach((marker) => {
     const lineX = xPositionForMarkerDateWithMode(marker, dates, xPositions, markerXByDate);
     if (!Number.isFinite(lineX)) return;
@@ -600,7 +698,7 @@ function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions, m
     ctx.fillStyle = "#7a4f00";
     ctx.font = "12px system-ui, sans-serif";
     ctx.textAlign = "center";
-    if (marker.label) ctx.fillText(marker.label, lineX, margin.top - 30);
+    if (showLabels && marker.label) ctx.fillText(marker.label, lineX, margin.top - 30);
     ctx.restore();
   });
 }
@@ -991,7 +1089,7 @@ function bindCanvasTooltip(canvas, points) {
     canvas.title = nearest
       ? [
           `${nearest.point.label}: ${nearest.point.value} on ${formatGraphDate(nearest.point.date)}`,
-          `Phase: ${nearest.point.phase === "baseline" ? "Baseline" : "Treatment"}`,
+          nearest.point.phase ? `Phase: ${nearest.point.phase === "baseline" ? "Baseline" : "Treatment"}` : "",
           nearest.point.source?.note ? `Notes: ${nearest.point.source.note}` : ""
         ].filter(Boolean).join("\n")
       : "";

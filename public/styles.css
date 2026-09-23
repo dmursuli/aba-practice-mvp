@@ -3727,3 +3727,16 @@ button:disabled {
     height: auto !important;
   }
 }
+
+/* Graphs workspace only; report and modal canvas consumers keep their layout. */
+@media screen {
+  [data-view-panel="graphs"] > .graphs-panel {
+    max-width: 1120px;
+    min-width: 0;
+  }
+
+  [data-view-panel="graphs"] .chart-zone,
+  [data-view-panel="graphs"] .chart-panel {
+    min-width: 0;
+  }
+}
