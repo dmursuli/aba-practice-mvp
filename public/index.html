@@ -59,20 +59,22 @@
           <p class="eyebrow">Triumph Behavioral</p>
           <h1>Triumph Workspace</h1>
         </div>
-        <label class="workspace-client-picker">
-          <span>Client</span>
-          <select id="workspace-client-select" aria-label="Active client"></select>
-        </label>
         <div class="user-box">
           <strong id="current-user-label"></strong>
           <button type="button" class="secondary-button" id="logout-button">Logout</button>
         </div>
       </div>
       <nav class="view-switcher" aria-label="Workspace views">
-        <div class="navigation-categories hidden" role="group" aria-label="Navigation categories">
-          <button type="button" class="navigation-category" id="navigation-clinical-label" data-navigation-category="clinical" aria-controls="navigation-clinical" aria-pressed="false">Clinical</button>
-          <button type="button" class="navigation-category" id="navigation-operations-label" data-navigation-category="operations" aria-controls="navigation-operations" aria-pressed="false">Operations</button>
-          <button type="button" class="navigation-category" id="navigation-administration-label" data-navigation-category="administration" aria-controls="navigation-administration" aria-pressed="false">Administration</button>
+        <div class="workspace-navigation-context">
+          <div class="navigation-categories hidden" role="group" aria-label="Navigation categories">
+            <button type="button" class="navigation-category" id="navigation-clinical-label" data-navigation-category="clinical" aria-controls="navigation-clinical" aria-pressed="false">Clinical</button>
+            <button type="button" class="navigation-category" id="navigation-operations-label" data-navigation-category="operations" aria-controls="navigation-operations" aria-pressed="false">Operations</button>
+            <button type="button" class="navigation-category" id="navigation-administration-label" data-navigation-category="administration" aria-controls="navigation-administration" aria-pressed="false">Administration</button>
+          </div>
+          <label class="workspace-client-picker">
+            <span>Client</span>
+            <select id="workspace-client-select" aria-label="Active client"></select>
+          </label>
         </div>
         <div class="view-nav-group" id="navigation-clinical" data-navigation-group="clinical">
           <button type="button" class="view-tab" data-view-button="clients">Clients</button>

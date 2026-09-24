@@ -186,11 +186,11 @@ test("category exploration preserves the page and role transitions restore simpl
         // Hidden category destinations cannot appear in the keyboard sequence.
         await page.locator('[data-navigation-category="clinical"]').focus();
         const order = [];
-        for (let i = 0; i < 3 + views.length; i++) {
-          order.push(await page.evaluate(() => document.activeElement.dataset.navigationCategory || document.activeElement.dataset.viewButton));
+        for (let i = 0; i < 4 + views.length; i++) {
+          order.push(await page.evaluate(() => document.activeElement.dataset.navigationCategory || document.activeElement.id || document.activeElement.dataset.viewButton));
           await page.keyboard.press('Tab');
         }
-        assert.deepEqual(order, ['clinical', 'operations', 'administration', ...views]);
+        assert.deepEqual(order, ['clinical', 'operations', 'administration', 'workspace-client-select', ...views]);
       }
       await page.locator('[data-navigation-category="clinical"]').focus();
       await page.keyboard.press('Enter');
@@ -289,5 +289,46 @@ test("every role and category avoids page overflow at desktop, tablet and mobile
         assert.equal(result.visibleGroups, 1);
       }
     }
+  }
+});
+
+test("desktop client context aligns right beside categories while destinations remain below", async t => {
+  const page = await fixture(t);
+  for (const width of [1440, 1024, 820]) {
+    await page.setViewportSize({ width, height: 1000 });
+    const result = await page.evaluate(() => {
+      const identity = document.querySelector('.workspace-identity').getBoundingClientRect();
+      const context = document.querySelector('.workspace-navigation-context').getBoundingClientRect();
+      const categories = document.querySelector('.navigation-categories').getBoundingClientRect();
+      const picker = document.querySelector('.workspace-client-picker');
+      const label = picker.querySelector('span');
+      const select = picker.querySelector('select');
+      const labelBox = label.getBoundingClientRect(), selectBox = select.getBoundingClientRect();
+      const toolbar = document.querySelector('.workspace-toolbar').getBoundingClientRect();
+      const logout = document.querySelector('#logout-button').getBoundingClientRect();
+      const destinations = document.querySelector('[data-navigation-group]:not(.hidden)').getBoundingClientRect();
+      return {
+        selectWidth: selectBox.width,
+        inline: labelBox.right < selectBox.left && labelBox.top < selectBox.bottom && labelBox.bottom > selectBox.top,
+        label: label.textContent,
+        transform: getComputedStyle(label).textTransform,
+        associated: select.labels.length === 1 && select.labels[0] === picker,
+        accountRightGap: toolbar.right - logout.right,
+        clientRightGap: context.right - picker.getBoundingClientRect().right,
+        identityAboveContext: identity.bottom <= context.top,
+        categoriesBesideClient: categories.right <= picker.getBoundingClientRect().left,
+        destinationsBelowContext: destinations.top >= context.bottom
+      };
+    });
+    assert.ok(result.selectWidth >= 220 && result.selectWidth <= 240);
+    assert.equal(result.inline, true);
+    assert.equal(result.label, 'Client');
+    assert.equal(result.transform, 'none');
+    assert.equal(result.associated, true);
+    assert.ok(Math.abs(result.accountRightGap) < 1);
+    assert.ok(Math.abs(result.clientRightGap) < 1);
+    assert.equal(result.identityAboveContext, true);
+    assert.equal(result.categoriesBesideClient, true);
+    assert.equal(result.destinationsBelowContext, true);
   }
 });
