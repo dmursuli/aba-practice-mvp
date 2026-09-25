@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { graphNumericValue } from '../public/graph-values.js';
 import { skillObservationValue, normalizeSkillDataCollectionType } from '../public/session-utils.js';
+import { buildSkillMeasurementChart } from '../public/skill-graph-measurements.js';
 import { drawLineChart, buildMovingAveragePoints, buildGraphAnalysis, buildClinicalGraphModel } from '../public/charts.js';
 
 const unavailable = [null, undefined, '', ' \t\n', 'not a number', NaN, Infinity, -Infinity, 'Infinity', false, [], {}];
@@ -38,6 +39,7 @@ test('graph builders retain unavailable dates as gaps and preserve zero and inpu
   const app=readSource('app.js');
   const names=['buildProgramSkillChart','behaviorChartSeries','buildBehaviorChart','buildParentTrainingChartModels'];
   const context=vm.createContext({graphNumericValue,skillObservationValue,normalizeSkillDataCollectionType,
+    buildSkillMeasurementChart, state:{activeClientId:'synthetic',skillGraphMeasurements:{}},
     configuredTargetsForProgram:()=>[{id:'target',name:'Target'}],
     targetEntries:s=>s.programs.flatMap(p=>p.targets.map(t=>({...t,programId:p.programId}))),
     isActualTargetEntry:t=>t.targetId!==t.programId,

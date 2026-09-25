@@ -101,6 +101,19 @@ textarea {
   text-align: center;
 }
 
+.skill-measurement-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.skill-measurement-picker select {
+  width: 160px;
+  max-width: 100%;
+}
+
 .topbar h1 {
   font-size: clamp(1.25rem, 2vw, 1.5rem);
   line-height: 1.2;

@@ -2,12 +2,13 @@ import { assignClientProvider, cancelAppointment, createAppointment, createProvi
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { graphNumericValue } from "./graph-values.js";
+import { buildSkillMeasurementChart, skillMeasurementSettings } from "./skill-graph-measurements.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
 import { adjustParentTrainingResponse, buildEditableParentTrainingSummary, explicitParentTrainingGoalState, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingCollectionMetrics, parentTrainingGoalKey, parentTrainingGoalLabel, parentTrainingGoalLifecycleState, parentTrainingGoalMasteryDate, summarizeParentTrainingReport } from "./parent-training-report.js";
 import { calculateRbtFidelity, setRbtFidelityResponse } from "./rbt-fidelity.js";
 import { buildCompactGraphAnalysisSentence, buildEditableSkillAcquisitionSummary, buildFunderDraftRecord, estimateJsonBytes, hasMeaningfulFunderReportDraft, isLegacyGeneratedSkillAcquisitionSummary, parseNumberedObjectives, sanitizeAssessmentDocumentRefs, sanitizeCustomPhaseLines, sanitizeTrendVisibilityMap, summarizeSkillAcquisitionReport } from "./report-utils.js";
 import { format97155TargetChangeSummary, generateSoapNote, planChangesFor97155Session, summarize97155TargetChanges } from "./soap.js";
-import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms, normalizeSkillDataCollectionType, skillObservationValue } from "./session-utils.js";
+import { availableBehaviorsForSession, availableTargetsForSession, dedupeBehaviorEntries, dedupeTargetEntries, duplicateBehaviorIds, duplicateTargetIdsFromPrograms, normalizeSkillDataCollectionType } from "./session-utils.js";
 
 const state = {
   clients: [],
@@ -138,6 +139,7 @@ const state = {
   graphAnalysisTaskId: 0,
   graphResizeFrameId: 0,
   graphDataManagerRows: {},
+  skillGraphMeasurements: {},
   draftCache: {
     intake: {},
     session: {}
@@ -10939,6 +10941,9 @@ function openProgramGraphModal(programId) {
   programGraphModalSubtitle.textContent = `${program.domain || "General"}${chart.series.length ? ` - ${chart.series.length} target graph${chart.series.length === 1 ? "" : "s"}` : ""}`;
   programGraphModal.classList.remove("hidden");
   programGraphModal.setAttribute("aria-hidden", "false");
+  programGraphModal.querySelector(".skill-measurement-controls")?.remove();
+  programGraphModalCanvas.insertAdjacentHTML("beforebegin", `<div class="skill-measurement-controls">${renderSkillMeasurementControl(chart)}</div>`);
+  bindSkillMeasurementControls(programGraphModal, () => openProgramGraphModal(programId));
   requestAnimationFrame(() => {
     drawLineChart(programGraphModalCanvas, chart.series, {
       ...chartSettings,
@@ -10954,7 +10959,7 @@ function openProgramGraphModal(programId) {
     }
     if (programGraphModalAnalysis) {
       if (chartSettings.mode !== "percent_correct") {
-        programGraphModalAnalysis.innerHTML = `<p class="muted">${chartSettings.mode === "frequency" ? "Frequency observations are shown as raw counts." : "Historical percent-correct and frequency observations are shown in their original units."}</p>`;
+        programGraphModalAnalysis.innerHTML = '<p class="muted">Frequency observations are shown as raw counts.</p>';
         return;
       }
       programGraphModalAnalysis.innerHTML = renderGraphAnalysisMarkup(
@@ -13403,8 +13408,8 @@ function renderSkillCharts(sessions) {
       layoutMode: "graphs",
       maxY: 100,
       yStep: 10,
-      yLabel: "% independence",
-      emptyMessage: "Save a session to graph target independence"
+      yLabel: "Percent correct",
+      emptyMessage: "Save a session to graph target percent correct"
     });
     return;
   }
@@ -13420,6 +13425,7 @@ function renderSkillCharts(sessions) {
         ${group.charts.map((chart) => `
           <article class="chart-panel">
             <h3>${chart.program.name}</h3>
+            ${renderSkillMeasurementControl(chart)}
             <canvas data-program-chart="${chart.program.id}" width="760" height="320"></canvas>
             ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("skill", chart.program.id)) })}
             <div data-program-analysis="${chart.program.id}"></div>
@@ -13430,6 +13436,7 @@ function renderSkillCharts(sessions) {
     </section>
   `).join("");
 
+  bindSkillMeasurementControls(skillCharts, () => renderSkillCharts(sessions));
   const analysisTasks = [];
   visibleGroups.flatMap((group) => group.charts).forEach((chart) => {
     const graphKey = graphTrendKey("skill", chart.program.id);
@@ -13446,7 +13453,7 @@ function renderSkillCharts(sessions) {
     const analysisMount = skillCharts.querySelector(`[data-program-analysis="${chart.program.id}"]`);
     if (analysisMount) {
       if (chartSettings.mode !== "percent_correct") {
-        analysisMount.innerHTML = `<p class="muted">${chartSettings.mode === "frequency" ? "Frequency observations are shown as raw counts." : "Historical percent-correct and frequency observations are shown in their original units."}</p>`;
+        analysisMount.innerHTML = '<p class="muted">Frequency observations are shown as raw counts.</p>';
         return;
       }
       analysisMount.innerHTML = '<p class="muted">Loading graph analysis...</p>';
@@ -13472,49 +13479,57 @@ function buildSkillChartsByDomain(sessions) {
   return groupedProgramsByDomain(clientPrograms())
     .map(([domain, domainPrograms]) => ({
       domain,
-      charts: domainPrograms.map((program) => buildProgramSkillChart(program, sessions)).filter((chart) => chart.series.length)
+      charts: domainPrograms.map((program) => buildProgramSkillChart(program, sessions)).filter((chart) => chart.series.length || chart.ambiguousCount)
     }))
     .filter((group) => group.charts.length);
 }
 
 function buildProgramSkillChart(program, sessions) {
   const targets = configuredTargetsForProgram(program);
-  const series = targets.map((target) => ({
-    name: target.name,
-    meta: {
+  const observations = targets.flatMap((target) => sessions.flatMap((session) => {
+    const entry = targetEntries(session)
+      .filter(isActualTargetEntry)
+      .find((item) => item.programId === program.id && item.targetId === target.id);
+    return entry ? [{
+      ...entry,
+      x: session.date,
+      phase: entry.phase || "intervention",
+      sessionId: session.id,
+      programId: program.id,
       targetId: target.id,
-      status: target.status || "active"
-    },
-    points: sessions.flatMap((session) => {
-      const entry = targetEntries(session)
-        .filter(isActualTargetEntry)
-        .find((item) => item.programId === program.id && item.targetId === target.id);
-      return entry ? [{
-        x: session.date,
-        y: skillObservationValue(entry),
-        dataCollectionType: normalizeSkillDataCollectionType(entry.dataCollectionType),
-        phase: entry.phase || "intervention",
-        sessionId: session.id,
-        programId: program.id,
-        targetId: target.id,
-        note: session.notes || ""
-      }] : [];
-    })
-  })).filter((item) => item.points.length);
-  return { program, series };
+      note: session.notes || ""
+    }] : [];
+  }));
+  return buildSkillMeasurementChart(program, targets, observations,
+    state.skillGraphMeasurements[`${state.activeClientId}:${program.id}`]);
 }
 
 function skillChartSettings(chart) {
-  const types = new Set(chart.series.flatMap((series) => (
-    series.points.map((point) => normalizeSkillDataCollectionType(point.dataCollectionType))
-  )));
-  if (types.size === 1 && types.has("frequency")) {
-    return { mode: "frequency", yLabel: "frequency", emptyMessage: "No frequency data for this program" };
-  }
-  if (types.size > 1) {
-    return { mode: "mixed", yLabel: "recorded value", emptyMessage: "No target data for this program" };
-  }
-  return { mode: "percent_correct", maxY: 100, yStep: 10, yLabel: "% independence", emptyMessage: "No target data for this program" };
+  return skillMeasurementSettings(chart);
+}
+
+function renderSkillMeasurementControl(chart) {
+  const notice = chart.ambiguousCount
+    ? `<p class="muted" role="status">${chart.ambiguousCount} observation(s) excluded from graph and analysis because their measurement type is unclear or conflicting.</p>` : "";
+  if (chart.measurementTypes.length < 2) return notice;
+  return `<label class="skill-measurement-picker">Measurement
+    <select data-skill-measurement="${escapeHtml(chart.program.id)}">
+      <option value="percent_correct" ${chart.measurementType === "percent_correct" ? "selected" : ""}>Percentage</option>
+      <option value="frequency" ${chart.measurementType === "frequency" ? "selected" : ""}>Frequency</option>
+    </select>
+  </label>${notice}`;
+}
+
+function bindSkillMeasurementControls(container, redraw) {
+  container.querySelectorAll("[data-skill-measurement]").forEach(select => {
+    select.onchange = () => {
+      const programId = select.dataset.skillMeasurement;
+      if (!["percent_correct", "frequency"].includes(select.value)) return;
+      state.skillGraphMeasurements[`${state.activeClientId}:${programId}`] = select.value;
+      redraw();
+      container.querySelector(`[data-skill-measurement="${CSS.escape(programId)}"]`)?.focus();
+    };
+  });
 }
 
 function buildParentTrainingChartModels(sessions) {
@@ -13736,7 +13751,7 @@ function renderSkillDataManagerMarkup(chart) {
     date: point.x,
     valueLabel: normalizeSkillDataCollectionType(point.dataCollectionType) === "frequency"
       ? `${point.y} frequency`
-      : `${point.y}% independence`,
+      : `${point.y}% correct`,
     deleteDataset: [
       'data-delete-skill-point="true"',
       `data-session-id="${escapeHtml(point.sessionId)}"`,
@@ -13842,7 +13857,7 @@ function renderGraphDomainTabs(groups) {
 function drawSkillChartSet(sessions, container, chartAttribute, includeProgramInfo = false) {
   const charts = clientPrograms()
     .map((program) => buildProgramSkillChart(program, sessions))
-    .filter((chart) => chart.series.length);
+    .filter((chart) => chart.series.length || chart.ambiguousCount);
 
   if (!charts.length) {
     container.innerHTML = `
@@ -13854,8 +13869,8 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
     drawLineChart(container.querySelector("canvas"), [], {
       maxY: 100,
       yStep: 10,
-      yLabel: "% independence",
-      emptyMessage: "Save a session to graph target independence"
+      yLabel: "Percent correct",
+      emptyMessage: "Save a session to graph target percent correct"
     });
     return;
   }
@@ -13864,12 +13879,14 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
     <article class="chart-panel">
       <h3>${chart.program.name}</h3>
       ${includeProgramInfo ? renderReportProgramInfo(chart.program) : ""}
+      ${renderSkillMeasurementControl(chart)}
       <canvas data-${chartAttribute}="${chart.program.id}" width="760" height="320"></canvas>
       ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("skill", chart.program.id)) })}
       ${includeProgramInfo ? `<div data-report-program-analysis="${chart.program.id}"></div>` : ""}
     </article>
   `).join("");
 
+  bindSkillMeasurementControls(container, () => drawSkillChartSet(sessions, container, chartAttribute, includeProgramInfo));
   charts.forEach((chart) => {
     const graphKey = graphTrendKey("skill", chart.program.id);
     const phaseConfig = graphPhaseConfig(graphKey, chart.series, masteryMarkersForProgram(chart.program.id));
@@ -13885,7 +13902,7 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
       const analysisMount = container.querySelector(`[data-report-program-analysis="${chart.program.id}"]`);
       if (analysisMount) {
         if (chartSettings.mode !== "percent_correct") {
-          analysisMount.innerHTML = `<p class="muted">${chartSettings.mode === "frequency" ? "Frequency observations are shown as raw counts." : "Observations are shown in their original recorded units."}</p>`;
+          analysisMount.innerHTML = '<p class="muted">Frequency observations are shown as raw counts.</p>';
           return;
         }
         const analysis = buildGraphAnalysis(chart.series, {
