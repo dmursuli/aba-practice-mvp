@@ -1,6 +1,7 @@
 import { assignClientProvider, cancelAppointment, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getSchedulingCapacity, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
+import { graphNumericValue } from "./graph-values.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
 import { adjustParentTrainingResponse, buildEditableParentTrainingSummary, explicitParentTrainingGoalState, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingCollectionMetrics, parentTrainingGoalKey, parentTrainingGoalLabel, parentTrainingGoalLifecycleState, parentTrainingGoalMasteryDate, summarizeParentTrainingReport } from "./parent-training-report.js";
 import { calculateRbtFidelity, setRbtFidelityResponse } from "./rbt-fidelity.js";
@@ -10974,7 +10975,7 @@ function buildBehaviorChart(behaviorId, sessions) {
   if (!behavior) return null;
   const points = sessions.flatMap((session) => {
     const entry = behaviorEntriesForSession(session).find((item) => item.behaviorId === behaviorId);
-    return entry ? [{ x: session.date, y: Number(entry.frequency || 0), phase: entry.phase || "intervention" }] : [];
+    return entry ? [{ x: session.date, y: graphNumericValue(entry.frequency), phase: entry.phase || "intervention" }] : [];
   });
   return {
     behavior,
@@ -13541,7 +13542,7 @@ function buildParentTrainingChartModels(sessions) {
         ));
         return goal ? [{
           x: session.date,
-          y: Number(goal.fidelity || 0),
+          y: graphNumericValue(goal.fidelity),
           phase: "intervention",
           sessionId: session.id,
           goalName,
@@ -13912,7 +13913,7 @@ function behaviorChartSeries(sessions) {
       const target = behaviorEntriesForSession(session).find((item) => item.behaviorId === behavior.id);
       return target ? [{
         x: session.date,
-        y: Number(target.frequency || 0),
+        y: graphNumericValue(target.frequency),
         phase: target.phase || "intervention",
         sessionId: session.id,
         behaviorId: behavior.id,

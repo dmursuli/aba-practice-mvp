@@ -1,3 +1,5 @@
+import { graphNumericValue } from "./graph-values.js";
+
 const palette = [
   "#167c80", "#d1495b", "#edae49", "#4b7bec", "#6a994e", "#9d4edd",
   "#00a6d6", "#e83e8c", "#f77f00", "#2a9d8f", "#7b61ff", "#ff6b6b",
@@ -16,9 +18,14 @@ const PLOT_RIGHT_MARGIN = 20;
 export function drawLineChart(canvas, series, options = {}) {
   if (!canvas) return;
   canvas.__clinicalGraphRenderState = { series, options: { ...options } };
+  // Retain unavailable dates for elapsed spacing without changing input records.
+  series = series.map((item) => ({
+    ...item,
+    points: item.points.map((point) => ({ ...point, y: graphNumericValue(point.y) }))
+  }));
   const responsive = options.layoutMode === "graphs";
   const ctx = canvas.getContext("2d");
-  const allPoints = series.flatMap((item) => item.points);
+  const allPoints = series.flatMap((item) => item.points).filter((point) => point.y !== null);
   const seriesStyles = buildSeriesStyles(series);
   canvas.style.width = "100%";
   canvas.style.maxWidth = `${responsive ? 1040 : MAX_DESKTOP_CANVAS_WIDTH}px`;
@@ -43,6 +50,7 @@ export function drawLineChart(canvas, series, options = {}) {
 
   if (!allPoints.length) {
     canvas.title = "";
+    bindCanvasTooltip(canvas, []);
     drawEmpty(ctx, width, height, options.emptyMessage || "No session data yet");
     return;
   }
@@ -169,7 +177,7 @@ export function drawLineChart(canvas, series, options = {}) {
         const baseX = xPositions[dateIndex];
         return {
           x: baseX,
-          y: margin.top + plotHeight - (point.y / yTop) * plotHeight,
+          y: point.y === null ? null : margin.top + plotHeight - (point.y / yTop) * plotHeight,
           value: point.y,
           dateIndex,
           phase: point.phase || derivedPointPhase(dateIndex, phaseBoundary),
@@ -196,7 +204,7 @@ export function drawLineChart(canvas, series, options = {}) {
         const baseX = xPositions[dateIndex];
         return {
           x: baseX,
-          y: margin.top + plotHeight - (point.y / yTop) * plotHeight,
+          y: point.y === null ? null : margin.top + plotHeight - (point.y / yTop) * plotHeight,
           value: point.y,
           dateIndex,
           phase: classifySeriesPointPhase(point, pointIndex, phaseBoundary, dates),
@@ -214,6 +222,7 @@ export function drawLineChart(canvas, series, options = {}) {
     ctx.restore();
 
     points.forEach((point) => {
+      if (point.y === null) return;
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
@@ -415,6 +424,7 @@ export function buildMovingAveragePoints(points, options = {}) {
       const dateIndex = dates.indexOf(point.x);
       return {
         ...point,
+        y: graphNumericValue(point.y),
         dateIndex,
         phase: classifySeriesPointPhase(point, pointIndex, phaseBoundary, dates)
       };
@@ -422,7 +432,7 @@ export function buildMovingAveragePoints(points, options = {}) {
   return normalized.map((point, index) => {
       const windowStart = Math.max(0, index + 1 - windowSize);
       const windowPoints = normalized.slice(windowStart, index + 1);
-      const average = mean(windowPoints.map((entry) => Number(entry.y || 0)));
+      const average = point.y === null ? null : mean(windowPoints.map((entry) => entry.y));
       return {
         x: point.x,
         y: roundMetric(average, 1),
@@ -441,13 +451,15 @@ function analyzeSingleSeries(series, options) {
     .map((point, pointIndex) => {
       const dateIndex = options.dates.indexOf(point.x);
       const phase = classifySeriesPointPhase(point, pointIndex, options.phaseBoundary, options.dates);
-      const normalizedPoint = { ...point, dateIndex, phase };
+      const y = graphNumericValue(point.y);
+      if (y === null) return null;
+      const normalizedPoint = { ...point, y, dateIndex, phase };
       if (phase === "baseline") baselinePoints.push(normalizedPoint);
       else if (phase === "intervention") treatmentPoints.push(normalizedPoint);
       return normalizedPoint;
-    });
-  const baselineValues = baselinePoints.map((point) => Number(point.y || 0));
-  const treatmentValues = treatmentPoints.map((point) => Number(point.y || 0));
+    }).filter((point) => point !== null);
+  const baselineValues = baselinePoints.map((point) => point.y);
+  const treatmentValues = treatmentPoints.map((point) => point.y);
   const evaluationValues = treatmentValues.length ? treatmentValues : baselineValues;
   const baselineAverage = baselineValues.length ? mean(baselineValues) : null;
   const treatmentAverage = treatmentValues.length ? mean(treatmentValues) : null;
@@ -750,6 +762,10 @@ function phaseLinePosition(phaseBoundary, xPositions) {
 function drawPhaseSegments(ctx, points, phaseBoundary, breakLines = []) {
   let previousPoint = null;
   points.forEach((point) => {
+    if (point.y === null) {
+      // Missing values omit a point, not the segment between valid observations.
+      return;
+    }
     const crossesPhaseBoundary = phaseBoundary
       && previousPoint
       && previousPoint.dateIndex <= phaseBoundary.leftIndex
@@ -1048,7 +1064,8 @@ function linePatternForIndex(index) {
 
 function mean(values) {
   if (!Array.isArray(values) || !values.length) return null;
-  return values.reduce((sum, value) => sum + Number(value || 0), 0) / values.length;
+  const available = values.map(graphNumericValue).filter((value) => value !== null);
+  return available.length ? available.reduce((sum, value) => sum + value, 0) / available.length : null;
 }
 
 function med(values) {
@@ -1069,9 +1086,10 @@ function standardDeviation(values) {
 }
 
 function roundMetric(value, digits = 1) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return null;
+  const numeric = graphNumericValue(value);
+  if (numeric === null) return null;
   const factor = 10 ** digits;
-  return Math.round(Number(value) * factor) / factor;
+  return Math.round(numeric * factor) / factor;
 }
 
 function bindCanvasTooltip(canvas, points) {

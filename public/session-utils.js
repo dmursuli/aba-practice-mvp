@@ -1,3 +1,5 @@
+import { graphNumericValue } from "./graph-values.js";
+
 export function removeTargetPointFromSession(session, programId, targetId) {
   const programs = Array.isArray(session?.programs) ? session.programs : [];
   let removed = false;
@@ -81,8 +83,8 @@ export function normalizeSkillDataCollectionType(value) {
 
 export function skillObservationValue(observation = {}) {
   return normalizeSkillDataCollectionType(observation.dataCollectionType) === "frequency"
-    ? Number(observation.frequency || 0)
-    : Number(observation.independence || 0);
+    ? graphNumericValue(observation.frequency)
+    : graphNumericValue(observation.independence);
 }
 
 export function dedupeTargetEntries(entries = []) {

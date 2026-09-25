@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright';
 import { buildPixelDateTicks, layoutDateTicks, layoutPhaseLabels, buildChartLayout, buildClinicalGraphModel, buildMovingAverageSeriesSet } from '../public/charts.js';
 const source = readFileSync(new URL('../public/charts.js', import.meta.url), 'utf8');
+const valuesSource = readFileSync(new URL('../public/graph-values.js', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const measure = text => text.length * 6;
@@ -67,7 +68,7 @@ async function fixture(t) {
   t.after(() => page.close());
   await page.route('**/*', route => route.abort());
   await page.setContent(`<style>${css}</style><main class="graphs-shell" data-view-panel="graphs"><section class="graphs-panel"><article class="chart-panel"><canvas id="chart"></canvas></article></section></main>`);
-  await page.addScriptTag({ type:'module', content:source + '\nwindow.draw = drawLineChart;' });
+  await page.addScriptTag({ type:'module', content:source.replace('import { graphNumericValue } from "./graph-values.js";', valuesSource) + '\nwindow.draw = drawLineChart;' });
   await page.waitForFunction(() => window.draw);
   return page;
 }
