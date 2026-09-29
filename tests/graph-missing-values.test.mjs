@@ -6,7 +6,7 @@ import { graphNumericValue } from '../public/graph-values.js';
 import { skillObservationValue, normalizeSkillDataCollectionType } from '../public/session-utils.js';
 import { buildSkillMeasurementChart } from '../public/skill-graph-measurements.js';
 import { behaviorGraphMeasurement } from '../public/behavior-graph-measurements.js';
-import { drawLineChart, buildMovingAveragePoints, buildGraphAnalysis, buildClinicalGraphModel } from '../public/charts.js';
+import { graphObservationProvider, drawLineChart, buildMovingAveragePoints, buildGraphAnalysis, buildClinicalGraphModel } from '../public/charts.js';
 
 const unavailable = [null, undefined, '', ' \t\n', 'not a number', NaN, Infinity, -Infinity, 'Infinity', false, [], {}];
 const seriesFor = values => [{ name: 'Synthetic', points: values.map((y,i) => ({ x: `2026-01-${String(i+1).padStart(2,'0')}`, y })) }];
@@ -39,7 +39,7 @@ test('skill graph values preserve zero counts and zero percent with actual trial
 test('graph builders retain unavailable dates as gaps and preserve zero and input records', () => {
   const app=readSource('app.js');
   const names=['buildProgramSkillChart','behaviorChartSeries','buildBehaviorChart','buildParentTrainingChartModels'];
-  const context=vm.createContext({graphNumericValue,skillObservationValue,normalizeSkillDataCollectionType,
+  const context=vm.createContext({graphObservationProvider,graphNumericValue,skillObservationValue,normalizeSkillDataCollectionType,
     buildSkillMeasurementChart, behaviorGraphMeasurement, state:{activeClientId:'synthetic',skillGraphMeasurements:{}},
     configuredTargetsForProgram:()=>[{id:'target',name:'Target'}],
     targetEntries:s=>s.programs.flatMap(p=>p.targets.map(t=>({...t,programId:p.programId}))),
@@ -51,6 +51,7 @@ test('graph builders retain unavailable dates as gaps and preserve zero and inpu
   vm.runInContext(names.map(n=>extract(app,n)).join('\n'),context);
   const values=[0,'0',...unavailable];
   const sessions=values.map((value,i)=>({id:`session-${i}`,date:`2026-01-${String(i+1).padStart(2,'0')}`,serviceType:'parent-training',
+    therapist:'Recorded Collector', historicalImport:i===1?{batchId:'synthetic-import'}:undefined,
     programs:[{programId:'program',targets:[{targetId:'target',independence:value,correct:0,trials:5}]}],
     behaviors:[{behaviorId:'behavior',frequency:value}],
     parentGoals:[{goalName:'Goal',targetName:'Target',fidelity:value,opportunities:5,independent:0}]
@@ -60,6 +61,8 @@ test('graph builders retain unavailable dates as gaps and preserve zero and inpu
   for (const chart of charts) {
     assert.deepEqual(Array.from(chart.series[0].points,p=>p.y),[0,0,...unavailable.map(()=>null)]);
     assert.equal(chart.series[0].points.length,sessions.length);
+    assert.equal(chart.series[0].points[0].provider,'Recorded Collector');
+    assert.equal(chart.series[0].points[1].provider,null);
   }
   assert.deepEqual(sessions,before);
 });
@@ -141,7 +144,7 @@ test('renderer excludes unavailable values from axes and markers while connectin
     const empty=recorder();
     drawLineChart(empty.canvas,seriesFor([0]));
     drawLineChart(empty.canvas,seriesFor(unavailable));
-    empty.canvas.onmousemove({clientX:400,clientY:372});
+    assert.equal(empty.canvas.__graphInspection.groups.length,0);
     assert.equal(empty.canvas.title,'');
     assert.ok(empty.calls.text.includes('No session data yet'));
     assert.equal(empty.calls.arcs.length,1,'all-unavailable redraw adds no markers');
@@ -173,7 +176,7 @@ test('missing values retain elapsed spacing and intentional clinical breaks with
     assert.deepEqual(raw[0].path,[arcs[0],arcs[1]]);
     assert.equal(lines(plain).filter(s=>s.dash.length).length,2);
     const missingX=arcs[0].x+(arcs[1].x-arcs[0].x)/2;
-    plain.canvas.onmousemove({clientX:missingX,clientY:372});
+    assert.equal(plain.canvas.__graphInspection.groups.length,3);
     assert.equal(plain.canvas.title,'');
     // The Treatment boundary still breaks raw lines. The existing rolling
     // trend intentionally spans that boundary and is not changed here.

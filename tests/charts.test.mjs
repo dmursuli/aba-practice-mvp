@@ -1246,9 +1246,9 @@ test('unconfigured renderer has no inferred phase labels, boundary stroke, toolt
     assert.ok(!recorder.calls.text.includes('Baseline') && !recorder.calls.text.includes('Treatment'));
     assert.equal(recorder.calls.strokes.filter(s=>s.color==='#1f2933').length,0);
     assert.equal(recorder.calls.strokes.filter(s=>s.color==='#167c80').length,2);
-    recorder.canvas.onmousemove({clientX:92,clientY:372});
-    assert.match(recorder.canvas.title,/Unconfigured: 0/);
-    assert.doesNotMatch(recorder.canvas.title,/Phase:/);
+    assert.equal(recorder.canvas.__graphInspection.groups[0].entries[0].value,0);
+    assert.equal(recorder.canvas.__graphInspection.groups[0].entries[0].phase,null);
+    assert.equal(recorder.canvas.title,'');
     assert.deepEqual(series,before);
     const explicit=makeCanvasRecorder();
     drawLineChart(explicit.canvas,series,{maxY:100,treatmentPhaseLine:{date:'2026-01-03',lineStyle:'dashed'}});

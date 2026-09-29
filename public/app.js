@@ -1,5 +1,5 @@
 import { assignClientProvider, cancelAppointment, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getSchedulingCapacity, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
-import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
+import { graphObservationProvider, buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { graphNumericValue } from "./graph-values.js";
 import { buildSkillMeasurementChart, skillMeasurementSettings } from "./skill-graph-measurements.js";
@@ -10984,7 +10984,7 @@ function buildBehaviorChart(behaviorId, sessions) {
   if (!behavior) return null;
   const points = sessions.flatMap((session) => {
     const entry = behaviorEntriesForSession(session).find((item) => item.behaviorId === behaviorId);
-    return entry ? [{ x: session.date, y: graphNumericValue(entry.frequency), measurementType: behaviorGraphMeasurement(entry, session), phase: entry.phase || "intervention" }] : [];
+    return entry ? [{ x: session.date, provider: graphObservationProvider(session, entry), y: graphNumericValue(entry.frequency), measurementType: behaviorGraphMeasurement(entry, session), phase: entry.phase || "intervention" }] : [];
   });
   return {
     behavior,
@@ -13501,6 +13501,7 @@ function buildProgramSkillChart(program, sessions) {
       .find((item) => item.programId === program.id && item.targetId === target.id);
     return entry ? [{
       ...entry,
+      provider: graphObservationProvider(session, entry),
       x: session.date,
       phase: entry.phase || "intervention",
       sessionId: session.id,
@@ -13567,6 +13568,7 @@ function buildParentTrainingChartModels(sessions) {
         return goal ? [{
           x: session.date,
           y: graphNumericValue(goal.fidelity),
+          provider: graphObservationProvider(session, goal),
           phase: "intervention",
           sessionId: session.id,
           goalName,
@@ -13944,6 +13946,7 @@ function behaviorChartSeries(sessions) {
         x: session.date,
         y: graphNumericValue(target.frequency),
         measurementType: behaviorGraphMeasurement(target, session),
+        provider: graphObservationProvider(session, target),
         phase: target.phase || "intervention",
         sessionId: session.id,
         behaviorId: behavior.id,

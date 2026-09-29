@@ -50,7 +50,7 @@ export function drawLineChart(canvas, series, options = {}) {
 
   if (!allPoints.length) {
     canvas.title = "";
-    bindCanvasTooltip(canvas, []);
+    bindCanvasInspection(canvas, [], [], options);
     drawEmpty(ctx, width, height, options.emptyMessage || "No session data yet");
     return;
   }
@@ -231,7 +231,11 @@ export function drawLineChart(canvas, series, options = {}) {
     });
   });
 
-  bindCanvasTooltip(canvas, interactivePoints);
+  const inspectionMarkers = phaseMarkers.map(marker => ({
+    ...marker, x: xPositionForMarkerDateWithMode(marker, dates, xPositions, layout.markerXByDate),
+    top: margin.top - 24, bottom: margin.top + plotHeight
+  })).filter(marker => Number.isFinite(marker.x));
+  bindCanvasInspection(canvas, interactivePoints, inspectionMarkers, options);
 }
 
 export function redrawLineChartTrend(canvas, showTrendLine) {
@@ -1092,27 +1096,209 @@ function roundMetric(value, digits = 1) {
   return Math.round(numeric * factor) / factor;
 }
 
-function bindCanvasTooltip(canvas, points) {
-  if (!canvas) return;
-  canvas.onmousemove = (event) => {
+// The import pipeline stores the importing actor as therapist, not the collector.
+export function graphObservationProvider(session, observation = {}) {
+  if (session.historicalImport || session.historicalImportBatchId
+    || ["historical-import", "historical_import"].includes(session.source)
+    || observation.historicalImportRowId || observation.historicalImportBatchId
+    || observation.historicalImportMeasurementType) return null;
+  return typeof session.therapist === "string" ? session.therapist.trim() || null : null;
+}
+
+function bindCanvasInspection(canvas, points, markers, options) {
+  // Inspection is ephemeral UI state, independent of graph settings and data.
+  canvas.title = "";
+  canvas.onmousemove = null;
+  canvas.onmouseleave = null;
+  canvas.onpointermove = null;
+  canvas.onclick = null;
+  canvas.onpointerleave = null;
+  canvas.__graphInspection?.tooltip?.remove();
+  const entries = [
+    ...points.map((point, renderOrder) => ({ ...point, renderOrder, kind: "observation" })),
+    ...markers.map(marker => ({ ...marker, kind: "marker" }))
+  ].sort((a, b) => a.date.localeCompare(b.date));
+  const groups = [];
+  entries.forEach(entry => {
+    let group = groups.find(item => item.date === entry.date);
+    if (!group) { group = { date: entry.date, entries: [] }; groups.push(group); }
+    group.entries.push(entry);
+  });
+  const signature = JSON.stringify(entries.map(({ x, y, top, bottom, ...entry }) => entry));
+  const previous = canvas.__graphInspection;
+  const retained = previous?.signature === signature;
+  const inspection = { groups, signature, selected: retained ? previous.selected : -1,
+    pinned: retained && previous.pinned, surface: previous?.surface };
+  canvas.__graphInspection = inspection;
+  if (!groups.length) {
+    inspection.surface?.remove();
+    inspection.surface = null;
+    return;
+  }
+  // Renderer unit tests and export-only canvas consumers may have no DOM host.
+  if (!canvas.ownerDocument || !canvas.parentElement) return;
+  const doc = canvas.ownerDocument;
+  let surface = inspection.surface;
+  if (!surface?.isConnected) {
+    surface = doc.createElement("div");
+    surface.className = "graph-inspection";
+    const label = doc.createElement("label");
+    label.append("Inspect observations ");
+    const select = doc.createElement("select");
+    select.setAttribute("aria-label", "Inspect graph observations by date");
+    label.append(select);
+    const clear = doc.createElement("button");
+    clear.type = "button";
+    clear.textContent = "Clear selection";
+    const details = doc.createElement("div");
+    details.className = "graph-inspection-details";
+    details.setAttribute("role", "status");
+    details.setAttribute("aria-live", "polite");
+    details.setAttribute("aria-atomic", "true");
+    surface.append(label, clear, details);
+    canvas.after(surface);
+    inspection.surface = surface;
+  }
+  surface.hidden = !groups.length || canvas.classList.contains("hidden");
+  const tooltip = doc.createElement("div");
+  tooltip.className = "graph-hover-tooltip";
+  tooltip.hidden = true;
+  tooltip.setAttribute("aria-hidden", "true");
+  // Fixed positioning avoids adding a wrapper or changing canvas sizing.
+  surface.append(tooltip);
+  inspection.tooltip = tooltip;
+  const hideTooltip = () => { tooltip.hidden = true; };
+  if (!doc.__graphHoverDismissalBound) {
+    const hideAll = () => doc.querySelectorAll(".graph-hover-tooltip").forEach(item => { item.hidden = true; });
+    doc.addEventListener("scroll", hideAll, true);
+    doc.defaultView?.addEventListener("resize", hideAll);
+    doc.__graphHoverDismissalBound = true;
+  }
+  const select = surface.querySelector("select");
+  const clear = surface.querySelector("button");
+  const details = surface.querySelector(".graph-inspection-details");
+  select.replaceChildren();
+  const placeholder = doc.createElement("option");
+  placeholder.value = "-1";
+  placeholder.textContent = "Choose a date";
+  select.append(placeholder);
+  groups.forEach((group, index) => {
+    const option = doc.createElement("option");
+    option.value = String(index);
+    option.textContent = `${formatGraphDate(group.date)} (${group.entries.length})`;
+    select.append(option);
+  });
+  let lastSelection = "";
+  const render = (index, nearby = []) => {
+    const selection = `${index}:${nearby.map(entry => entries.indexOf(entry)).join(",")}`;
+    if (selection === lastSelection) return;
+    lastSelection = selection;
+    inspection.selected = index;
+    select.value = String(index);
+    clear.hidden = index < 0;
+    details.replaceChildren();
+    if (index < 0) return;
+    const heading = doc.createElement("strong");
+    heading.textContent = `Selected observations — ${formatGraphDate(groups[index].date)}`;
+    const list = doc.createElement("ul");
+    const selectedEntries = [...groups[index].entries];
+    nearby.forEach(entry => { if (!selectedEntries.includes(entry)) selectedEntries.push(entry); });
+    selectedEntries.forEach(entry => {
+      const row = doc.createElement("li");
+      if (entry.kind === "marker") {
+        row.textContent = [formatGraphDate(entry.date), entry.label,
+          entry.detail, entry.targetName, entry.objectiveName, entry.note].filter(Boolean).join(" — ");
+      } else {
+        row.textContent = [formatGraphDate(entry.date), entry.label,
+          `${entry.value}${options.yLabel ? ` ${options.yLabel}` : ""}`,
+          entry.phase ? `Phase: ${entry.phase === "baseline" ? "Baseline" : "Treatment"}` : "",
+          entry.source?.provider ? `Provider: ${entry.source.provider}` : "",
+          entry.source?.note].filter(Boolean).join(" — ");
+      }
+      list.append(row);
+    });
+    details.append(heading, list);
+  };
+  select.onchange = () => { hideTooltip(); inspection.pinned = true; render(Number(select.value)); };
+  clear.onclick = () => { hideTooltip(); inspection.pinned = false; render(-1); select.focus(); };
+  select.onkeydown = event => {
+    hideTooltip();
+    if (event.key === "Escape") { inspection.pinned = false; render(-1); }
+    if (["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const step = ["ArrowUp", "ArrowLeft"].includes(event.key) ? -1 : 1;
+      const index = event.key === "Home" ? 0 : event.key === "End" ? groups.length - 1
+        : Math.max(0, Math.min(groups.length - 1, inspection.selected + step));
+      inspection.pinned = true;
+      render(index);
+    }
+  };
+  const hit = (event, observationsOnly = false) => {
     const rect = canvas.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    const nearest = points.reduce((best, point) => {
-      const distance = Math.hypot(point.x - x, point.y - y);
-      if (distance > 12) return best;
-      if (!best || distance < best.distance) return { point, distance };
-      return best;
-    }, null);
-    canvas.title = nearest
-      ? [
-          `${nearest.point.label}: ${nearest.point.value} on ${formatGraphDate(nearest.point.date)}`,
-          nearest.point.phase ? `Phase: ${nearest.point.phase === "baseline" ? "Baseline" : "Treatment"}` : "",
-          nearest.point.source?.note ? `Notes: ${nearest.point.source.note}` : ""
-        ].filter(Boolean).join("\n")
-      : "";
+    const dpr = window.devicePixelRatio || 1;
+    const scaleX = rect.width / (canvas.width / dpr);
+    const scaleY = rect.height / (canvas.height / dpr);
+    let nearest = null;
+    const candidates = observationsOnly
+      ? entries.filter(entry => entry.kind === "observation").sort((a, b) => a.renderOrder - b.renderOrder)
+      : entries;
+    candidates.forEach(entry => {
+      const dx = (event.clientX - rect.left) - entry.x * scaleX;
+      const py = event.clientY - rect.top;
+      const dy = entry.kind === "marker"
+        ? Math.max(entry.top * scaleY - py, 0, py - entry.bottom * scaleY)
+        : py - entry.y * scaleY;
+      const distance = Math.hypot(dx, dy);
+      if (distance <= 28 && (!nearest || distance < nearest.distance)) nearest = { entry, distance };
+    });
+    if (!nearest) return;
+    const index = groups.findIndex(group => group.date === nearest.entry.date);
+    const nearby = entries.filter(entry => entry.kind === "observation" && nearest.entry.kind === "observation"
+      && Math.hypot((entry.x - nearest.entry.x) * scaleX, (entry.y - nearest.entry.y) * scaleY) <= 3);
+    return { index, nearby, nearest: nearest.entry, rect, scaleX, scaleY };
   };
-  canvas.onmouseleave = () => {
-    canvas.title = "";
+  let hoverKey = "";
+  canvas.onpointermove = event => {
+    if (event.pointerType === "touch") return;
+    const match = hit(event, true);
+    if (!match) { hideTooltip(); return; }
+    // Hover is point-specific; click and keyboard inspection retain date groups.
+    const shown = [match.nearest];
+    const key = shown.map(entry => entries.indexOf(entry)).join(",");
+    if (key !== hoverKey) {
+      hoverKey = key;
+      tooltip.replaceChildren();
+      const list = doc.createElement("ul");
+      shown.forEach(entry => {
+        const row = doc.createElement("li");
+        row.textContent = entry.kind === "marker"
+          ? [formatGraphDate(entry.date), entry.label, entry.detail, entry.targetName, entry.objectiveName].filter(Boolean).join(" — ")
+          : [formatGraphDate(entry.date), entry.label,
+              `${entry.value}${options.yLabel ? ` ${options.yLabel}` : ""}`,
+              entry.source?.provider ? `Provider: ${entry.source.provider}` : ""].filter(Boolean).join(" — ");
+        list.append(row);
+      });
+      tooltip.append(list);
+    }
+    const { rect, nearest, scaleX, scaleY } = match;
+    tooltip.style.maxWidth = `${Math.max(0, Math.min(320, rect.width - 12))}px`;
+    tooltip.style.maxHeight = `${Math.max(0, Math.min(220, rect.height - 12))}px`;
+    tooltip.hidden = false;
+    const box = tooltip.getBoundingClientRect();
+    const x = rect.left + nearest.x * scaleX;
+    const y = rect.top + (nearest.y ?? nearest.top) * scaleY;
+    const left = x + 14 + box.width <= rect.right - 6 ? x + 14 : x - box.width - 14;
+    const top = y - box.height - 14 >= rect.top + 6 ? y - box.height - 14 : y + 14;
+    tooltip.style.left = `${Math.max(rect.left + 6, Math.min(left, rect.right - box.width - 6))}px`;
+    tooltip.style.top = `${Math.max(rect.top + 6, Math.min(top, rect.bottom - box.height - 6))}px`;
   };
+  canvas.onpointerleave = hideTooltip;
+  canvas.onmouseleave = hideTooltip;
+  canvas.onclick = event => {
+    hideTooltip();
+    const match = hit(event);
+    if (match) render(match.index, match.nearby);
+    inspection.pinned = inspection.selected >= 0;
+  };
+  render(inspection.selected);
 }
