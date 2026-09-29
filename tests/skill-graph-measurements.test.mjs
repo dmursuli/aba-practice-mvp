@@ -81,9 +81,9 @@ async function fixture(t, points=observations) {
   await page.route('**/*',route=>route.abort());
   await page.setContent(`<style>${read('styles.css')}</style><main class="graphs-shell" data-view-panel="graphs"><section class="graphs-panel"><div id="skills"></div></section></main><div id="modal" class="modal-shell hidden"><h2></h2><p></p><canvas></canvas><div id="modal-legend"></div><div id="modal-analysis"></div></div>`);
   const moduleSource=read('graph-values.js')+'\n'+read('skill-graph-measurements.js').replace(/^import .*;$/gm,'')+'\n'+read('charts.js').replace(/^import .*;$/gm,'');
-  const names=['buildProgramSkillChart','skillChartSettings','buildSkillChartsByDomain','renderSkillCharts','renderSkillMeasurementControl','bindSkillMeasurementControls','drawSkillChartSet','openProgramGraphModal','handleGraphAnalysisControlChange'];
+  const names=['buildProgramSkillChart','skillChartSettings','buildSkillChartsByDomain','renderSkillCharts','renderSkillMeasurementControl','bindSkillMeasurementControls','drawSkillChartSet','openProgramGraphModal','handleGraphAnalysisControlChange','renderGraphLegendMarkup'];
   await page.addScriptTag({type:'module',content:moduleSource+`
-    const state={activeClientId:'client',skillGraphMeasurements:{},graphAnalysisRenderToken:0,activeGraphDomain:''};
+    const state={activeClientId:'client',skillGraphMeasurements:{},graphAnalysisRenderToken:0,activeGraphDomain:'',graphTrendVisibility:{'skill:p':true}};
     const skillCharts=document.querySelector('#skills');
     const programGraphModal=document.querySelector('#modal');
     const programGraphModalTitle=programGraphModal.querySelector('h2');
@@ -101,10 +101,9 @@ async function fixture(t, points=observations) {
     const groupedProgramsByDomain=programs=>[['Synthetic',programs]];
     const renderGraphDomainTabs=()=>{};
     const graphTrendKey=(kind,id)=>kind+':'+id;
-    const trendLineEnabled=()=>true;
+    const trendLineEnabled=key=>state.graphTrendVisibility[key] ?? true;
     const graphPhaseConfig=()=>({treatmentPhaseLine:{date:'2026-04-02'},phaseMarkers:[]});
     const masteryMarkersForProgram=()=>[];
-    const renderGraphLegendMarkup=series=>'<div class="graph-legend">'+series.map(s=>s.name).join(', ')+'</div>';
     const renderSkillDataManagerMarkup=()=>'';
     const renderCustomPhaseLineManager=()=>'';
     const renderReportProgramInfo=()=>'';
@@ -113,6 +112,8 @@ async function fixture(t, points=observations) {
     const queueGraphAnalysisBatch=tasks=>tasks.forEach(task=>task());
     const escapeHtml=value=>String(value).replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;');
     ${names.map(extract).join('\n')}
+    skillCharts.addEventListener("change",handleGraphAnalysisControlChange);
+    programGraphModal.addEventListener("change",handleGraphAnalysisControlChange);
     window.render=()=>renderSkillCharts(sessions);
     window.renderReport=()=>drawSkillChartSet(sessions,skillCharts,'report-program-chart',true);
     window.openSkillModal=()=>openProgramGraphModal(program.id);
@@ -139,7 +140,7 @@ test('mixed skill selector updates actual rendering, legend, axis, analysis and 
   assert.deepEqual(frequency.series[0].points.map(p=>p.y),[0,2]);
   assert.equal(await page.locator('[data-analysis]').count(),0);
   assert.match(await page.locator('#skills').textContent(),/Frequency observations are shown as raw counts/);
-  assert.equal(await page.locator('.graph-legend').textContent(),'Target A');
+  assert.match(await page.locator('.graph-legend').textContent(),/Target A/);
   assert.equal(await picker.evaluate(node=>node===document.activeElement),true);
   await picker.selectOption('percent_correct');
   assert.equal((await page.evaluate(()=>graphState().options)).yLabel,'Percent correct');
@@ -177,4 +178,32 @@ test('skill modal switches measurements without mixing historical points',async 
   await page.waitForFunction(()=>modalState()?.options.yLabel==='Percent correct');
   assert.equal(await page.locator('#modal [data-skill-measurement]').count(),1);
   assert.match(await page.locator('#modal-analysis').textContent(),/Baseline 0; Treatment 80/);
+});
+
+
+test('moving average remains independently controllable across measurements and narrow layouts',async t=>{
+  const page=await fixture(t);
+  const toggle=page.getByRole('checkbox',{name:'Show moving average',exact:true});
+  const picker=page.getByRole('combobox',{name:'Measurement'});
+  assert.equal(await toggle.isChecked(),true);
+  assert.match(await page.locator('.graph-legend').textContent(),/5-session moving average/);
+  await picker.selectOption('frequency');
+  assert.equal(await toggle.isChecked(),true);
+  assert.equal((await page.evaluate(()=>graphState().options)).showTrendLine,true);
+  await toggle.uncheck();
+  assert.equal((await page.evaluate(()=>graphState().options)).showTrendLine,false);
+  assert.doesNotMatch(await page.locator('.graph-legend').textContent(),/5-session moving average/);
+  assert.equal(await toggle.evaluate(el=>el===document.activeElement),true);
+  await picker.selectOption('percent_correct');
+  assert.equal(await toggle.isChecked(),false);
+  assert.equal((await page.evaluate(()=>graphState().options)).showTrendLine,false);
+  await toggle.check();
+  for(const width of [1440,1024,768,390,320]) {
+    await page.setViewportSize({width,height:1000});
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+    assert.equal(await toggle.locator('..').evaluate(el=>getComputedStyle(el).whiteSpace),'nowrap');
+  }
+  assert.doesNotMatch(read('app.js'),/Show trend line/);
+  assert.doesNotMatch(extract('renderGraphAnalysisMarkup'),/data-graph-trend-toggle/);
+  assert.match(extract('renderGraphAnalysisMarkup'),/"Trend"/);
 });

@@ -661,7 +661,7 @@ test('graph analysis permits a progressive trend line with fewer than five treat
 test('graph UI exposes a trend-line toggle and report insertion action', () => {
   const appSource = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 
-  assert.match(appSource, /Show trend line/);
+  assert.match(appSource, /Show moving average/);
   assert.match(appSource, /data-graph-trend-toggle/);
   assert.match(appSource, /data-insert-graph-analysis/);
   assert.match(appSource, /progressSummary/);

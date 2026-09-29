@@ -3,6 +3,7 @@ import { buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, f
 import { graphScopeVisibility } from "./graph-ui.js";
 import { graphNumericValue } from "./graph-values.js";
 import { buildSkillMeasurementChart, skillMeasurementSettings } from "./skill-graph-measurements.js";
+import { behaviorGraphMeasurement, behaviorMeasurementGate, behaviorMeasurementLabel, drawBehaviorMeasurementChart, buildBehaviorMeasurementAnalysis } from "./behavior-graph-measurements.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
 import { adjustParentTrainingResponse, buildEditableParentTrainingSummary, explicitParentTrainingGoalState, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingCollectionMetrics, parentTrainingGoalKey, parentTrainingGoalLabel, parentTrainingGoalLifecycleState, parentTrainingGoalMasteryDate, summarizeParentTrainingReport } from "./parent-training-report.js";
 import { calculateRbtFidelity, setRbtFidelityResponse } from "./rbt-fidelity.js";
@@ -1431,6 +1432,7 @@ function bindEvents() {
   behaviorCharts.addEventListener("submit", handleGraphPhaseLineSubmit);
   behaviorChartPanel?.addEventListener("click", handleGraphPhaseLineClick);
   behaviorChartPanel?.addEventListener("submit", handleGraphPhaseLineSubmit);
+  behaviorChartPanel?.addEventListener("change", handleGraphAnalysisControlChange);
   behaviorCharts.addEventListener("change", handleGraphAnalysisControlChange);
   behaviorCharts.addEventListener("toggle", handleGraphDataManagerToggle, true);
   behaviorCharts.addEventListener("click", handleGraphAnalysisClick);
@@ -10939,6 +10941,8 @@ function openProgramGraphModal(programId) {
   const phaseConfig = graphPhaseConfig(graphKey, chart.series, masteryMarkersForProgram(program.id));
   programGraphModalTitle.textContent = program.name;
   programGraphModalSubtitle.textContent = `${program.domain || "General"}${chart.series.length ? ` - ${chart.series.length} target graph${chart.series.length === 1 ? "" : "s"}` : ""}`;
+  programGraphModalCanvas.classList.remove("hidden");
+  programGraphModalCanvas.parentElement?.querySelector('[data-behavior-measurement-notice]')?.remove();
   programGraphModal.classList.remove("hidden");
   programGraphModal.setAttribute("aria-hidden", "false");
   programGraphModal.querySelector(".skill-measurement-controls")?.remove();
@@ -10954,7 +10958,7 @@ function openProgramGraphModal(programId) {
     });
     if (programGraphModalLegend) {
       programGraphModalLegend.innerHTML = renderGraphLegendMarkup(chart.series, {
-        showTrendLine: trendLineEnabled(graphKey)
+        showTrendLine: trendLineEnabled(graphKey), graphKey
       });
     }
     if (programGraphModalAnalysis) {
@@ -10980,7 +10984,7 @@ function buildBehaviorChart(behaviorId, sessions) {
   if (!behavior) return null;
   const points = sessions.flatMap((session) => {
     const entry = behaviorEntriesForSession(session).find((item) => item.behaviorId === behaviorId);
-    return entry ? [{ x: session.date, y: graphNumericValue(entry.frequency), phase: entry.phase || "intervention" }] : [];
+    return entry ? [{ x: session.date, y: graphNumericValue(entry.frequency), measurementType: behaviorGraphMeasurement(entry, session), phase: entry.phase || "intervention" }] : [];
   });
   return {
     behavior,
@@ -11115,11 +11119,12 @@ function openBehaviorGraphModal(behaviorId) {
   const graphKey = graphTrendKey("behavior", behaviorId);
   const phaseConfig = graphPhaseConfig(graphKey, chart.series);
   programGraphModalTitle.textContent = chart.behavior.name;
-  programGraphModalSubtitle.textContent = "Behavior reduction - frequency";
+  programGraphModalSubtitle.textContent = `Behavior reduction - ${behaviorMeasurementLabel(behaviorMeasurementGate(chart.series).type)}`;
+  programGraphModal.querySelector(".skill-measurement-controls")?.remove();
   programGraphModal.classList.remove("hidden");
   programGraphModal.setAttribute("aria-hidden", "false");
   requestAnimationFrame(() => {
-    drawLineChart(programGraphModalCanvas, chart.series, {
+    drawBehaviorMeasurementChart(programGraphModalCanvas, chart.series, {
       yStep: 1,
       yLabel: "frequency",
       emptyMessage: "No behavior data for this behavior",
@@ -11129,13 +11134,13 @@ function openBehaviorGraphModal(behaviorId) {
       showTrendLine: trendLineEnabled(graphKey)
     });
     if (programGraphModalLegend) {
-      programGraphModalLegend.innerHTML = renderGraphLegendMarkup(chart.series, {
-        showTrendLine: trendLineEnabled(graphKey)
+      programGraphModalLegend.innerHTML = renderBehaviorGraphLegendMarkup(chart.series, {
+        showTrendLine: trendLineEnabled(graphKey), graphKey
       });
     }
     if (programGraphModalAnalysis) {
       programGraphModalAnalysis.innerHTML = renderGraphAnalysisMarkup(
-        buildGraphAnalysis(chart.series, {
+        buildBehaviorMeasurementAnalysis(chart.series, {
           graphType: "behavior",
           phaseMarkers: phaseConfig.phaseMarkers,
           treatmentPhaseLine: phaseConfig.treatmentPhaseLine
@@ -12345,14 +12350,16 @@ function handleGraphAnalysisControlChange(event) {
   if (!redrawLineChartTrend(canvas, toggle.checked) || !renderState) return;
 
   const legendMarkup = renderGraphLegendMarkup(renderState.series, {
-    showTrendLine: toggle.checked
+    showTrendLine: toggle.checked, graphKey
   });
   if (graphContainer === programGraphModal) {
     programGraphModalLegend.innerHTML = legendMarkup;
+    programGraphModalLegend.querySelector("[data-graph-trend-toggle]")?.focus();
     return;
   }
   const legend = graphContainer.querySelector(".graph-legend");
   if (legend) legend.outerHTML = legendMarkup;
+  graphContainer.querySelector("[data-graph-trend-toggle]")?.focus();
 }
 
 function handleGraphAnalysisClick(event) {
@@ -13012,7 +13019,7 @@ function parentTrainingSessionsForRange(startDate, endDate) {
 
 function reportChartSpecs() {
   return [
-    { selector: "#report-behavior-overview", kind: "behavior-overview", label: "Behavior frequency" },
+    { selector: "#report-behavior-overview", kind: "behavior-overview", label: "Behavior observations" },
     { selector: "#report-behavior-charts", kind: "behavior-details", label: "Behavior detail graphs" },
     { selector: "#report-skill-charts", kind: "skills", label: "Skill acquisition graphs" },
     { selector: "#report-parent-training-charts", kind: "parent-training", label: "Parent training graphs" }
@@ -13091,7 +13098,7 @@ function renderReportChartSection(container, sessions, kind) {
 function renderReportBehaviorOverviewChart(container, sessions) {
   container.innerHTML = `
     <article class="chart-panel">
-      <h4>Behavior frequency</h4>
+      <h4>Behavior observations</h4>
       <canvas id="report-behavior-chart" width="760" height="320"></canvas>
     </article>
   `;
@@ -13101,7 +13108,7 @@ function renderReportBehaviorOverviewChart(container, sessions) {
   const allBehaviorSeries = behaviorChartSeries(currentSessions().slice().reverse());
   const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
   const behaviorOverviewPhaseConfig = graphPhaseConfig(behaviorOverviewGraphKey, behaviorSeries);
-  drawLineChart(behaviorCanvas, behaviorSeries, {
+  drawBehaviorMeasurementChart(behaviorCanvas, behaviorSeries, {
     yStep: 1,
     yLabel: "frequency",
     emptyMessage: "No behavior data in this report range",
@@ -13181,11 +13188,11 @@ function renderCharts() {
     });
     const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
     const behaviorOverviewPhaseConfig = graphPhaseConfig(behaviorOverviewGraphKey, behaviorSeries);
-    drawLineChart(document.querySelector("#behavior-chart"), behaviorSeries, {
+    drawBehaviorMeasurementChart(document.querySelector("#behavior-chart"), behaviorSeries, {
       layoutMode: "graphs",
       yStep: 1,
       yLabel: "frequency",
-      emptyMessage: "Save a session to graph behavior frequency",
+      emptyMessage: "Save a session to graph behavior observations",
     phaseMarkers: behaviorOverviewPhaseConfig.phaseMarkers,
     treatmentPhaseLine: behaviorOverviewPhaseConfig.treatmentPhaseLine,
     graphType: "behavior",
@@ -13196,8 +13203,10 @@ function renderCharts() {
     const behaviorOverviewScrollWrap = document.querySelector("#behavior-chart")?.parentElement;
     behaviorOverviewScrollWrap?.classList.remove("is-scrollable");
     const behaviorChartContainer = document.querySelector("#behavior-chart")?.closest(".chart-panel");
-    renderGraphLegend(behaviorChartContainer, behaviorSeries, {
-      showTrendLine: trendLineEnabled(behaviorOverviewGraphKey)
+    const overviewGate = behaviorMeasurementGate(behaviorSeries);
+    renderGraphLegend(behaviorChartContainer, overviewGate.series, {
+      showTrendLine: !overviewGate.blocked && trendLineEnabled(behaviorOverviewGraphKey),
+      graphKey: overviewGate.blocked ? null : behaviorOverviewGraphKey
     });
     if (behaviorChartContainer) {
       behaviorChartContainer.querySelector(".graph-analysis-panel")?.remove();
@@ -13210,7 +13219,7 @@ function renderCharts() {
       const analysisMount = behaviorChartContainer.querySelector('.graph-analysis-panel');
       if (analysisMount) {
         void queueGraphAnalysis(() => {
-          const behaviorOverviewAnalysis = buildGraphAnalysis(
+          const behaviorOverviewAnalysis = buildBehaviorMeasurementAnalysis(
             state.behaviorGraphAnalyzeAllData
               ? allBehaviorSeries.filter((series) => visibleBehaviorIds().includes(series.meta?.behaviorId))
               : behaviorSeries,
@@ -13427,7 +13436,7 @@ function renderSkillCharts(sessions) {
             <h3>${chart.program.name}</h3>
             ${renderSkillMeasurementControl(chart)}
             <canvas data-program-chart="${chart.program.id}" width="760" height="320"></canvas>
-            ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("skill", chart.program.id)) })}
+            ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("skill", chart.program.id)), graphKey: graphTrendKey("skill", chart.program.id) })}
             <div data-program-analysis="${chart.program.id}"></div>
             ${renderSkillDataManagerMarkup(chart)}
           </article>
@@ -13606,9 +13615,10 @@ function masteryMarkersForProgram(programId) {
 function renderGraphLegendMarkup(series, options = {}) {
   const items = buildLegendItems(series || []);
   const showTrendLine = Boolean(options.showTrendLine);
-  if (!items.length && !showTrendLine) return "";
+  if (!items.length && !showTrendLine && !options.graphKey) return "";
   return `
     <div class="graph-legend" aria-label="Graph target legend">
+      ${options.graphKey ? `<label class="moving-average-toggle"><input type="checkbox" data-graph-trend-toggle="${escapeHtml(options.graphKey)}" ${showTrendLine ? "checked" : ""}><span>Show moving average</span></label>` : ""}
       ${items.map((item) => `
         <span class="graph-legend-item">
           <span class="graph-legend-swatch" style="background:${escapeHtml(item.color)};"></span>
@@ -13642,6 +13652,7 @@ function trendLineEnabled(graphKey) {
 }
 
 function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
+  if (analysis?.measurementNotice && !analysis.analyses?.length) return `<p class="muted graph-analysis-panel" role="status">${escapeHtml(analysis.measurementNotice)}</p>`;
   if (!analysis?.analyses?.length) return "";
   const reportField = options.reportField || "progressSummary";
   const insertLabel = reportField === "parentTrainingSummary"
@@ -13655,12 +13666,10 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
     <section class="graph-analysis-panel" data-graph-analysis="${escapeHtml(graphKey)}" data-graph-analysis-payload="${payload}" data-report-field="${escapeHtml(reportField)}">
       <div class="graph-analysis-toolbar">
         <strong>Graph Analysis</strong>
-        <label class="trend-line-toggle">
-          <input type="checkbox" data-graph-trend-toggle="${escapeHtml(graphKey)}" ${showTrendLine ? "checked" : ""}>
-          <span>Show trend line</span>
-        </label>
       </div>
       <p class="graph-analysis-note">Analysis based on ${escapeHtml(options.rangeLabel || analysis.rangeLabel || "selected date range")}.</p>
+      ${analysis.measurementLabel ? `<p class="graph-analysis-note">Measurement: ${escapeHtml(analysis.measurementLabel)}</p>` : ""}
+      ${analysis.measurementNotice ? `<p class="graph-analysis-note">${escapeHtml(analysis.measurementNotice)}</p>` : ""}
       ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">No explicit treatment phase line; observations are not classified as Baseline or Treatment.</p>' : ""}
       ${options.treatmentBeforeRange ? '<p class="graph-analysis-note">Treatment phase began before selected range.</p>' : ""}
       ${showTrendLine && analysis.trendLineMessage ? `<p class="graph-analysis-note">${escapeHtml(analysis.trendLineMessage)}</p>` : ""}
@@ -13702,9 +13711,12 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
 }
 
 function renderReportGraphAnalysisMarkup(analysis, options = {}) {
+  if (analysis?.measurementNotice && !analysis.analyses?.length) return `<p class="muted" role="status">${escapeHtml(analysis.measurementNotice)}</p>`;
   if (!analysis?.analyses?.length) return "";
   return `
     <section class="report-graph-analysis" aria-label="Graph Analysis">
+      ${analysis.measurementLabel ? `<p>Measurement: ${escapeHtml(analysis.measurementLabel)}</p>` : ""}
+      ${analysis.measurementNotice ? `<p class="muted">${escapeHtml(analysis.measurementNotice)}</p>` : ""}
       <p class="graph-analysis-note">Analysis based on ${escapeHtml(options.rangeLabel || analysis.rangeLabel || "selected date range")}.</p>
       ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">No explicit treatment phase line; observations are not classified as Baseline or Treatment.</p>' : ""}
       ${analysis.analyses.map((entry) => `
@@ -13778,7 +13790,7 @@ function renderBehaviorDataManagerMarkup(chart) {
   const rows = chart.series.flatMap((series) => series.points.map((point) => ({
     label: series.name,
     date: point.x,
-    valueLabel: `${point.y} frequency`,
+    valueLabel: `${point.y ?? "Unavailable"} — ${behaviorMeasurementLabel(point.measurementType)}`,
     deleteDataset: [
       'data-delete-behavior-point="true"',
       `data-session-id="${escapeHtml(point.sessionId)}"`,
@@ -13931,6 +13943,7 @@ function behaviorChartSeries(sessions) {
       return target ? [{
         x: session.date,
         y: graphNumericValue(target.frequency),
+        measurementType: behaviorGraphMeasurement(target, session),
         phase: target.phase || "intervention",
         sessionId: session.id,
         behaviorId: behavior.id,
@@ -13938,6 +13951,11 @@ function behaviorChartSeries(sessions) {
       }] : [];
     })
   })).filter((series) => series.points.length);
+}
+
+function renderBehaviorGraphLegendMarkup(series, options = {}) {
+  const gate = behaviorMeasurementGate(series);
+  return renderGraphLegendMarkup(gate.series, { ...options, graphKey: gate.blocked ? null : options.graphKey, showTrendLine: !gate.blocked && options.showTrendLine });
 }
 
 function drawBehaviorChartSet(sessions, container, chartAttribute, options = {}) {
@@ -13965,7 +13983,7 @@ function drawBehaviorChartSet(sessions, container, chartAttribute, options = {})
       <div class="graph-canvas-scroll">
         <canvas data-${chartAttribute}="${index}" width="760" height="320"></canvas>
       </div>
-      ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("behavior", chart.behaviorId)) })}
+      ${renderBehaviorGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("behavior", chart.behaviorId)), graphKey: isReportChart ? null : graphTrendKey("behavior", chart.behaviorId) })}
       <div data-behavior-analysis="${escapeHtml(String(chart.behaviorId))}"></div>
       ${isReportChart ? "" : renderBehaviorDataManagerMarkup(chart)}
     </article>
@@ -13975,7 +13993,7 @@ function drawBehaviorChartSet(sessions, container, chartAttribute, options = {})
   charts.forEach((chart, index) => {
     const graphKey = graphTrendKey("behavior", chart.behaviorId);
     const phaseConfig = graphPhaseConfig(graphKey, chart.series);
-    drawLineChart(container.querySelector(`[data-${chartAttribute}="${index}"]`), chart.series, {
+    drawBehaviorMeasurementChart(container.querySelector(`[data-${chartAttribute}="${index}"]`), chart.series, {
       layoutMode: options.layoutMode,
       yStep: 1,
       yLabel: "frequency",
@@ -13997,7 +14015,7 @@ function drawBehaviorChartSet(sessions, container, chartAttribute, options = {})
         const analysisSeries = state.behaviorGraphAnalyzeAllData && !isReportChart
           ? allSeries.filter((series) => series.meta?.behaviorId === chart.behaviorId)
           : chart.series;
-        const analysis = buildGraphAnalysis(analysisSeries, {
+        const analysis = buildBehaviorMeasurementAnalysis(analysisSeries, {
           graphType: "behavior",
           phaseMarkers: phaseConfig.phaseMarkers,
           treatmentPhaseLine: phaseConfig.treatmentPhaseLine,
@@ -14045,7 +14063,7 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute, options
     <article class="chart-panel">
       <h3>${escapeHtml(chart.goalName)}</h3>
       <canvas data-${chartAttribute}="${index}" width="760" height="320"></canvas>
-      ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("parent", chart.goalKey)) })}
+      ${renderGraphLegendMarkup(chart.series, { showTrendLine: trendLineEnabled(graphTrendKey("parent", chart.goalKey)), graphKey: isReadOnly ? null : graphTrendKey("parent", chart.goalKey) })}
       <div data-parent-training-analysis="${escapeHtml(chart.goalKey)}"></div>
       ${isReadOnly ? "" : renderParentTrainingDataManagerMarkup(chart)}
     </article>

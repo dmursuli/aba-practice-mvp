@@ -3769,3 +3769,23 @@ button:disabled {
     min-width: 0;
   }
 }
+
+/* Keep the moving-average control independent of detailed analysis. */
+.graph-legend .moving-average-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+.graph-legend .moving-average-toggle input {
+  width: auto;
+  margin: 0;
+  flex: 0 0 auto;
+}
+@media print {
+  .moving-average-toggle { display: none !important; }
+}
