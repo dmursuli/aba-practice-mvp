@@ -464,7 +464,7 @@ p {
 
 .insurance-logo-panel {
   display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: center;
   gap: 18px 16px;
   max-width: 980px;
@@ -477,24 +477,11 @@ p {
 }
 
 .insurance-logo {
-  grid-column: span 2;
   min-height: 92px;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 4px 8px;
-}
-
-.insurance-logo:nth-child(5) {
-  grid-column: 2 / span 2;
-}
-
-.insurance-logo:nth-child(6) {
-  grid-column: 4 / span 2;
-}
-
-.insurance-logo:nth-child(7) {
-  grid-column: 6 / span 2;
 }
 
 .insurance-logo img {
@@ -523,12 +510,6 @@ p {
   --logo-scale: 2.15;
 }
 
-.insurance-logo-blue-cross {
-  --logo-max-width: 150px;
-  --logo-max-height: 50px;
-  --logo-scale: 1.95;
-}
-
 .insurance-logo-avmed {
   --logo-max-width: 140px;
   --logo-max-height: 58px;
@@ -550,17 +531,6 @@ p {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     max-width: 760px;
     gap: 20px 22px;
-  }
-
-  .insurance-logo,
-  .insurance-logo:nth-child(5),
-  .insurance-logo:nth-child(6),
-  .insurance-logo:nth-child(7) {
-    grid-column: auto;
-  }
-
-  .insurance-logo:nth-child(7) {
-    grid-column: 2;
   }
 }
 
@@ -1132,17 +1102,6 @@ textarea {
     padding: 18px;
   }
 
-  .insurance-logo,
-  .insurance-logo:nth-child(5),
-  .insurance-logo:nth-child(6),
-  .insurance-logo:nth-child(7) {
-    grid-column: auto;
-  }
-
-  .insurance-logo:nth-child(7) {
-    grid-column: 1 / -1;
-  }
-
   .insurance-logo {
     min-height: 88px;
     padding: 4px 6px;
@@ -1197,12 +1156,6 @@ textarea {
     --logo-scale: 1.9;
   }
 
-  .insurance-logo-blue-cross {
-    --logo-max-width: 132px;
-    --logo-max-height: 44px;
-    --logo-scale: 1.75;
-  }
-
   .insurance-logo-avmed {
     --logo-max-height: 54px;
     --logo-scale: 1.34;
@@ -1217,10 +1170,6 @@ textarea {
   .insurance-logo-panel {
     grid-template-columns: 1fr;
     gap: 16px;
-  }
-
-  .insurance-logo:nth-child(7) {
-    grid-column: auto;
   }
 
   .insurance-logo {
