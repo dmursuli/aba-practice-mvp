@@ -10444,39 +10444,30 @@ function bindPlanReviewInputs() {
 }
 
 function renderPlanBehaviorSection(behaviors) {
+  const active = behaviors.filter(behavior => behavior.status !== "inactive");
+  const retired = behaviors.filter(behavior => behavior.status === "inactive");
+  const row = (behavior, isRetired) => `
+    <div class="plan-target">
+      <label>Behavior
+        <input type="text" value="${escapeHtml(behavior.name || "")}" data-behavior-name="${escapeHtml(behavior.id)}" aria-label="Behavior name" ${isRetired ? "readonly" : ""}>
+      </label>
+      <span class="muted">${isRetired ? "Retired — historical data retained" : "Active"}</span>
+      <div class="button-row">
+        <button type="button" class="secondary-button" data-open-plan-behavior-graph="${escapeHtml(behavior.id)}">View graph</button>
+        <button type="button" class="secondary-button" data-set-plan-behavior-status="${escapeHtml(behavior.id)}" data-next-status="${isRetired ? "active" : "inactive"}">${isRetired ? "Reactivate" : "Retire behavior"}</button>
+      </div>
+    </div>`;
   return `
     <section class="plan-program">
       <div class="plan-domain-heading">
         <h3>Behavior reduction</h3>
-        <span>${behaviors.length} behavior${behaviors.length === 1 ? "" : "s"}</span>
+        <span>${active.length} active / ${retired.length} retired</span>
       </div>
-      <p class="muted">Add the problem behaviors this client is tracking so they appear in session entry and graphing.</p>
-      <div class="button-row">
-        <button type="button" class="secondary-button" data-add-plan-behavior>Add behavior</button>
-      </div>
-      <div class="plan-target-list">
-        ${behaviors.length ? behaviors.map((behavior) => `
-          <div class="plan-target">
-            <label>
-              Behavior
-              <input type="text" value="${escapeHtml(behavior.name || "")}" data-behavior-name="${behavior.id}" aria-label="Behavior name">
-            </label>
-            <label>
-              Status
-              <select data-behavior-status="${behavior.id}" aria-label="${escapeHtml(behavior.name || "Behavior")} status">
-                <option value="active" ${behavior.status !== "inactive" ? "selected" : ""}>Active</option>
-                <option value="inactive" ${behavior.status === "inactive" ? "selected" : ""}>Inactive</option>
-              </select>
-            </label>
-            <div class="button-row">
-              <button type="button" class="secondary-button" data-open-plan-behavior-graph="${behavior.id}">View graph</button>
-              <button type="button" class="delete-button" data-remove-plan-behavior="${behavior.id}">Remove</button>
-            </div>
-          </div>
-        `).join("") : '<p class="muted">No behaviors added yet.</p>'}
-      </div>
-    </section>
-  `;
+      <p class="muted">Active behaviors are available for new session collection. Retired behaviors retain their historical data and graphs.</p>
+      <div class="button-row"><button type="button" class="secondary-button" data-add-plan-behavior>Add behavior</button></div>
+      <div class="plan-target-list">${active.map(behavior => row(behavior, false)).join("") || '<p class="muted">No active behaviors.</p>'}</div>
+      ${retired.length ? `<details data-retired-behaviors><summary>Retired behaviors (${retired.length})</summary><div class="plan-target-list">${retired.map(behavior => row(behavior, true)).join("")}</div></details>` : ""}
+    </section>`;
 }
 
 function renderPlanParentTrainingSection() {
@@ -10810,6 +10801,14 @@ async function handlePlanClick(event) {
     const name = window.prompt("Behavior name");
     if (!name?.trim()) return;
     const { programs, behaviors } = currentPlanDraft();
+    const retiredMatch = behaviors.find(behavior => behavior.status === "inactive"
+      && behavior.name.trim().toLowerCase() === name.trim().toLowerCase());
+    if (retiredMatch) {
+      planMessage.textContent = `A retired behavior named "${retiredMatch.name}" already exists. Use Reactivate in Retired behaviors to resume that record. For a genuinely different behavior, use a distinct descriptive name.`;
+      const retiredSection = planReview.querySelector("[data-retired-behaviors]");
+      if (retiredSection) retiredSection.open = true;
+      return;
+    }
     const newBehavior = {
       id: slugify(name, "behavior", behaviors.map((behavior) => behavior.id)),
       name: name.trim(),
@@ -10824,18 +10823,25 @@ async function handlePlanClick(event) {
     });
     return;
   }
-  const removeBehavior = event.target.closest("[data-remove-plan-behavior]");
-  if (removeBehavior) {
+  const behaviorStatus = event.target.closest("[data-set-plan-behavior-status]");
+  if (behaviorStatus) {
     const { programs, behaviors } = currentPlanDraft();
-    const target = behaviors.find((behavior) => behavior.id === removeBehavior.dataset.removePlanBehavior);
-    if (!target) return;
-    if (!window.confirm(`Remove ${target.name}?`)) return;
-    await savePlan(programs, behaviors.filter((behavior) => behavior.id !== target.id), {
-      type: "behavior-removed",
+    const target = behaviors.find(behavior => behavior.id === behaviorStatus.dataset.setPlanBehaviorStatus);
+    const nextStatus = behaviorStatus.dataset.nextStatus;
+    if (!target || !["active", "inactive"].includes(nextStatus)) return;
+    const previousStatus = target.status === "inactive" ? "inactive" : "active";
+    if (previousStatus === nextStatus) return;
+    if (nextStatus === "inactive" && !window.confirm(`Retire ${target.name}? This removes it from new data collection while preserving its historical observations, graphs, and reports. You can reactivate the same behavior later.`)) return;
+    target.status = nextStatus;
+    await trackPlanSave(savePlan(programs, behaviors, {
+      type: "behavior-status-changed",
       behaviorId: target.id,
       behaviorName: target.name,
-      targetName: target.name
-    });
+      targetName: target.name,
+      fromStatus: previousStatus,
+      toStatus: nextStatus
+    }));
+    planMessage.textContent = nextStatus === "inactive" ? "Behavior retired. Historical data retained." : "Behavior reactivated for new collection.";
     return;
   }
   const addParentGoal = event.target.closest("[data-add-plan-parent-goal]");

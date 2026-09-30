@@ -1,6 +1,6 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -361,4 +361,27 @@ test("97155 SOAP note history keeps draft status and treats unknown legacy statu
   assert.equal(legacy.noteStatus, "finalized");
   assert.equal(legacy.finalized, true);
   assert.match(legacy.finalizedBy, /migration/);
+});
+
+
+test("behavior retirement and reactivation persist status logs without changing historical sessions", async () => {
+  const fixture = structuredClone(baseDb);
+  fixture.clients[0].behaviors = [{id:"behavior-stable",name:"Leaving seat",status:"active"}];
+  fixture.sessions = [{id:"historical-session",clientId:"client-1",date:"2026-04-01",serviceType:"97153",behaviors:[{behaviorId:"behavior-stable",frequency:0}]}];
+  await resetDb(fixture);
+  const cookie = await loginAs();
+  const storedBefore = JSON.parse(await readFile(dbPath,"utf8"));
+  let client = storedBefore.clients[0];
+  for (const status of ["inactive","active"]) {
+    const fromStatus = client.behaviors[0].status;
+    const log = {id:`change-${status}`,type:"behavior-status-changed",behaviorId:"behavior-stable",behaviorName:"Leaving seat",targetName:"Leaving seat",date:"2026-04-02",fromStatus,toStatus:status};
+    const result = await request("/api/clients/client-1/plan",{method:"PUT",cookie,body:{...client,behaviors:client.behaviors.map(b=>({...b,status})),planChangeLog:[...client.planChangeLog,log]}});
+    assert.equal(result.response.status,200);
+    client = result.json;
+    assert.deepEqual(client.behaviors,[{id:"behavior-stable",name:"Leaving seat",status}]);
+    assert.equal(client.planChangeLog.at(-1).toStatus,status);
+    const stored = JSON.parse(await readFile(dbPath,"utf8"));
+    assert.deepEqual(stored.sessions,storedBefore.sessions);
+    assert.ok(stored.auditLog.some(entry=>entry.action==="treatment-plan-updated"));
+  }
 });
