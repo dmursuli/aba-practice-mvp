@@ -10363,45 +10363,15 @@ function firstPlanMasteryChangeDate({ programId = "", targetId = "", type = "" }
     .sort((a, b) => a.localeCompare(b))[0] || "";
 }
 
-function inferredPlanTargetMasteryDate(programId, targetId) {
-  const criteria = currentMasteryCriteria();
-  const consecutiveSessions = Math.max(1, Number(criteria.consecutiveSessions || 2));
-  const thresholdPercent = Number(criteria.thresholdPercent || 90);
-  const qualifyingSessions = currentSessions()
-    .filter((session) => (session.serviceType || "97153") === "97153")
-    .map((session) => {
-      const date = normalizeMasteryDate(session.date);
-      const entry = targetEntries(session).find((target) => target.programId === programId && target.targetId === targetId);
-      return date && entry ? { session: { ...session, date }, entry } : null;
-    })
-    .filter(Boolean)
-    .sort((a, b) => {
-      const aValue = `${a.session.date}T${a.session.startTime || "00:00"}`;
-      const bValue = `${b.session.date}T${b.session.startTime || "00:00"}`;
-      return aValue.localeCompare(bValue);
-    });
-
-  for (let start = 0; start <= qualifyingSessions.length - consecutiveSessions; start += 1) {
-    const window = qualifyingSessions.slice(start, start + consecutiveSessions);
-    if (window.every(({ entry }) => Number(entry.independence || 0) >= thresholdPercent)) {
-      return window[window.length - 1]?.session?.date || "";
-    }
-  }
-  return "";
-}
-
 function resolvePlanTargetMasteryDate(program, target) {
+  // A program-wide log alone cannot establish when this particular target
+  // was mastered (it may have been paused or added later).
   return explicitPlanMasteryDate(target)
     || firstPlanMasteryChangeDate({
       type: "target-status-changed",
       programId: program?.id,
       targetId: target?.id
-    })
-    || firstPlanMasteryChangeDate({
-      type: "program-status-changed",
-      programId: program?.id
-    })
-    || inferredPlanTargetMasteryDate(program?.id, target?.id);
+    });
 }
 
 function resolvePlanProgramMasteryDate(program) {
@@ -11341,17 +11311,17 @@ async function handlePlanStatusChange(event) {
     const previousStatus = normalizePlanStatus(previousProgram?.status || "active");
     program.status = programControl.value;
     if (programControl.value === "mastered") {
-      const transitionDate = new Date().toISOString().slice(0, 10);
+      const transitionDate = currentPlanChangeDate();
       (program.targets || []).forEach((target) => {
         if (normalizePlanStatus(target.status || "active") !== "paused") {
-          if (!explicitPlanMasteryDate(target)) {
-            target.maintenanceDate = resolvePlanTargetMasteryDate(program, target) || transitionDate;
+          if (normalizePlanStatus(target.status) !== "mastered" && !explicitPlanMasteryDate(target)) {
+            target.maintenanceDate = transitionDate;
           }
           target.status = "mastered";
         }
       });
-      if (!explicitPlanMasteryDate(program)) {
-        program.masteredDate = resolvePlanProgramMasteryDate(program) || transitionDate;
+      if (previousStatus !== "mastered" && !explicitPlanMasteryDate(program)) {
+        program.masteredDate = transitionDate;
       }
     } else if (programControl.value === "paused") {
       (program.targets || []).forEach((target) => {
@@ -11387,8 +11357,8 @@ async function handlePlanStatusChange(event) {
   const previousTarget = previousProgram?.targets?.find((item) => item.id === control.dataset.planTarget);
   const previousStatus = normalizePlanStatus(previousTarget?.status || "active");
   target.status = control.value;
-  if (control.value === "mastered" && !explicitPlanMasteryDate(target)) {
-    target.maintenanceDate = resolvePlanTargetMasteryDate(program, target) || new Date().toISOString().slice(0, 10);
+  if (control.value === "mastered" && previousStatus !== "mastered" && !explicitPlanMasteryDate(target)) {
+    target.maintenanceDate = currentPlanChangeDate();
   }
 
   try {

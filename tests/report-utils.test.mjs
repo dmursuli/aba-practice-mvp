@@ -836,8 +836,8 @@ test("report workflow source wires draft save, preview rendering, and compact an
   assert.match(appSource, /skillAcquisitionSummary/);
   assert.match(appSource, /Skill Acquisition Goal and Target Summary/);
   assert.match(appSource, /function explicitPlanMasteryDate/);
-  assert.match(appSource, /target\.maintenanceDate = resolvePlanTargetMasteryDate\(program, target\)/);
-  assert.match(appSource, /program\.masteredDate = resolvePlanProgramMasteryDate\(program\)/);
+  assert.match(appSource, /target\.maintenanceDate = currentPlanChangeDate\(\)/);
+  assert.match(appSource, /program\.masteredDate = transitionDate/);
   assert.match(appSource, /Mastered: \$\{escapeHtml\(formatMasteryDate\(masteryDate\)\)\}/);
   assert.match(serverSource, /masteredDate: program\.masteredDate \|\| ""/);
   assert.match(serverSource, /masteredDate: target\.masteredDate \|\| ""/);
