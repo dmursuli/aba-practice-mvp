@@ -1853,11 +1853,13 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
           <div class="button-row">
             <button type="button" class="secondary-button" id="resume-funder-report">Resume saved draft</button>
             <button type="button" class="secondary-button" id="save-funder-report">Save report draft</button>
+            <button type="button" class="secondary-button" id="refresh-report-clinical" hidden>Refresh from current treatment</button>
             <button type="submit" class="primary-button">Generate funder report</button>
             <button type="button" class="secondary-button" id="print-funder-report">Export PDF</button>
             <button type="button" class="secondary-button" id="download-funder-text">Download .txt</button>
             <button type="button" class="secondary-button" id="download-funder-html">Download .html</button>
           </div>
+          <p id="report-clinical-context" class="muted"></p>
           <p id="funder-export-status" class="form-message" role="status"></p>
         </form>
         <article id="funder-report-preview" class="funder-report-preview"></article>

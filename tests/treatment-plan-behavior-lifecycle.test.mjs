@@ -43,8 +43,8 @@ test('retirement and reactivation preserve identity, historical graphs/report ra
   assert.equal(historical[0].points[0].y,0);
   const report=f.context.behaviorChartSeries(sessions.filter(s=>s.date<'2026-05-01'));
   assert.equal(report.length,1);assert.equal(report[0].points[0].y,0);
-  assert.match(extract('renderReportBehaviorOverviewChart'),/behaviorChartSeries\(sessions\)/);
-  assert.match(extract('drawBehaviorChartSet'),/behaviorChartSeries\(sessions\)/);
+  assert.match(extract('renderReportBehaviorOverviewChart'),/behaviorChartSeries\(sessions, context\?\.behaviors\)/);
+  assert.match(extract('drawBehaviorChartSet'),/behaviorChartSeries\(sessions, context\?\.behaviors\)/);
   await f.click('active');f.context.preloadBehaviorRows();
   assert.deepEqual(f.rows,['stable']);assert.equal(f.catalog().length,1);assert.equal(f.catalog()[0].id,'stable');
   assert.equal(f.saves[1].change.fromStatus,'inactive');assert.equal(f.saves[1].change.toStatus,'active');

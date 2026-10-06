@@ -83,7 +83,7 @@ async function fixture(t) {
   const page=await browser.newPage();t.after(()=>page.close());
   await page.route('**/*',route=>route.abort());
   await page.setContent(`<style>${read('styles.css')}</style><div class="graphs-shell"><div id="charts"></div><div id="overview"></div></div>`);
-  const modules=['graph-values.js','charts.js','behavior-graph-measurements.js'].map(file=>read(file).replace(/^import .*;$/gm,'')).join('\n');
+  const modules=['report-snapshot.js','graph-values.js','charts.js','behavior-graph-measurements.js'].map(file=>read(file).replace(/^import .*;$/gm,'')).join('\n');
   const names=['behaviorChartSeries','buildBehaviorChart','drawBehaviorChartSet','renderReportBehaviorOverviewChart','renderBehaviorGraphLegendMarkup','renderGraphLegendMarkup','renderGraphAnalysisMarkup','renderReportGraphAnalysisMarkup','renderGraphMetricCell','formatAnalysisMetric'];
   await page.addScriptTag({type:'module',content:modules+`
     const state={graphAnalysisRenderToken:0,behaviorGraphAnalyzeAllData:false,behaviorGraphShowPoints:true};
@@ -109,6 +109,12 @@ async function fixture(t) {
       const allSeries=allRecords ? behaviorChartSeries(allRecords) : behaviorChartSeries(records);
       drawBehaviorChartSet(records,document.querySelector('#charts'),'behavior-test',{layoutMode:'graphs',allSeries});
       renderReportBehaviorOverviewChart(document.querySelector('#overview'),records);
+    };
+    window.renderSnapshot=records=>{
+      sessions=records;
+      const context=sanitizeClinicalSnapshot({version:1,behaviors:[{id:'b',name:'Captured retired behavior',status:'inactive'}],phases:{'behavior:b':{treatmentPhaseLine:{date:'2026-04-03'},phaseMarkers:[]},'behavior:overview':{treatmentPhaseLine:{date:'2026-04-03'},phaseMarkers:[]}}});
+      drawBehaviorChartSet(records,document.querySelector('#charts'),'report-behavior-test',{context,visibleBehaviorIds:['b']});
+      renderReportBehaviorOverviewChart(document.querySelector('#overview'),records,context);
     };
     window.drawSafety=drawBehaviorMeasurementChart;
   `});
@@ -160,4 +166,20 @@ test('every behavior canvas and analysis entry point uses the gate',()=>{
     assert.match(extract(name),/drawBehaviorMeasurementChart\(/);
   }
   for(const name of ['openBehaviorGraphModal','renderCharts','drawBehaviorChartSet']) assert.match(extract(name),/buildBehaviorMeasurementAnalysis\(/);
+});
+
+
+test('snapshot behavior report uses retired catalog names and captured phases without bypassing measurement safety',async t=>{
+  const page=await fixture(t);
+  await page.evaluate(data=>renderSnapshot(data),records(['frequency','frequency']));
+  for(const selector of ['#charts canvas','#overview canvas']) {
+    const state=await page.locator(selector).evaluate(c=>c.__clinicalGraphRenderState);
+    assert.equal(state.series[0].name,'Captured retired behavior');
+    assert.equal(state.series[0].meta.status,'inactive');
+    assert.equal(state.series[0].points[0].y,0);
+    assert.equal(state.options.treatmentPhaseLine.date,'2026-04-03');
+  }
+  await page.evaluate(data=>renderSnapshot(data),records(['frequency','percentage']));
+  assert.equal(await page.locator('#charts canvas').isVisible(),false);
+  assert.equal(await page.locator('#overview canvas').isVisible(),false);
 });

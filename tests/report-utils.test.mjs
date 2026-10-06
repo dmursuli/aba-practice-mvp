@@ -805,7 +805,7 @@ test("report workflow source wires draft save, preview rendering, and compact an
   const cssSource = fs.readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
   const serverSource = fs.readFileSync(new URL("../server.js", import.meta.url), "utf8");
 
-  assert.match(appSource, /saveFunderReportButton\?\s*\.addEventListener\("click", handleSaveFunderReportDraft\)/);
+  assert.match(appSource, /saveFunderReportButton\?\s*\.addEventListener\("click", \(\) => handleSaveFunderReportDraft\(\)\)/);
   assert.match(appSource, /resumeFunderReportButton\?\s*\.addEventListener\("click", resumeSavedFunderReportDraft\)/);
   assert.match(appSource, /function handleSaveFunderReportDraft\(/);
   assert.match(appSource, /function resumeSavedFunderReportDraft\(/);

@@ -714,10 +714,12 @@ export function buildFunderDraftRecord({
   assessmentDocuments = {},
   customPhaseLines = {},
   existingDraft = {},
+  clinicalSnapshot = existingDraft.clinicalSnapshot,
   now = new Date().toISOString()
 } = {}) {
   const previousCreatedAt = existingDraft?.metadata?.createdAt || existingDraft?.createdAt || now;
   return {
+    ...(clinicalSnapshot ? { clinicalSnapshot } : {}),
     metadata: {
       clientId: String(clientId || ""),
       reportingPeriod: {

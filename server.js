@@ -1,3 +1,5 @@
+import { sanitizeClinicalSnapshot } from "./public/report-snapshot.js";
+import { hasMeaningfulFunderReportDraft } from "./public/report-utils.js";
 import { createServer } from "node:http";
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { readFileSync } from "node:fs";
@@ -2493,14 +2495,38 @@ export function createAppServer() {
         return;
       }
       const before = clientProfileAuditSnapshot(client);
+      const previousReport = client.profile?.funderReport || {};
+      const previousSnapshot = previousReport.clinicalSnapshot;
+      let snapshotEvent = null;
+      if (payload.funderReport) {
+        const action = payload.funderReport.clinicalSnapshotAction;
+        const capture = action === "capture" && !hasMeaningfulFunderReportDraft(previousReport);
+        if (capture || action === "refresh") {
+          const snapshot = sanitizeClinicalSnapshot(payload.funderReport.clinicalSnapshot);
+          if (!snapshot || snapshot.clientId !== client.id) {
+            sendJson(res, 400, { errors: ["A valid clinical snapshot for this client is required."] });
+            return;
+          }
+          snapshot.capturedAt = new Date().toISOString();
+          snapshot.capturedBy = actor.id;
+          snapshot.clientId = client.id;
+          payload.funderReport.clinicalSnapshot = snapshot;
+          snapshotEvent = { action: capture ? "capture" : "refresh", capturedAt: snapshot.capturedAt, capturedBy: actor.id, version: snapshot.version };
+        } else {
+          // Ordinary profile/report saves cannot replace or backfill clinical context.
+          payload.funderReport.clinicalSnapshot = previousSnapshot;
+        }
+      }
       updateClientRecord(client, payload, actor);
+      if (!payload.funderReport && Object.keys(previousReport).length) client.profile.funderReport = previousReport;
       const after = clientProfileAuditSnapshot(client);
       logAudit(db, req, actor, "client-profile-updated", {
         clientId: client.id,
         details: {
           before,
           after,
-          changes: diffObjects(before, after)
+          changes: diffObjects(before, after),
+          ...(snapshotEvent ? { reportClinicalSnapshot: snapshotEvent } : {})
         }
       });
       await writeDb(db);
@@ -6225,7 +6251,9 @@ function sanitizeFunderReport(payload) {
   const customPhaseLines = (() => {
     return sanitizeGraphPhaseLines(payload.customPhaseLines);
   })();
+  const clinicalSnapshot = sanitizeClinicalSnapshot(payload.clinicalSnapshot);
   return {
+    ...(clinicalSnapshot ? { clinicalSnapshot } : {}),
     metadata: {
       clientId: text(payload.metadata?.clientId || payload.clientId),
       reportingPeriod: {
@@ -6235,7 +6263,8 @@ function sanitizeFunderReport(payload) {
       draftStatus: text(payload.metadata?.draftStatus || "draft") || "draft",
       createdAt: text(payload.metadata?.createdAt),
       updatedAt: text(payload.metadata?.updatedAt),
-      lastSavedAt: text(payload.metadata?.lastSavedAt)
+      lastSavedAt: text(payload.metadata?.lastSavedAt),
+      generatedSectionAutofill: Object.fromEntries(Object.entries(payload.metadata?.generatedSectionAutofill || {}).map(([key, value]) => [key, text(value)]))
     },
     startDate: textField("startDate"),
     endDate: textField("endDate"),

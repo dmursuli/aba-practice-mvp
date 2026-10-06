@@ -1,3 +1,4 @@
+import { sanitizeClinicalSnapshot, snapshotPhaseConfig, reportSnapshotDisclosure } from "./report-snapshot.js";
 import { assignClientProvider, cancelAppointment, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getSchedulingCapacity, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { graphObservationProvider, buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
@@ -1464,7 +1465,8 @@ function bindEvents() {
   printFunderReportButton.addEventListener("click", handlePrintFunderReport);
   downloadFunderTextButton.addEventListener("click", () => handleDownloadFunderReport("txt"));
   downloadFunderHtmlButton.addEventListener("click", () => handleDownloadFunderReport("html"));
-  saveFunderReportButton?.addEventListener("click", handleSaveFunderReportDraft);
+  saveFunderReportButton?.addEventListener("click", () => handleSaveFunderReportDraft());
+  document.querySelector("#refresh-report-clinical")?.addEventListener("click", handleRefreshReportClinicalSnapshot);
   resumeFunderReportButton?.addEventListener("click", resumeSavedFunderReportDraft);
   generate97151Button.addEventListener("click", handleGenerate97151Note);
   note97151Editor.addEventListener("blur", handleSave97151Note);
@@ -9162,8 +9164,7 @@ function reportAssessmentDocumentRef(document, clientId = currentClient()?.id ||
 
 function reportAssessmentRefs(fieldName) {
   const savedRefs = sanitizeAssessmentDocumentRefs(state.reportAssessmentDocuments)[fieldName] || [];
-  if (savedRefs.length) return savedRefs;
-  return reportAssessmentDocumentRefsFromClient(fieldName);
+  return savedRefs;
 }
 
 function setReportAssessmentRefs(fieldName, refs) {
@@ -9416,10 +9417,12 @@ function graphTreatmentPhaseLine(graphKey, series = []) {
 }
 
 function renderCustomPhaseLineManager(graphKey, series, options = {}) {
+  // Reports retain graph annotations but omit the editing/detail surface.
+  if (options.readOnly) return "";
   const range = graphSeriesDateRange(series);
-  const lines = customPhaseLinesForGraph(graphKey);
-  const treatmentLine = graphTreatmentPhaseLine(graphKey, series);
-  const treatmentRecord = treatmentPhaseRecordForGraph(graphKey);
+  const lines = options.phaseConfig ? options.phaseConfig.phaseMarkers : customPhaseLinesForGraph(graphKey);
+  const treatmentLine = options.phaseConfig ? options.phaseConfig.treatmentPhaseLine : graphTreatmentPhaseLine(graphKey, series);
+  const treatmentRecord = options.phaseConfig ? treatmentLine : treatmentPhaseRecordForGraph(graphKey);
   const editingId = options.editingId || "";
   const editingLine = editingId ? lines.find((line) => line.id === editingId) : null;
   const editingTreatment = options.editingTreatment === true;
@@ -9664,35 +9667,92 @@ async function handleReportAssessmentUpload(input) {
   }
 }
 
-function handleReportAttachmentRemove(fieldName, fileId) {
+async function handleReportAttachmentRemove(fieldName, fileId) {
+  if (!canEditClinical() || state.reportAttachmentRemovalPending) return;
   const config = reportAssessmentFieldConfig(fieldName);
   const ref = reportAssessmentRefs(fieldName).find((item) => item.fileId === fileId);
   if (!config || !ref) return;
   if (!window.confirm(`Remove ${ref.originalFileName || config.label} from this draft? The stored file will remain available in client documents.`)) return;
-  setReportAssessmentRefs(fieldName, reportAssessmentRefs(fieldName).filter((item) => item.fileId !== fileId));
-  renderReportAssessmentDraftFiles();
-  markReportDraftDirty();
-  if (currentView() === "report") renderFunderReportPreview();
-  funderExportStatus.textContent = `${config.label} removed from this draft.`;
+  const previousRefs = reportAssessmentRefs(fieldName);
+  state.reportAttachmentRemovalPending = true;
+  try {
+    setReportAssessmentRefs(fieldName, previousRefs.filter((item) => item.fileId !== fileId));
+    markReportDraftDirty();
+    const saved = await handleSaveFunderReportDraft();
+    if (!saved) {
+      setReportAssessmentRefs(fieldName, previousRefs);
+      return;
+    }
+    funderExportStatus.textContent = `${config.label} removed from the saved draft. The stored file is unchanged.`;
+  } finally {
+    state.reportAttachmentRemovalPending = false;
+    renderReportAssessmentDraftFiles();
+    if (currentView() === "report") renderFunderReportPreview();
+  }
 }
 
-function reportGraphPreferenceKeys() {
+function reportGraphPreferenceKeys(context = null) {
   const client = currentClient();
   return [
-    ...clientPrograms().map((program) => graphTrendKey("skill", program.id)),
-    ...clientBehaviors().map((behavior) => graphTrendKey("behavior", behavior.id)),
+    ...(context?.programs || clientPrograms()).map((program) => graphTrendKey("skill", program.id)),
+    ...(context?.behaviors || clientBehaviors()).map((behavior) => graphTrendKey("behavior", behavior.id)),
     graphTrendKey("behavior", "overview"),
-    ...(client ? currentParentTrainingGoals().map((goal) => graphTrendKey("parent", parentTrainingGoalKey(goal))) : [])
+    ...(client ? (context?.caregiverGoals || currentParentTrainingGoals()).map((goal) => graphTrendKey("parent", parentTrainingGoalKey(goal))) : [])
   ];
 }
 
-function currentReportIncludedContent() {
+function currentReportIncludedContent(context = null) {
+  const programs = context ? context.programs : clientPrograms();
+  const behaviors = context ? context.behaviors : clientBehaviors();
+  const caregiverGoals = context ? context.caregiverGoals : currentParentTrainingGoals();
   return {
-    programIds: clientPrograms().map((program) => program.id),
-    targetIds: clientPrograms().flatMap((program) => (program.targets || []).map((target) => target.id)).filter(Boolean),
-    behaviorIds: clientBehaviors().map((behavior) => behavior.id).filter(Boolean),
-    parentTrainingGoalIds: currentParentTrainingGoals().map((goal) => parentTrainingGoalKey(goal)).filter(Boolean)
+    programIds: programs.map((program) => program.id),
+    targetIds: programs.flatMap((program) => (program.targets || []).map((target) => target.id)).filter(Boolean),
+    behaviorIds: behaviors.map((behavior) => behavior.id).filter(Boolean),
+    parentTrainingGoalIds: caregiverGoals.map((goal) => parentTrainingGoalKey(goal)).filter(Boolean)
   };
+}
+
+function reportClinicalContext() {
+  const snapshot = currentClient()?.profile?.funderReport?.clinicalSnapshot;
+  return snapshot?.version === 1 && snapshot.clientId === currentClient()?.id ? snapshot : null;
+}
+
+function reportContextDisclosure() {
+  return reportSnapshotDisclosure(reportClinicalContext(), hasMeaningfulFunderReportDraft(currentClient()?.profile?.funderReport || {}));
+}
+
+function captureReportClinicalSnapshot() {
+  const client = currentClient();
+  const programs = clientPrograms();
+  const keys = new Set(reportGraphPreferenceKeys());
+  buildParentTrainingChartModels(filteredReportSessions()).forEach(chart => keys.add(graphTrendKey("parent", chart.goalKey)));
+  const phases = Object.fromEntries([...keys].map(key => {
+    const program = programs.find(item => key === graphTrendKey("skill", item.id));
+    return [key, graphPhaseConfig(key, [], program ? masteryMarkersForProgram(program.id) : [])];
+  }));
+  return sanitizeClinicalSnapshot({
+    version: 1, capturedAt: new Date().toISOString(), capturedBy: state.currentUser?.id,
+    clientId: client.id, clientName: client.name, sourcePlanUpdatedAt: client.planUpdatedAt,
+    preparationDate: new Date().toISOString().slice(0, 10),
+    reportingPeriod: { startDate: reportForm.elements.startDate.value, endDate: reportForm.elements.endDate.value },
+    programs, behaviors: clientBehaviors(), caregiverGoals: currentParentTrainingGoals(),
+    masteryCriteria: currentMasteryCriteria(), planChangeLog: client.planChangeLog || [], phases,
+    defaults: {
+      background: defaultBackgroundInformation(), medicalConcerns: defaultMedicalConcerns(),
+      reasonReferral: defaultReasonForReferral(), impactBehaviors: defaultImpactOfBehaviors(),
+      familyStrengths: defaultFamilyStrengths(), initialObservations: defaultInitialObservations(),
+      instructionalGoalsInfo: defaultInstructionalGoalsInfo(), generalizationMaintenance: defaultGeneralizationMaintenance(),
+      barriersToTreatmentSummary: defaultBarriersToTreatmentSummary(), recommendations: defaultRecommendations(),
+      medicalNecessity: defaultMedicalNecessity(), dischargeCriteria: defaultDischargeCriteria()
+    }
+  });
+}
+
+async function handleRefreshReportClinicalSnapshot() {
+  if (!canEditClinical()) return;
+  if (!window.confirm("Replace this report's clinical snapshot with current treatment configuration? Existing narrative will be preserved. This captures today's configuration, not historical configuration for the reporting period. Session observations remain live.")) return;
+  await handleSaveFunderReportDraft(true);
 }
 
 function currentFunderReportDraft() {
@@ -9701,6 +9761,7 @@ function currentFunderReportDraft() {
   const sections = {};
   const generatedSectionAutofill = {};
   const existingDraft = currentClient()?.profile?.funderReport || {};
+  const context = reportClinicalContext();
   values.forEach((value, key) => {
     if (key === "assessmentGrid" || key === "standardizedAssessmentGrid") return;
     sections[key] = String(value || "");
@@ -9723,8 +9784,8 @@ function currentFunderReportDraft() {
     generatedSectionAutofill,
     fadePlanRows: readFadePlanRows(),
     serviceHours: readServiceHourRows(),
-    graphPreferences: sanitizeTrendVisibilityMap(state.graphTrendVisibility, reportGraphPreferenceKeys()),
-    includedContent: currentReportIncludedContent(),
+    graphPreferences: sanitizeTrendVisibilityMap(state.graphTrendVisibility, reportGraphPreferenceKeys(context)),
+    includedContent: currentReportIncludedContent(context),
     displaySettings: {
       compactGraphAnalysis: true
     },
@@ -9744,17 +9805,17 @@ function applyFunderReportDraft(draft = {}) {
   const restoredAssessmentDocuments = sanitizeAssessmentDocumentRefs(draft.assessmentDocuments || {});
   const persistedPhaseLines = graphPhaseLineStoreForClient(currentClient());
   state.reportAssessmentDocuments = {
-    assessmentGrid: restoredAssessmentDocuments.assessmentGrid.length
+    assessmentGrid: Object.hasOwn(draft.assessmentDocuments || {}, "assessmentGrid")
       ? restoredAssessmentDocuments.assessmentGrid
       : reportAssessmentDocumentRefsFromClient("assessmentGrid"),
-    standardizedAssessmentGrid: restoredAssessmentDocuments.standardizedAssessmentGrid.length
+    standardizedAssessmentGrid: Object.hasOwn(draft.assessmentDocuments || {}, "standardizedAssessmentGrid")
       ? restoredAssessmentDocuments.standardizedAssessmentGrid
       : reportAssessmentDocumentRefsFromClient("standardizedAssessmentGrid")
   };
   state.reportCustomPhaseLines = Object.keys(persistedPhaseLines).length
     ? persistedPhaseLines
     : sanitizeCustomPhaseLines(draft.customPhaseLines || {});
-  reportGraphPreferenceKeys().forEach((key) => {
+  reportGraphPreferenceKeys(draft.clinicalSnapshot).forEach((key) => {
     if (Object.hasOwn(graphPreferences, key)) {
       state.graphTrendVisibility[key] = Boolean(graphPreferences[key]);
     } else {
@@ -9860,7 +9921,7 @@ function resumeSavedFunderReportDraft() {
 function renderReportSummary() {
   const client = currentClient();
   const sessions = filteredReportSessions();
-  applyIntakeInterviewToReport();
+  if (!reportClinicalContext()) applyIntakeInterviewToReport();
   syncParentTrainingReportFields();
   syncProgressSummaryField();
   syncSkillAcquisitionSummaryField();
@@ -9878,12 +9939,12 @@ function syncProgressSummaryField(force = false) {
   setGeneratedReportField("progressSummary", buildReportProgressSummary(), force);
 }
 
-function skillAcquisitionReportModel(startDate, endDate) {
+function skillAcquisitionReportModel(startDate, endDate, context = reportClinicalContext()) {
   return summarizeSkillAcquisitionReport({
-    programs: clientPrograms(),
-    planChangeLog: currentClient()?.planChangeLog || [],
+    programs: context?.programs || clientPrograms(),
+    planChangeLog: context?.planChangeLog || currentClient()?.planChangeLog || [],
     sessions: currentSessions(),
-    masteryCriteria: currentMasteryCriteria(),
+    masteryCriteria: context?.masteryCriteria || currentMasteryCriteria(),
     startDate,
     endDate
   });
@@ -9897,14 +9958,17 @@ function syncSkillAcquisitionSummaryField(force = false) {
 
 function buildFunderReportPreviewMarkup() {
   const client = currentClient();
+  const context = reportClinicalContext();
+  const fallback = (key, build) => context ? context.defaults[key] : build();
   const sessions = filteredReportSessions().slice().reverse();
   const values = new FormData(reportForm);
   const metrics = funderReportMetrics(sessions);
   return `
     <section class="report-document">
+      <p class="muted">${escapeHtml(reportContextDisclosure())}</p>
       <div class="report-title-block">
         <p class="eyebrow">Funder report</p>
-        <h2>${escapeHtml(client?.name || "Client")}</h2>
+        <h2>${escapeHtml(context?.clientName || client?.name || "Client")}</h2>
         <p>${formatDate(values.get("startDate"))} - ${formatDate(values.get("endDate"))}</p>
       </div>
       <div class="report-stat-grid">
@@ -9915,27 +9979,27 @@ function buildFunderReportPreviewMarkup() {
       </div>
       <section>
         <h3>Background Information</h3>
-        ${reportParagraph(values.get("background") || defaultBackgroundInformation())}
+        ${reportParagraph(values.get("background") || fallback("background", defaultBackgroundInformation))}
       </section>
       <section>
         <h3>Medical Concerns</h3>
-        ${reportParagraph(values.get("medicalConcerns") || defaultMedicalConcerns())}
+        ${reportParagraph(values.get("medicalConcerns") || fallback("medicalConcerns", defaultMedicalConcerns))}
       </section>
       <section>
         <h3>Reason for Referral</h3>
-        ${reportParagraph(values.get("reasonReferral") || defaultReasonForReferral())}
+        ${reportParagraph(values.get("reasonReferral") || fallback("reasonReferral", defaultReasonForReferral))}
       </section>
       <section>
         <h3>Impact of Behaviors</h3>
-        ${reportParagraph(values.get("impactBehaviors") || defaultImpactOfBehaviors())}
+        ${reportParagraph(values.get("impactBehaviors") || fallback("impactBehaviors", defaultImpactOfBehaviors))}
       </section>
       <section>
         <h3>Client and Family Strengths</h3>
-        ${reportParagraph(values.get("familyStrengths") || defaultFamilyStrengths())}
+        ${reportParagraph(values.get("familyStrengths") || fallback("familyStrengths", defaultFamilyStrengths))}
       </section>
       <section>
         <h3>Initial Observations</h3>
-        ${reportParagraph(values.get("initialObservations") || defaultInitialObservations())}
+        ${reportParagraph(values.get("initialObservations") || fallback("initialObservations", defaultInitialObservations))}
       </section>
       <section>
         <h3>Functional Assessment</h3>
@@ -9957,7 +10021,7 @@ function buildFunderReportPreviewMarkup() {
       </section>
       <section>
         <h3>Progress Summary</h3>
-        ${reportParagraph(values.get("progressSummary") || `Across the reporting period, ${client?.name || "client"} completed ${sessions.length} documented sessions. Average skill independence was ${metrics.averageIndependence}%. Behavior data were reviewed across tracked behaviors for treatment planning.`)}
+        ${reportParagraph(values.get("progressSummary") || `Across the reporting period, ${context?.clientName || client?.name || "client"} completed ${sessions.length} documented sessions. Average skill independence was ${metrics.averageIndependence}%. Behavior data were reviewed across tracked behaviors for treatment planning.`)}
       </section>
       <section>
         <h3>Standardized Assessment</h3>
@@ -9986,19 +10050,19 @@ function buildFunderReportPreviewMarkup() {
       </section>
       <section>
         <h3>Instructional Goals Information</h3>
-        ${reportParagraph(values.get("instructionalGoalsInfo") || defaultInstructionalGoalsInfo())}
+        ${reportParagraph(values.get("instructionalGoalsInfo") || fallback("instructionalGoalsInfo", defaultInstructionalGoalsInfo))}
       </section>
       <section>
         <h3>Integration, Generalization, and Maintenance</h3>
-        ${reportParagraph(values.get("generalizationMaintenance") || defaultGeneralizationMaintenance())}
+        ${reportParagraph(values.get("generalizationMaintenance") || fallback("generalizationMaintenance", defaultGeneralizationMaintenance))}
       </section>
       <section>
         <h3>Barriers to Treatment</h3>
-        ${reportParagraph(values.get("barriersToTreatmentSummary") || defaultBarriersToTreatmentSummary())}
+        ${reportParagraph(values.get("barriersToTreatmentSummary") || fallback("barriersToTreatmentSummary", defaultBarriersToTreatmentSummary))}
       </section>
       <section>
         <h3>Discharge Criteria</h3>
-        ${renderDischargeCriteria(values)}
+        ${renderDischargeCriteria(values, context)}
       </section>
       <section>
         <h3>Fade Out Plan</h3>
@@ -10006,16 +10070,16 @@ function buildFunderReportPreviewMarkup() {
       </section>
       <section>
         <h3>Recommendations</h3>
-        ${reportParagraph(values.get("recommendations") || defaultRecommendations())}
+        ${reportParagraph(values.get("recommendations") || fallback("recommendations", defaultRecommendations))}
         ${renderServiceHoursTable()}
       </section>
       <section>
         <h3>Medical Necessity and Justification</h3>
-        ${reportParagraph(values.get("medicalNecessity") || defaultMedicalNecessity())}
+        ${reportParagraph(values.get("medicalNecessity") || fallback("medicalNecessity", defaultMedicalNecessity))}
       </section>
       <section class="report-signature">
         <p><strong>Prepared by:</strong> ${escapeHtml(values.get("preparedBy") || "Provider")}${values.get("credential") ? `, ${escapeHtml(values.get("credential"))}` : ""}</p>
-        <p><strong>Date:</strong> ${formatDate(new Date().toISOString().slice(0, 10))}</p>
+        <p><strong>Date:</strong> ${formatDate(context?.preparationDate || new Date().toISOString().slice(0, 10))}</p>
       </section>
     </section>
   `;
@@ -10023,8 +10087,18 @@ function buildFunderReportPreviewMarkup() {
 
 function renderFunderReportPreview() {
   if (!reportPreview || !reportForm) return;
+  const refreshButton = document.querySelector("#refresh-report-clinical");
+  if (refreshButton) refreshButton.hidden = !canEditClinical();
+  const contextNote = document.querySelector("#report-clinical-context");
+  if (contextNote) contextNote.textContent = reportContextDisclosure();
   try {
     reportPreview.innerHTML = buildFunderReportPreviewMarkup();
+    reportPreview.querySelectorAll("img[data-report-attachment-src]").forEach((image) => {
+      image.addEventListener("error", () => {
+        image.hidden = true;
+        image.insertAdjacentHTML("afterend", '<p class="muted">Image preview unavailable. Use the download link above.</p>');
+      }, { once: true });
+    });
   } catch (error) {
     console.error("Funder report preview render failed", { message: error?.message || String(error) });
     reportPreview.innerHTML = `
@@ -10045,12 +10119,19 @@ function renderFunderReportPreview() {
   }
 }
 
-async function handleSaveFunderReportDraft() {
+async function handleSaveFunderReportDraft(refreshClinical = false) {
+  if (!canEditClinical()) return;
   const client = currentClient();
   if (!client) return;
   funderExportStatus.textContent = "";
   try {
     const draft = currentFunderReportDraft();
+    const isNew = !hasMeaningfulFunderReportDraft(client.profile?.funderReport || {});
+    if (refreshClinical || isNew) {
+      draft.clinicalSnapshot = captureReportClinicalSnapshot();
+      draft.includedContent = currentReportIncludedContent(draft.clinicalSnapshot);
+      draft.clinicalSnapshotAction = refreshClinical ? "refresh" : "capture";
+    }
     const updated = await updateClientProfile(client.id, {
       ...currentClientProfilePayload(client),
       funderReport: draft
@@ -10062,8 +10143,10 @@ async function handleSaveFunderReportDraft() {
     updateResumeDraftButtonState(updated.profile?.funderReport || draft);
     funderExportStatus.textContent = `Draft saved ${new Date().toLocaleString()}. Lightweight draft payload: about ${Math.max(1, Math.round(estimateJsonBytes(draft) / 1024))} KB.`;
     if (currentView() === "report") renderFunderReportPreview();
+    return true;
   } catch (error) {
     funderExportStatus.textContent = `Draft save failed: ${error.message}`;
+    return false;
   }
 }
 
@@ -10071,7 +10154,7 @@ function buildReportProgressSummary() {
   const client = currentClient();
   const sessions = filteredReportSessions();
   const metrics = funderReportMetrics(sessions);
-  return `Across the reporting period, ${client?.name || "client"} completed ${sessions.length} documented sessions. Average skill independence was ${metrics.averageIndependence}%. Behavior data were reviewed across tracked behaviors for treatment planning.`;
+  return `Across the reporting period, ${reportClinicalContext()?.clientName || client?.name || "client"} completed ${sessions.length} documented sessions. Average skill independence was ${metrics.averageIndependence}%. Behavior data were reviewed across tracked behaviors for treatment planning.`;
 }
 
 function applyIntakeInterviewToReport(force = false) {
@@ -10093,6 +10176,7 @@ function setReportFieldFromInterview(name, value, fallbackDefault, force = false
   if (!field || !value) return;
   const previous = field.dataset.autofillValue || "";
   const current = field.value || "";
+  if (hasMeaningfulFunderReportDraft(currentClient()?.profile?.funderReport || {}) && current && !force) return;
   if (force || !current || current === fallbackDefault || current === previous) {
     field.value = value;
     field.dataset.autofillValue = value;
@@ -10103,6 +10187,7 @@ function setSimpleReportFieldFromInterview(name, value, force = false) {
   const field = reportForm.elements[name];
   if (!field || !value) return;
   const previous = field.dataset.autofillValue || "";
+  if (hasMeaningfulFunderReportDraft(currentClient()?.profile?.funderReport || {}) && field.value && !force) return;
   if (force || !field.value || field.value === previous) {
     field.value = value;
     field.dataset.autofillValue = value;
@@ -10115,27 +10200,30 @@ function setGeneratedReportField(name, value, force = false) {
   const nextValue = String(value || "");
   const previous = field.dataset.autofillValue || "";
   const current = field.value || "";
+  if (hasMeaningfulFunderReportDraft(currentClient()?.profile?.funderReport || {}) && current && !force) return;
   if (force || !current || current === previous) {
     field.value = nextValue;
     field.dataset.autofillValue = nextValue;
   }
 }
 
-function parentTrainingReportModel(startDate, endDate) {
+function parentTrainingReportModel(startDate, endDate, context = reportClinicalContext()) {
   const parentSessions = parentTrainingSessionsForRange(startDate, endDate);
-  const criteria = currentMasteryCriteria();
-  const currentGoals = currentParentTrainingGoals();
+  const criteria = context?.masteryCriteria || currentMasteryCriteria();
+  const currentGoals = context?.caregiverGoals || currentParentTrainingGoals();
+  const lifecycle = goal => context ? (explicitParentTrainingGoalState(goal) || "active") : parentGoalLifecycle(goal);
   const goalReviewsByKey = Object.fromEntries(
-    currentGoals.map((goal) => [parentTrainingGoalKey(goal), parentGoalLifecycle(goal)])
+    currentGoals.map((goal) => [parentTrainingGoalKey(goal), lifecycle(goal)])
   );
   const masteredGoalsDuringPeriod = filterMasteredGoalsForPeriod(
     currentGoals.flatMap((goal) => {
-      if (parentGoalLifecycle(goal) !== "mastered") return [];
+      if (lifecycle(goal) !== "mastered") return [];
       const explicitState = explicitParentTrainingGoalState(goal);
       const explicitDate = parentTrainingGoalMasteryDate(goal);
       if (explicitState === "mastered") {
         return [{ ...goal, ...(explicitDate ? { masteredDate: explicitDate } : {}) }];
       }
+      if (context) return [];
       const history = parentGoalSessionHistory(goal);
       const fidelitySessions = history.map((item) => ({
         session: item.session,
@@ -12693,7 +12781,7 @@ function handleReportPreviewToggle(event) {
 async function loadDeferredReportAttachmentImages(root = reportPreview, { forceAll = false } = {}) {
   const images = [...root.querySelectorAll("img[data-report-attachment-src]")].filter((image) => {
     if (forceAll) return true;
-    return image.closest("[data-report-attachment-preview]")?.open;
+    return !image.closest("details") || image.closest("details").open;
   });
   images.forEach((image) => {
     image.src = image.dataset.reportAttachmentSrc;
@@ -12774,10 +12862,13 @@ function replaceReportCanvases(source, clone) {
 }
 
 async function inlineReportImages(container) {
-  const images = [...container.querySelectorAll("img")].filter((image) => image.src.startsWith("blob:"));
+  const images = [...container.querySelectorAll("img")].filter((image) => image.src.startsWith("blob:") || (image.closest(".report-upload-preview") && image.src && !image.src.startsWith("data:")));
   await Promise.all(images.map(async (image) => {
     try {
-      const blob = await fetch(image.src).then((response) => response.blob());
+      const blob = await fetch(image.src).then((response) => {
+        if (!response.ok) throw new Error("Image unavailable");
+        return response.blob();
+      });
       image.src = await blobToDataUrl(blob);
     } catch (error) {
       image.removeAttribute("src");
@@ -13003,6 +13094,7 @@ function reportChartSpecs() {
 }
 
 function drawFunderReportCharts(sessions, { force = false } = {}) {
+  const context = reportClinicalContext();
   state.reportChartObserver?.disconnect?.();
   state.reportChartObserver = null;
   reportChartSpecs().forEach((spec) => {
@@ -13011,7 +13103,7 @@ function drawFunderReportCharts(sessions, { force = false } = {}) {
     container.dataset.reportChartKind = spec.kind;
     container.dataset.reportChartRendered = "false";
     if (force) {
-      renderReportChartSection(container, sessions, spec.kind);
+      renderReportChartSection(container, sessions, spec.kind, context);
       return;
     }
     container.innerHTML = `<article class="chart-panel report-chart-placeholder"><p class="muted">Loading ${escapeHtml(spec.label.toLowerCase())} when visible...</p></article>`;
@@ -13020,7 +13112,7 @@ function drawFunderReportCharts(sessions, { force = false } = {}) {
   if (!("IntersectionObserver" in window)) {
     reportChartSpecs().forEach((spec) => {
       const container = reportPreview.querySelector(spec.selector);
-      if (container) renderReportChartSection(container, sessions, spec.kind);
+      if (container) renderReportChartSection(container, sessions, spec.kind, context);
     });
     return;
   }
@@ -13029,7 +13121,7 @@ function drawFunderReportCharts(sessions, { force = false } = {}) {
       if (!entry.isIntersecting) return;
       const container = entry.target;
       state.reportChartObserver?.unobserve(container);
-      renderReportChartSection(container, sessions, container.dataset.reportChartKind);
+      renderReportChartSection(container, sessions, container.dataset.reportChartKind, context);
     });
   }, { rootMargin: "240px 0px", threshold: 0.01 });
   reportChartSpecs().forEach((spec) => {
@@ -13038,19 +13130,19 @@ function drawFunderReportCharts(sessions, { force = false } = {}) {
   });
 }
 
-function renderReportChartSection(container, sessions, kind) {
+function renderReportChartSection(container, sessions, kind, context = null) {
   if (!container || container.dataset.reportChartRendered === "true") return;
   container.dataset.reportChartRendered = "true";
   if (kind === "skills") {
-    drawSkillChartSet(sessions, container, "report-program-chart", true);
+    drawSkillChartSet(sessions, container, "report-program-chart", true, context);
     return;
   }
   if (kind === "behavior-overview") {
-    renderReportBehaviorOverviewChart(container, sessions);
+    renderReportBehaviorOverviewChart(container, sessions, context);
     return;
   }
   if (kind === "behavior-details") {
-    const allBehaviorSeries = behaviorChartSeries(currentSessions().slice().reverse());
+    const allBehaviorSeries = behaviorChartSeries(currentSessions().slice().reverse(), context?.behaviors);
     drawBehaviorChartSet(sessions, container, "report-behavior-chart", {
       range: {
         startDate: reportForm.elements.startDate.value,
@@ -13058,20 +13150,21 @@ function renderReportChartSection(container, sessions, kind) {
         label: "Authorization period"
       },
       allSeries: allBehaviorSeries,
-      visibleBehaviorIds: clientBehaviors().map((behavior) => behavior.id)
+      context,
+      visibleBehaviorIds: (context?.behaviors || clientBehaviors()).map((behavior) => behavior.id)
     });
     return;
   }
   if (kind === "parent-training") {
     drawParentTrainingChartSet(sessions, container, "report-parent-training-chart", {
-      readOnly: true,
+      readOnly: true, context,
       reportField: "parentTrainingSummary",
       emptyMessage: "No parent training graph data were collected during this reporting period."
     });
   }
 }
 
-function renderReportBehaviorOverviewChart(container, sessions) {
+function renderReportBehaviorOverviewChart(container, sessions, context = null) {
   container.innerHTML = `
     <article class="chart-panel">
       <h4>Behavior observations</h4>
@@ -13080,10 +13173,10 @@ function renderReportBehaviorOverviewChart(container, sessions) {
   `;
   const behaviorCanvas = container.querySelector("#report-behavior-chart");
   if (!behaviorCanvas) return;
-  const behaviorSeries = behaviorChartSeries(sessions);
-  const allBehaviorSeries = behaviorChartSeries(currentSessions().slice().reverse());
+  const behaviorSeries = behaviorChartSeries(sessions, context?.behaviors);
+  const allBehaviorSeries = behaviorChartSeries(currentSessions().slice().reverse(), context?.behaviors);
   const behaviorOverviewGraphKey = graphTrendKey("behavior", "overview");
-  const behaviorOverviewPhaseConfig = graphPhaseConfig(behaviorOverviewGraphKey, behaviorSeries);
+  const behaviorOverviewPhaseConfig = context ? snapshotPhaseConfig(context, behaviorOverviewGraphKey) : graphPhaseConfig(behaviorOverviewGraphKey, behaviorSeries);
   drawBehaviorMeasurementChart(behaviorCanvas, behaviorSeries, {
     yStep: 1,
     yLabel: "frequency",
@@ -13100,7 +13193,7 @@ function renderReportBehaviorOverviewChart(container, sessions) {
   if (behaviorPanel) {
     behaviorPanel.querySelector(".graph-phase-line-panel")?.remove();
     behaviorPanel.insertAdjacentHTML("beforeend", renderCustomPhaseLineManager(behaviorOverviewGraphKey, behaviorSeries, {
-      readOnly: true
+      readOnly: true, phaseConfig: context ? behaviorOverviewPhaseConfig : null
     }));
   }
 }
@@ -13469,8 +13562,8 @@ function buildSkillChartsByDomain(sessions) {
     .filter((group) => group.charts.length);
 }
 
-function buildProgramSkillChart(program, sessions) {
-  const targets = configuredTargetsForProgram(program);
+function buildProgramSkillChart(program, sessions, context = null) {
+  const targets = context ? program.targets || [] : configuredTargetsForProgram(program);
   const observations = targets.flatMap((target) => sessions.flatMap((session) => {
     const entry = targetEntries(session)
       .filter(isActualTargetEntry)
@@ -13844,9 +13937,9 @@ function renderGraphDomainTabs(groups) {
   });
 }
 
-function drawSkillChartSet(sessions, container, chartAttribute, includeProgramInfo = false) {
-  const charts = clientPrograms()
-    .map((program) => buildProgramSkillChart(program, sessions))
+function drawSkillChartSet(sessions, container, chartAttribute, includeProgramInfo = false, context = null) {
+  const charts = (context?.programs || clientPrograms())
+    .map((program) => buildProgramSkillChart(program, sessions, context))
     .filter((chart) => chart.series.length || chart.ambiguousCount);
 
   if (!charts.length) {
@@ -13876,10 +13969,10 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
     </article>
   `).join("");
 
-  bindSkillMeasurementControls(container, () => drawSkillChartSet(sessions, container, chartAttribute, includeProgramInfo));
+  bindSkillMeasurementControls(container, () => drawSkillChartSet(sessions, container, chartAttribute, includeProgramInfo, context));
   charts.forEach((chart) => {
     const graphKey = graphTrendKey("skill", chart.program.id);
-    const phaseConfig = graphPhaseConfig(graphKey, chart.series, masteryMarkersForProgram(chart.program.id));
+    const phaseConfig = context ? snapshotPhaseConfig(context, graphKey) : graphPhaseConfig(graphKey, chart.series, masteryMarkersForProgram(chart.program.id));
     const chartSettings = skillChartSettings(chart);
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${chart.program.id}"]`), chart.series, {
       ...chartSettings,
@@ -13902,15 +13995,15 @@ function drawSkillChartSet(sessions, container, chartAttribute, includeProgramIn
         });
         analysisMount.innerHTML = `
           ${renderReportGraphAnalysisMarkup(analysis)}
-          ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true })}
+          ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true, phaseConfig: context ? phaseConfig : null })}
         `;
       }
     }
   });
 }
 
-function behaviorChartSeries(sessions) {
-  return clientBehaviors().map((behavior) => ({
+function behaviorChartSeries(sessions, behaviors = clientBehaviors()) {
+  return behaviors.map((behavior) => ({
     name: behavior.name,
     meta: {
       behaviorId: behavior.id,
@@ -13938,12 +14031,13 @@ function renderBehaviorGraphLegendMarkup(series, options = {}) {
 }
 
 function drawBehaviorChartSet(sessions, container, chartAttribute, options = {}) {
+  const context = options.context;
   const isReportChart = String(chartAttribute || "").startsWith("report-");
   const renderToken = state.graphAnalysisRenderToken;
   const range = options.range || behaviorGraphRange();
   const allSeries = options.allSeries || behaviorChartSeries(currentSessions().slice().reverse());
   const visibleIds = options.visibleBehaviorIds || visibleBehaviorIds();
-  const charts = filterSeriesPointsByDateRange(behaviorChartSeries(sessions), range, {
+  const charts = filterSeriesPointsByDateRange(behaviorChartSeries(sessions, context?.behaviors), range, {
     includeSeriesIds: visibleIds
   }).map((series) => ({
     behaviorId: series.meta?.behaviorId || series.name,
@@ -13971,7 +14065,7 @@ function drawBehaviorChartSet(sessions, container, chartAttribute, options = {})
   const analysisTasks = [];
   charts.forEach((chart, index) => {
     const graphKey = graphTrendKey("behavior", chart.behaviorId);
-    const phaseConfig = graphPhaseConfig(graphKey, chart.series);
+    const phaseConfig = context ? snapshotPhaseConfig(context, graphKey) : graphPhaseConfig(graphKey, chart.series);
     drawBehaviorMeasurementChart(container.querySelector(`[data-${chartAttribute}="${index}"]`), chart.series, {
       layoutMode: options.layoutMode,
       yStep: 1,
@@ -14003,7 +14097,7 @@ function drawBehaviorChartSet(sessions, container, chartAttribute, options = {})
         analysisMount.innerHTML = isReportChart
           ? `
               ${renderReportGraphAnalysisMarkup(analysis, { rangeLabel: range.label })}
-              ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true })}
+              ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true, phaseConfig: context ? phaseConfig : null })}
             `
           : `
               ${renderGraphAnalysisMarkup(analysis, graphKey, {
@@ -14051,7 +14145,7 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute, options
   const analysisTasks = [];
   charts.forEach((chart, index) => {
     const graphKey = graphTrendKey("parent", chart.goalKey);
-    const phaseConfig = graphPhaseConfig(graphKey, chart.series);
+    const phaseConfig = options.context ? snapshotPhaseConfig(options.context, graphKey) : graphPhaseConfig(graphKey, chart.series);
     drawLineChart(container.querySelector(`[data-${chartAttribute}="${index}"]`), chart.series, {
       layoutMode: options.layoutMode,
       maxY: 100,
@@ -14075,7 +14169,7 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute, options
         analysisMount.innerHTML = isReadOnly
           ? `
               ${renderReportGraphAnalysisMarkup(analysis)}
-              ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true })}
+              ${renderCustomPhaseLineManager(graphKey, chart.series, { readOnly: true, phaseConfig: options.context ? phaseConfig : null })}
             `
           : `
               ${renderGraphAnalysisMarkup(analysis, graphKey, { reportField })}
@@ -14093,13 +14187,13 @@ function drawParentTrainingChartSet(sessions, container, chartAttribute, options
 
 function renderReportProgramInfo(program) {
   const activeTargets = (program.targets || []).filter((target) => target.status === "active").map((target) => target.name);
-  const maintenanceTargets = (program.targets || []).filter((target) => target.status === "maintenance").map((target) => target.name);
+  const maintenanceTargets = (program.targets || []).filter((target) => ["maintenance", "mastered"].includes(target.status)).map((target) => target.name);
   return `
     <div class="program-report-info">
       <p><strong>Domain:</strong> ${escapeHtml(program.domain || "General")}</p>
       <p><strong>Objective:</strong> ${escapeHtml(program.objective || "Objective not entered in treatment plan.")}</p>
       <p><strong>Active targets:</strong> ${escapeHtml(activeTargets.join(", ") || "None")}</p>
-      <p><strong>Maintenance targets:</strong> ${escapeHtml(maintenanceTargets.join(", ") || "None")}</p>
+      <p><strong>Mastered / maintenance targets:</strong> ${escapeHtml(maintenanceTargets.join(", ") || "None")}</p>
     </div>
   `;
 }
@@ -15336,7 +15430,7 @@ function signatureBlock(signature, credential, date) {
 
 function assessmentDocumentCanRenderInline(document, ref) {
   const contentType = String(document?.contentType || document?.mimeType || ref?.contentType || "").trim().toLowerCase();
-  if (contentType.startsWith("image/")) return true;
+  if (contentType && contentType !== "application/octet-stream") return contentType.startsWith("image/");
   const fileName = String(ref?.originalFileName || document?.fileName || "").trim().toLowerCase();
   return [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".heic", ".heif"].some((extension) => fileName.endsWith(extension));
 }
@@ -15349,18 +15443,18 @@ function reportFilePreview(files, label) {
       ${items.map((ref) => {
         const document = currentClientDocumentById(ref.fileId);
         const fileName = escapeHtml(ref.originalFileName || label);
-        if (!document) {
+        if (!document?.url) {
           return `<p class="muted"><strong>${escapeHtml(label)}:</strong> ${fileName} (stored file reference missing)</p>`;
         }
         if (assessmentDocumentCanRenderInline(document, ref)) {
           return `
-            <details class="report-upload-preview" data-report-attachment-preview>
-              <summary><strong>${escapeHtml(label)} uploaded:</strong> ${fileName}</summary>
+            <figure class="report-upload-preview" data-report-attachment-preview>
+              <figcaption><strong>${escapeHtml(label)}:</strong> ${fileName}</figcaption>
               <p><a href="${escapeHtml(document.url)}" target="_blank" rel="noopener">Open/download ${fileName}</a></p>
               <div class="report-upload-preview-frame">
-                <img data-report-attachment-src="${escapeHtml(document.url)}" alt="${fileName}" loading="lazy" decoding="async">
+                <img src="${escapeHtml(document.url)}" data-report-attachment-src="${escapeHtml(document.url)}" alt="${fileName}" decoding="async">
               </div>
-            </details>
+            </figure>
           `;
         }
         return `
@@ -15480,7 +15574,7 @@ function defaultDischargeCriteria() {
   return "The anticipated date to transition to a lower level of care is ____________. Services will be systematically faded when maladaptive behaviors (50% to 95%) and increases in independent skill performance (60% to greater than or equal to 90-95%) maintained for a minimum of three consecutive months at each level.";
 }
 
-function renderDischargeCriteria(values) {
+function renderDischargeCriteria(values, context = null) {
   const objectiveItems = [
     ["Maladaptive Behaviors", parseNumberedObjectives(values.get("dischargeMaladaptiveBehaviors"))],
     ["Communication", parseNumberedObjectives(values.get("dischargeCommunication"))],
@@ -15490,7 +15584,7 @@ function renderDischargeCriteria(values) {
   ].filter(([, objectives]) => objectives.length);
 
   return `
-    ${reportParagraph(values.get("dischargeCriteria") || defaultDischargeCriteria())}
+    ${reportParagraph(values.get("dischargeCriteria") || (context ? context.defaults.dischargeCriteria : defaultDischargeCriteria()))}
     <p>Long-term objectives or goals for discharge:</p>
     ${objectiveItems.length ? `
       <div class="discharge-objective-groups">

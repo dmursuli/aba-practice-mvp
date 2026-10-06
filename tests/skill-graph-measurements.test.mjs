@@ -80,8 +80,8 @@ async function fixture(t, points=observations) {
   const page=await browser.newPage();t.after(()=>page.close());
   await page.route('**/*',route=>route.abort());
   await page.setContent(`<style>${read('styles.css')}</style><main class="graphs-shell" data-view-panel="graphs"><section class="graphs-panel"><div id="skills"></div></section></main><div id="modal" class="modal-shell hidden"><h2></h2><p></p><canvas></canvas><div id="modal-legend"></div><div id="modal-analysis"></div></div>`);
-  const moduleSource=read('graph-values.js')+'\n'+read('skill-graph-measurements.js').replace(/^import .*;$/gm,'')+'\n'+read('charts.js').replace(/^import .*;$/gm,'');
-  const names=['buildProgramSkillChart','skillChartSettings','buildSkillChartsByDomain','renderSkillCharts','renderSkillMeasurementControl','bindSkillMeasurementControls','drawSkillChartSet','openProgramGraphModal','handleGraphAnalysisControlChange','renderGraphLegendMarkup'];
+  const moduleSource=read('report-snapshot.js')+'\n'+read('graph-values.js')+'\n'+read('skill-graph-measurements.js').replace(/^import .*;$/gm,'')+'\n'+read('charts.js').replace(/^import .*;$/gm,'');
+  const names=['buildProgramSkillChart','skillChartSettings','buildSkillChartsByDomain','renderSkillCharts','renderSkillMeasurementControl','bindSkillMeasurementControls','drawSkillChartSet','openProgramGraphModal','handleGraphAnalysisControlChange','renderGraphLegendMarkup','renderReportProgramInfo'];
   await page.addScriptTag({type:'module',content:moduleSource+`
     const state={activeClientId:'client',skillGraphMeasurements:{},graphAnalysisRenderToken:0,activeGraphDomain:'',graphTrendVisibility:{'skill:p':true}};
     const skillCharts=document.querySelector('#skills');
@@ -106,7 +106,6 @@ async function fixture(t, points=observations) {
     const masteryMarkersForProgram=()=>[];
     const renderSkillDataManagerMarkup=()=>'';
     const renderCustomPhaseLineManager=()=>'';
-    const renderReportProgramInfo=()=>'';
     const renderGraphAnalysisMarkup=analysis=>'<p data-analysis>Baseline '+analysis.analyses[0]?.baselineLevel+'; Treatment '+analysis.analyses[0]?.treatmentLevel+'</p>';
     const renderReportGraphAnalysisMarkup=renderGraphAnalysisMarkup;
     const queueGraphAnalysisBatch=tasks=>tasks.forEach(task=>task());
@@ -116,6 +115,11 @@ async function fixture(t, points=observations) {
     programGraphModal.addEventListener("change",handleGraphAnalysisControlChange);
     window.render=()=>renderSkillCharts(sessions);
     window.renderReport=()=>drawSkillChartSet(sessions,skillCharts,'report-program-chart',true);
+    const snapshot=sanitizeClinicalSnapshot({version:1,programs:[{...program,name:'Captured program',objective:'Captured objective',targets:targets.map(t=>({...t,name:'Captured '+t.name,status:'mastered'}))}],phases:{['skill:'+program.id]:{treatmentPhaseLine:{date:'2026-04-03'},phaseMarkers:[{date:'2026-04-04',label:'Captured marker',detail:'Captured target'}]}}});
+    window.renderSnapshot=()=>{
+      program.name='Changed live program'; program.objective='Changed live objective';
+      drawSkillChartSet(sessions,skillCharts,'report-program-chart',true,snapshot);
+    };
     window.openSkillModal=()=>openProgramGraphModal(program.id);
     window.modalState=()=>programGraphModalCanvas.__clinicalGraphRenderState;
     window.graphState=()=>document.querySelector('canvas').__clinicalGraphRenderState;
@@ -206,4 +210,22 @@ test('moving average remains independently controllable across measurements and 
   assert.doesNotMatch(read('app.js'),/Show trend line/);
   assert.doesNotMatch(extract('renderGraphAnalysisMarkup'),/data-graph-trend-toggle/);
   assert.match(extract('renderGraphAnalysisMarkup'),/"Trend"/);
+});
+
+
+test('snapshot skill report keeps objective, target labels and phases while observations remain live',async t=>{
+  const page=await fixture(t);
+  await page.evaluate(()=>renderSnapshot());
+  assert.match(await page.locator('#skills').textContent(),/Captured objective/);
+  assert.match(await page.locator('#skills').textContent(),/Mastered \/ maintenance targets/);
+  assert.doesNotMatch(await page.locator('#skills').textContent(),/Changed live/);
+  let rendered=await page.evaluate(()=>graphState());
+  assert.match(rendered.series[0].name,/Captured/);
+  assert.equal(rendered.options.treatmentPhaseLine.date,'2026-04-03');
+  assert.equal(rendered.options.phaseMarkers[0].label,'Captured marker');
+  await page.getByRole('combobox',{name:'Measurement'}).selectOption('frequency');
+  rendered=await page.evaluate(()=>graphState());
+  assert.equal(rendered.options.yLabel,'Frequency');
+  assert.equal(rendered.options.treatmentPhaseLine.date,'2026-04-03');
+  assert.deepEqual(rendered.series[0].points.map(p=>p.y),[0,2]);
 });
