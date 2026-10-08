@@ -8,6 +8,15 @@ import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import { mutateJsonStateAtomically, writeJsonStateAtomically } from "./lib/json-state-store.mjs";
 import {
+  completePostgresSessionDraft,
+  createPostgresSessionDraft,
+  getPostgresSessionDraft,
+  listPostgresSessionDrafts,
+  mutateJsonSessionDrafts,
+  readJsonSessionDrafts,
+  updatePostgresSessionDraft
+} from "./lib/session-draft-store.mjs";
+import {
   activeRecurringSeriesRevisions,
   expandActiveRecurringSeries,
   expandBoundedRecurrence,
@@ -45,12 +54,14 @@ const publicDir = join(root, "public");
 const dataDir = join(root, "data");
 const uploadsDir = join(root, "uploads");
 const dbPath = process.env.DB_PATH || join(dataDir, "db.json");
+const sessionDraftDbPath = process.env.SESSION_DRAFT_DB_PATH || `${dbPath}.session-drafts.json`;
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || "127.0.0.1";
 const dataStore = process.env.DATA_STORE || (process.env.DB_HOST || process.env.DATABASE_URL ? "postgres" : "json");
 const documentStore = process.env.DOCUMENT_STORE || (process.env.S3_BUCKET ? "s3" : "local");
 const sessions = new Map();
 const preservedDrafts = new Map();
+const sessionDraftCompletionLocks = new Map();
 const AGENCIES = ["Triumph ABA", "One Clinical Care"];
 const DEFAULT_AGENCY = AGENCIES[0];
 const APPOINTMENT_SERVICE_CODES = new Set(SCHEDULING_SERVICE_CODES);
@@ -837,6 +848,77 @@ function ensureSchedulingState(db) {
 export function resetRuntimeState() {
   sessions.clear();
   appointmentMutationQueue = Promise.resolve();
+  sessionDraftCompletionLocks.clear();
+}
+
+function sanitizeSessionDraftPayload(value = {}) {
+  const fields = value?.fields && typeof value.fields === "object" ? value.fields : {};
+  const textFields = ["date","therapist","setting","startTime","endTime","caregiverPresent","caregiverTraining","affect","transitions","barriers","barrierText","notes","providerSignature","providerCredential"];
+  const sanitizeRow = row => Object.fromEntries(Object.entries(row && typeof row === "object" ? row : {}).flatMap(([key,item]) => {
+    if (key === "responseHistory") return [[key, Array.isArray(item) ? item.filter(entry => ["correct","incorrect"].includes(entry)).slice(-1000) : []]];
+    if (["string","number","boolean"].includes(typeof item)) return [[key,item]];
+    return [];
+  }));
+  return {
+    fields:Object.fromEntries(textFields.map(key => [key, typeof fields[key] === "string" ? fields[key] : fields[key] == null ? "" : String(fields[key])])),
+    programs:Array.isArray(value.programs) ? value.programs.map(sanitizeRow).slice(0,500) : [],
+    behaviors:Array.isArray(value.behaviors) ? value.behaviors.map(sanitizeRow).slice(0,500) : []
+  };
+}
+
+function sessionDraftRecord({ id=crypto.randomUUID(), clientId, ownerUserId, payload }) {
+  const now = new Date().toISOString();
+  const clean = sanitizeSessionDraftPayload(payload);
+  return { id,clientId,ownerUserId,serviceType:"97153",clinicalDate:clean.fields.date,startTime:clean.fields.startTime,
+    status:"in_progress",revision:1,payload:clean,createdAt:now,updatedAt:now,lastSavedAt:now,completedSessionId:"" };
+}
+
+async function listDurableSessionDrafts(ownerUserId, clientId="") {
+  if (dataStore === "postgres") {
+    const { Pool } = await import("pg");
+    return listPostgresSessionDrafts(postgresConfig(Pool),ownerUserId,clientId);
+  }
+  return (await readJsonSessionDrafts(sessionDraftDbPath)).filter(draft => draft.ownerUserId === ownerUserId && draft.status === "in_progress" && (!clientId || draft.clientId === clientId));
+}
+
+async function getDurableSessionDraft(id) {
+  if (dataStore === "postgres") {
+    const { Pool } = await import("pg");
+    return getPostgresSessionDraft(postgresConfig(Pool),id);
+  }
+  return (await readJsonSessionDrafts(sessionDraftDbPath)).find(draft => draft.id === id) || null;
+}
+
+async function createDurableSessionDraft(draft) {
+  if (dataStore === "postgres") {
+    const { Pool } = await import("pg");
+    return createPostgresSessionDraft(postgresConfig(Pool),draft);
+  }
+  return mutateJsonSessionDrafts(sessionDraftDbPath, store => { store.drafts.push(draft); return structuredClone(draft); });
+}
+
+async function updateDurableSessionDraft(id, ownerUserId, expectedRevision, payload) {
+  const now = new Date().toISOString();
+  const clean = sanitizeSessionDraftPayload(payload);
+  if (dataStore === "postgres") {
+    const { Pool } = await import("pg");
+    return updatePostgresSessionDraft(postgresConfig(Pool),id,ownerUserId,expectedRevision,{payload:clean,clinicalDate:clean.fields.date,startTime:clean.fields.startTime,updatedAt:now});
+  }
+  return mutateJsonSessionDrafts(sessionDraftDbPath, store => {
+    const draft = store.drafts.find(item => item.id === id);
+    if (!draft) return { draft:null };
+    if (draft.ownerUserId !== ownerUserId || draft.status !== "in_progress" || draft.revision !== expectedRevision) return { draft:structuredClone(draft),conflict:true };
+    Object.assign(draft,{payload:clean,clinicalDate:clean.fields.date,startTime:clean.fields.startTime,revision:draft.revision+1,updatedAt:now,lastSavedAt:now});
+    return { draft:structuredClone(draft) };
+  });
+}
+
+function enqueueSessionDraftCompletion(id, task) {
+  const previous = sessionDraftCompletionLocks.get(id) || Promise.resolve();
+  const run = previous.then(task,task);
+  const queued = run.catch(()=>{});
+  sessionDraftCompletionLocks.set(id,queued);
+  return run.finally(() => { if (sessionDraftCompletionLocks.get(id) === queued) sessionDraftCompletionLocks.delete(id); });
 }
 
 export function createAppServer() {
@@ -2104,6 +2186,114 @@ export function createAppServer() {
         offset,
         hasMore: limit ? offset + pagedSessions.length < total : false
       });
+      return;
+    }
+
+    if (url.pathname === "/api/session-drafts" && ["GET","POST"].includes(req.method)) {
+      const db = await readDbWithUsers();
+      const auth = sessionStatus(req,db);
+      if (auth.status !== "ok") { requireAuth(req,res,db,auth); return; }
+      const user = auth.user;
+      if (!["admin","bcba","rbt"].includes(user.role)) { sendJson(res,403,{errors:["Your role cannot collect sessions."]}); return; }
+      if (req.method === "GET") {
+        const clientId = String(url.searchParams.get("clientId") || "");
+        if (clientId) {
+          const client = db.clients.find(item => item.id === clientId);
+          if (!client || !canAccessClient(user,client,db)) { sendJson(res,403,{errors:["You cannot access drafts for this client."]}); return; }
+        }
+        sendJson(res,200,{drafts:await listDurableSessionDrafts(user.id,clientId)});
+        return;
+      }
+      const body = await readBody(req);
+      const client = db.clients.find(item => item.id === body.clientId);
+      if (!client || !canAccessClient(user,client,db)) { sendJson(res,403,{errors:["You cannot start a session for this client."]}); return; }
+      if (body.serviceType && body.serviceType !== "97153") { sendJson(res,400,{errors:["Only 97153 drafts are supported."]}); return; }
+      const existing = (await listDurableSessionDrafts(user.id,client.id))[0];
+      if (existing) { sendJson(res,200,{...existing,resumable:true}); return; }
+      const draft = await createDurableSessionDraft(sessionDraftRecord({clientId:client.id,ownerUserId:user.id,payload:body.payload}));
+      logAudit(db,req,user,"session-draft-created",{clientId:client.id,details:{draftId:draft.id,serviceType:"97153"}});
+      await writeDb(db);
+      sendJson(res,201,draft);
+      return;
+    }
+
+    const sessionDraftMatch = url.pathname.match(/^\/api\/session-drafts\/([^/]+)$/);
+    if (sessionDraftMatch && ["GET","PUT"].includes(req.method)) {
+      const db = await readDbWithUsers();
+      const auth = sessionStatus(req,db);
+      if (auth.status !== "ok") { requireAuth(req,res,db,auth); return; }
+      const draft = await getDurableSessionDraft(sessionDraftMatch[1]);
+      if (!draft) { sendJson(res,404,{errors:["Session draft not found."]}); return; }
+      const client = db.clients.find(item => item.id === draft.clientId);
+      if (draft.ownerUserId !== auth.user.id || !client || !canAccessClient(auth.user,client,db)) { sendJson(res,403,{errors:["You cannot access this session draft."]}); return; }
+      if (req.method === "GET") { sendJson(res,200,draft); return; }
+      const body = await readBody(req);
+      const expectedRevision = Number(body.expectedRevision);
+      if (!Number.isInteger(expectedRevision)) { sendJson(res,400,{errors:["Expected revision is required."]}); return; }
+      const result = await updateDurableSessionDraft(draft.id,auth.user.id,expectedRevision,body.payload);
+      if (result.conflict) { sendJson(res,409,{code:"DRAFT_CONFLICT",errors:["A newer version of this session draft exists. Reload or resume it before continuing."],draft:result.draft}); return; }
+      sendJson(res,200,result.draft);
+      return;
+    }
+
+    const sessionDraftCompleteMatch = url.pathname.match(/^\/api\/session-drafts\/([^/]+)\/complete$/);
+    if (req.method === "POST" && sessionDraftCompleteMatch) {
+      const db = await readDbWithUsers();
+      const auth = sessionStatus(req,db);
+      if (auth.status !== "ok") { requireAuth(req,res,db,auth); return; }
+      const body = await readBody(req);
+      const expectedRevision = Number(body.expectedRevision);
+      if (!Number.isInteger(expectedRevision)) { sendJson(res,400,{errors:["Expected revision is required."]}); return; }
+      const draftId = sessionDraftCompleteMatch[1];
+      const authorizedDraft = await getDurableSessionDraft(draftId);
+      const authorizedClient = authorizedDraft && db.clients.find(item => item.id === authorizedDraft.clientId);
+      if (!authorizedDraft) { sendJson(res,404,{errors:["Session draft not found."]}); return; }
+      if (authorizedDraft.ownerUserId !== auth.user.id || !authorizedClient || !canAccessClient(auth.user,authorizedClient,db)) { sendJson(res,403,{errors:["You cannot complete this session draft."]}); return; }
+      const buildSession = async (draft,currentDb) => {
+        const client = currentDb.clients?.find(item => item.id === draft.clientId);
+        if (!client || draft.ownerUserId !== auth.user.id) return { forbidden:true };
+        const completedPayload = { ...(body.session || {}),clientId:draft.clientId,serviceType:"97153" };
+        for (const key of ["date","therapist","setting","startTime","endTime","providerSignature","providerCredential"]) {
+          if (typeof completedPayload[key] !== "string") completedPayload[key] = "";
+        }
+        const built = validateSession(completedPayload,currentDb);
+        if (built.errors.length) return { errors:built.errors };
+        built.session.sourceDraftId = draft.id;
+        logAudit(currentDb,req,auth.user,"session-created",{clientId:draft.clientId,details:{serviceType:"97153",date:built.session.date,sourceDraftId:draft.id}});
+        return built;
+      };
+      const result = await enqueueSessionDraftCompletion(draftId,async () => {
+        if (dataStore === "postgres") {
+          const { Pool } = await import("pg");
+          return completePostgresSessionDraft(postgresConfig(Pool),{id:draftId,ownerUserId:auth.user.id,expectedRevision,buildSession});
+        }
+        return mutateJsonSessionDrafts(sessionDraftDbPath,async store => {
+          const draft = store.drafts.find(item => item.id === draftId);
+          if (!draft) return { missing:true };
+          if (draft.ownerUserId !== auth.user.id) return { forbidden:true };
+          const wasCompleted = Boolean(draft.completedSessionId);
+          const currentDb = await mutateJsonStateAtomically(dbPath,async current => {
+            const existing = (current.sessions || []).find(item => item.sourceDraftId === draftId);
+            if (existing) return current;
+            if (draft.status !== "in_progress" || draft.revision !== expectedRevision) return current;
+            const built = await buildSession(draft,current);
+            if (built.errors?.length || built.forbidden) { draft._completionError=built; return current; }
+            current.sessions = Array.isArray(current.sessions) ? current.sessions : [];
+            current.sessions.unshift(built.session);
+            return current;
+          });
+          if (draft._completionError) { const error=draft._completionError; delete draft._completionError; return error; }
+          const session = (currentDb.sessions || []).find(item => item.sourceDraftId === draftId);
+          if (!session) return { draft:structuredClone(draft),conflict:true };
+          if (!draft.completedSessionId) Object.assign(draft,{status:"completed",completedSessionId:session.id,revision:draft.revision+1,updatedAt:new Date().toISOString(),lastSavedAt:new Date().toISOString()});
+          return { draft:structuredClone(draft),session,idempotent:wasCompleted };
+        });
+      });
+      if (result.missing) { sendJson(res,404,{errors:["Session draft not found."]}); return; }
+      if (result.forbidden) { sendJson(res,403,{errors:["You cannot complete this session draft."]}); return; }
+      if (result.conflict) { sendJson(res,409,{code:"DRAFT_CONFLICT",errors:["A newer version of this session draft exists."],draft:result.draft}); return; }
+      if (result.errors?.length) { sendJson(res,400,{errors:result.errors}); return; }
+      sendJson(res,result.idempotent?200:201,{draft:result.draft,session:result.session || (await readDb()).sessions.find(item=>item.id===result.completedSessionId)});
       return;
     }
 

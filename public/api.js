@@ -102,6 +102,34 @@ export async function getVisibleSessions({ clientId = "", startDate = "", endDat
   return fetchWithTimeout(url.pathname + url.search, timeoutMs);
 }
 
+export async function listSessionDrafts(clientId = "") {
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return parseResponse(await fetch(`/api/session-drafts${query}`));
+}
+
+export async function createSessionDraft(clientId, payload) {
+  return parseResponse(await fetch("/api/session-drafts", {
+    method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({clientId,serviceType:"97153",payload})
+  }));
+}
+
+export async function getSessionDraft(draftId) {
+  return parseResponse(await fetch(`/api/session-drafts/${encodeURIComponent(draftId)}`));
+}
+
+export async function updateSessionDraft(draftId, expectedRevision, payload) {
+  return parseResponse(await fetch(`/api/session-drafts/${encodeURIComponent(draftId)}`, {
+    method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({expectedRevision,payload})
+  }));
+}
+
+export async function completeSessionDraft(draftId, expectedRevision, session) {
+  return parseResponse(await fetch(`/api/session-drafts/${encodeURIComponent(draftId)}/complete`, {
+    method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({expectedRevision,session})
+  }));
+}
+
 export async function getAppointments({ startDate = "", endDate = "", timeoutMs = 15000 } = {}) {
   const url = new URL("/api/appointments", window.location.origin);
   if (startDate) url.searchParams.set("startDate", startDate);

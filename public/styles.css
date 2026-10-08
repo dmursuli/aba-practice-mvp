@@ -346,6 +346,16 @@ textarea {
   gap: 18px;
 }
 
+.session-draft-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.session-draft-status-row .form-message { margin: 0; }
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

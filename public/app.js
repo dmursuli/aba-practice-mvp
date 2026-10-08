@@ -1,5 +1,5 @@
 import { sanitizeClinicalSnapshot, snapshotPhaseConfig, reportSnapshotDisclosure } from "./report-snapshot.js";
-import { assignClientProvider, cancelAppointment, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getSchedulingCapacity, getUsers, getVisibleSessions, importHistoricalData, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { assignClientProvider, cancelAppointment, completeSessionDraft, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createSessionDraft, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getSchedulingCapacity, getSessionDraft, getUsers, getVisibleSessions, importHistoricalData, listSessionDrafts, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateSessionDraft, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { graphObservationProvider, buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { graphNumericValue } from "./graph-values.js";
@@ -127,6 +127,13 @@ const state = {
   activeSoapHistoryTab: "97153",
   currentUser: null,
   skipNextSessionDraftRestore: false,
+  durableSessionDraft: null,
+  resumableSessionDraft: null,
+  sessionDraftSaveQueue: Promise.resolve(),
+  sessionDraftDebounceId: null,
+  sessionDraftSaveState: "",
+  sessionDraftSaveToken: 0,
+  sessionDraftConflict: false,
   loadedSessionDomainKeys: [],
   authFlow: "password",
   authChallenge: null,
@@ -386,6 +393,8 @@ const generate97155Button = document.querySelector("#generate-97155-note");
 const planMessage = document.querySelector("#plan-message");
 const parentMessage = document.querySelector("#parent-message");
 const formMessage = document.querySelector("#form-message");
+const sessionDraftStatus = document.querySelector("#session-draft-status");
+const resumeSessionDraftButton = document.querySelector("#resume-session-draft");
 const noteStatus = document.querySelector("#note-status");
 const soapEditor = document.querySelector("#soap-note");
 const soapStatusLabel = document.querySelector("#soap-note-status-label");
@@ -653,6 +662,7 @@ async function startAuthenticatedApp() {
   preloadServiceHourRows();
   render();
   await switchView(requested.view || currentView());
+  await refreshDurableSessionDraftOffer();
 }
 
 async function restoreRecoverableDrafts() {
@@ -661,14 +671,9 @@ async function restoreRecoverableDrafts() {
     if (drafts?.intake && Object.keys(drafts.intake).length) {
       state.draftCache.intake = { ...state.draftCache.intake, ...drafts.intake };
     }
-    if (drafts?.session && Object.keys(drafts.session).length) {
-      state.draftCache.session = { ...state.draftCache.session, ...drafts.session };
-    }
     const restoredIntake = drafts?.intake && Object.keys(drafts.intake).length;
-    const restoredSession = drafts?.session && Object.keys(drafts.session).length;
-    if (restoredIntake || restoredSession) {
+    if (restoredIntake) {
       const parts = [];
-      if (restoredSession) parts.push("session drafts");
       if (restoredIntake) parts.push("intake drafts");
       formMessage.textContent = `Recovered ${parts.join(" and ")} from your last timed-out session.`;
       intakeMessage.textContent = formMessage.textContent;
@@ -681,7 +686,8 @@ async function preserveRecoverableDrafts() {
     const clientId = currentClient()?.id || clientSelect.value || intakeClientSelect.value;
     if (clientId && form) saveSessionDraft();
     if (clientId && intakeForm) saveIntakeDraft();
-    await preserveDrafts(state.draftCache);
+    await flushDurableSessionDraft().catch(() => {});
+    await preserveDrafts({ ...state.draftCache, session:{} });
   } catch {}
 }
 
@@ -1314,16 +1320,16 @@ function bindEvents() {
   document.querySelectorAll("[data-navigation-category]").forEach((button) => {
     button.addEventListener("click", () => syncWorkspaceNavigationGroups(button.dataset.navigationCategory));
   });
-  document.querySelector("#add-program").addEventListener("click", () => addFirstAvailableTargetRow());
-  document.querySelector("#add-maintenance-target").addEventListener("click", () => addFirstAvailableTargetRow("maintenance"));
-  document.querySelector("#add-behavior").addEventListener("click", () => addFirstAvailableBehaviorRow());
+  document.querySelector("#add-program").addEventListener("click", () => { addFirstAvailableTargetRow(); saveSessionDraft({immediate:true,forceStart:true}); });
+  document.querySelector("#add-maintenance-target").addEventListener("click", () => { addFirstAvailableTargetRow("maintenance"); saveSessionDraft({immediate:true,forceStart:true}); });
+  document.querySelector("#add-behavior").addEventListener("click", () => { addFirstAvailableBehaviorRow(); saveSessionDraft({immediate:true,forceStart:true}); });
   document.querySelector("#add-parent-goal").addEventListener("click", () => {
     state.activeParentGoalTab = "active";
     addParentGoalRow();
   });
-  workspaceClientSelect.addEventListener("change", () => setActiveClient(workspaceClientSelect.value));
-  managementClientSelect.addEventListener("change", () => setActiveClient(managementClientSelect.value));
-  clientSelect.addEventListener("change", () => setActiveClient(clientSelect.value));
+  workspaceClientSelect.addEventListener("change", () => switchActiveClientWithDraft(workspaceClientSelect.value));
+  managementClientSelect.addEventListener("change", () => switchActiveClientWithDraft(managementClientSelect.value));
+  clientSelect.addEventListener("change", () => switchActiveClientWithDraft(clientSelect.value));
   historicalImportClientSelect?.addEventListener("change", () => setActiveClient(historicalImportClientSelect.value));
   historicalImportDataTypeSelect?.addEventListener("change", handleHistoricalImportTypeChange);
   historicalImportMeasurementTypeSelect?.addEventListener("change", () => {
@@ -1349,7 +1355,8 @@ function bindEvents() {
   form.addEventListener("input", (event) => {
     const row = event.target.closest(".program-row");
     if (row) updateProgramIndependence(row);
-    saveSessionDraft();
+    const clinicalRow = event.target.closest(".program-row, .behavior-row");
+    saveSessionDraft({ immediate:Boolean(clinicalRow),forceStart:Boolean(clinicalRow) });
   });
   form.addEventListener("change", (event) => {
     if (event.target.matches('[data-field="programId"]')) {
@@ -1383,9 +1390,10 @@ function bindEvents() {
       }
       refreshBehaviorAvailability();
     }
-    saveSessionDraft();
+    saveSessionDraft({ immediate:event.target.matches('[data-field="promptLevel"], [data-field="phase"], [data-field="targetId"], [data-field="behaviorId"]') });
   });
   form.addEventListener("submit", handleSubmit);
+  resumeSessionDraftButton?.addEventListener("click", resumeDurableSessionDraft);
   clientProfileForm.addEventListener("submit", handleClientProfileSubmit);
   addServiceLocationButton?.addEventListener("click", () => openServiceLocationEditor());
   cancelServiceLocationButton?.addEventListener("click", closeServiceLocationEditor);
@@ -1616,6 +1624,7 @@ async function handleLogin(event) {
 }
 
 async function handleLogout() {
+  await flushDurableSessionDraft().catch(() => {});
   await logout().catch(() => {});
   resetSensitiveState();
   showLogin();
@@ -1955,6 +1964,14 @@ function resetSensitiveState() {
   state.authChallenge = null;
   state.authFlow = "password";
   state.draftCache = { intake: {}, session: {} };
+  if (state.sessionDraftDebounceId) window.clearTimeout(state.sessionDraftDebounceId);
+  state.durableSessionDraft = null;
+  state.resumableSessionDraft = null;
+  state.sessionDraftDebounceId = null;
+  state.sessionDraftSaveQueue = Promise.resolve();
+  state.sessionDraftSaveToken = 0;
+  state.sessionDraftConflict = false;
+  setSessionDraftSaveStatus("");
   state.historicalImportRows = [];
   state.historicalImportPreview = null;
   state.healthVisibleLimit = 100;
@@ -2217,6 +2234,20 @@ function workflowClients() {
   return state.clients.filter((client) => client.status !== "archived");
 }
 
+async function switchActiveClientWithDraft(clientId) {
+  if (state.durableSessionDraft && state.durableSessionDraft.clientId !== clientId) {
+    try { await flushDurableSessionDraft(); }
+    catch {
+      [workspaceClientSelect,managementClientSelect,clientSelect].forEach(select => { if (select) select.value=state.activeClientId; });
+      setSessionDraftSaveStatus("error","Unable to save the active session. Client context was not changed.");
+      return;
+    }
+    state.durableSessionDraft=null;
+    state.sessionDraftConflict=false;
+  }
+  setActiveClient(clientId);
+}
+
 function setActiveClient(clientId, { resetSession = true } = {}) {
   if (!clientId) return;
   state.activeClientId = clientId;
@@ -2272,6 +2303,7 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
     void refreshHistoricalImportDuplicateMetadata();
   }
   syncWorkspaceUrl(currentView());
+  void refreshDurableSessionDraftOffer();
 }
 
 function addProgramRow(programId = "", targetId = "", values = {}) {
@@ -2298,7 +2330,7 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
     row.remove();
     renderDomainTabs();
     refreshTargetAvailability();
-    saveSessionDraft();
+    saveSessionDraft({ immediate:true,forceStart:true });
   });
   row.responseHistory = [];
   row.querySelectorAll("[data-record-response]").forEach((button) => {
@@ -2312,7 +2344,6 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
     input.addEventListener("input", () => {
       syncTrialBalance(row, input.dataset.field);
       updateProgramIndependence(row);
-      saveSessionDraft();
     });
   });
   programList.append(row);
@@ -2363,7 +2394,7 @@ function addBehaviorRow(behaviorId = "", values = {}) {
   row.querySelector("[data-remove]").addEventListener("click", () => {
     row.remove();
     refreshBehaviorAvailability();
-    saveSessionDraft();
+    saveSessionDraft({ immediate:true,forceStart:true });
   });
   row.querySelectorAll("[data-behavior-frequency-step]").forEach((button) => {
     button.addEventListener("click", () => changeBehaviorFrequency(row, Number(button.dataset.behaviorFrequencyStep || 0)));
@@ -2371,7 +2402,6 @@ function addBehaviorRow(behaviorId = "", values = {}) {
   row.querySelectorAll("input, select").forEach((input) => {
     input.addEventListener("input", () => {
       if (input.dataset.field === "frequency") updateBehaviorFrequencyDisplay(row);
-      saveSessionDraft();
     });
   });
   behaviorList.append(row);
@@ -2701,7 +2731,7 @@ function recordSkillResponse(row, response, step = 1) {
   }
   row.querySelector("[data-undo-response]").disabled = row.responseHistory.length === 0;
   updateProgramIndependence(row);
-  saveSessionDraft();
+  saveSessionDraft({ immediate:true,forceStart:true });
 }
 
 function undoSkillResponse(row) {
@@ -2713,7 +2743,7 @@ function undoSkillResponse(row) {
   trialsField.value = String(Math.max(0, Number(trialsField.value || 0) - 1));
   row.querySelector("[data-undo-response]").disabled = row.responseHistory.length === 0;
   updateProgramIndependence(row);
-  saveSessionDraft();
+  saveSessionDraft({ immediate:true,forceStart:true });
 }
 
 function changeSkillFrequency(row, step) {
@@ -2722,7 +2752,7 @@ function changeSkillFrequency(row, step) {
   field.value = String(frequency);
   row.querySelector("[data-frequency-summary]").textContent = String(frequency);
   row.querySelector('[data-frequency-step="-1"]').disabled = frequency <= 0;
-  saveSessionDraft();
+  saveSessionDraft({ immediate:true,forceStart:true });
 }
 
 function updateBehaviorFrequencyDisplay(row) {
@@ -2737,7 +2767,7 @@ function changeBehaviorFrequency(row, step) {
   const frequency = Math.max(0, Number(field.value || 0) + (step < 0 ? -1 : 1));
   field.value = String(frequency);
   updateBehaviorFrequencyDisplay(row);
-  saveSessionDraft();
+  saveSessionDraft({ immediate:true,forceStart:true });
 }
 
 function syncTrialBalance(row, sourceField = "") {
@@ -2771,13 +2801,22 @@ async function handleSubmit(event) {
   formMessage.textContent = "";
 
   try {
+    if (state.sessionDraftConflict) throw new Error("A newer saved session exists. Resume it before finishing.");
+    if (!state.durableSessionDraft) saveSessionDraft({ immediate:true,forceStart:true });
+    const draft = await flushDurableSessionDraft();
+    if (!draft) throw new Error("The in-progress session could not be saved. Try again before finishing.");
     const payload = buildSessionPayload();
     payload.soapNote = generateSoapNote(payload, lookups());
-    const saved = await createSession(payload);
+    const completed = await completeSessionDraft(draft.id,draft.revision,payload);
+    const saved = completed.session;
     state.selectedSessionId = saved.id;
     state.selectedSoapEntryKey = saved.id;
     state.skipNextSessionDraftRestore = true;
     clearSessionDraft(payload.clientId);
+    state.durableSessionDraft = null;
+    state.resumableSessionDraft = null;
+    state.sessionDraftConflict = false;
+    setSessionDraftSaveStatus("");
     await refreshDataAndCurrentViewSessions();
     resetRows();
     render();
@@ -3376,20 +3415,108 @@ function sessionDraftPayload() {
   }, {});
   return {
     fields,
-    programs: [...programList.querySelectorAll(".program-row")].map((row) => readDataRow(row)),
+    programs: [...programList.querySelectorAll(".program-row")].map((row) => ({
+      ...readDataRow(row),
+      responseHistory:Array.isArray(row.responseHistory) ? [...row.responseHistory] : []
+    })),
     behaviors: [...behaviorList.querySelectorAll(".behavior-row")].map((row) => readDataRow(row))
   };
 }
 
-function saveSessionDraft() {
+function setSessionDraftSaveStatus(status, message="") {
+  state.sessionDraftSaveState = status;
+  if (sessionDraftStatus) sessionDraftStatus.textContent = message || ({saving:"Saving…",saved:"Saved just now",error:"Unable to save"}[status] || "");
+}
+
+async function refreshDurableSessionDraftOffer() {
+  const clientId = currentClient()?.id;
+  if (!clientId || !state.currentUser) return;
+  try {
+    const { drafts=[] } = await listSessionDrafts(clientId);
+    const draft = drafts[0] || null;
+    if (state.durableSessionDraft?.id !== draft?.id) state.resumableSessionDraft = draft;
+    if (resumeSessionDraftButton) {
+      resumeSessionDraftButton.classList.toggle("hidden", !draft || state.durableSessionDraft?.id === draft.id);
+      if (draft) resumeSessionDraftButton.textContent = `Resume session${draft.lastSavedAt ? ` — saved ${formatDateTime(draft.lastSavedAt)}` : ""}`;
+    }
+  } catch (error) {
+    if (sessionDraftStatus) sessionDraftStatus.textContent = "Unable to check saved sessions.";
+  }
+}
+
+async function persistDurableSessionDraft(payload, saveToken) {
+  if (state.sessionDraftConflict) return null;
+  setSessionDraftSaveStatus("saving");
+  try {
+    if (!state.durableSessionDraft) {
+      const created = await createSessionDraft(currentClient()?.id || clientSelect.value,payload);
+      if (created.resumable) {
+        state.resumableSessionDraft = created;
+        state.sessionDraftConflict = true;
+        if (resumeSessionDraftButton) resumeSessionDraftButton.classList.remove("hidden");
+        setSessionDraftSaveStatus("error","A newer saved session exists. Resume it before collecting more data.");
+        return null;
+      }
+      state.durableSessionDraft = created;
+    } else {
+      state.durableSessionDraft = await updateSessionDraft(state.durableSessionDraft.id,state.durableSessionDraft.revision,payload);
+    }
+    if (saveToken === state.sessionDraftSaveToken) {
+      setSessionDraftSaveStatus("saved",`Saved just now${state.durableSessionDraft.lastSavedAt ? ` (${formatDateTime(state.durableSessionDraft.lastSavedAt)})` : ""}`);
+    }
+    return state.durableSessionDraft;
+  } catch (error) {
+    if (error.status === 409) {
+      state.sessionDraftConflict = true;
+      state.resumableSessionDraft = error.details?.draft || state.resumableSessionDraft;
+      setSessionDraftSaveStatus("error","A newer saved version exists. Resume it before continuing.");
+      if (resumeSessionDraftButton) resumeSessionDraftButton.classList.remove("hidden");
+    } else if (saveToken === state.sessionDraftSaveToken) {
+      setSessionDraftSaveStatus("error","Unable to save. Your latest changes are still on this screen.");
+    }
+    throw error;
+  }
+}
+
+function enqueueDurableSessionDraftSave(payload, requestedToken=++state.sessionDraftSaveToken) {
+  const saveToken = requestedToken;
+  state.sessionDraftSaveQueue = state.sessionDraftSaveQueue.catch(()=>{}).then(() => persistDurableSessionDraft(payload,saveToken));
+  return state.sessionDraftSaveQueue;
+}
+
+function scheduleDurableSessionDraftSave({ immediate=false }={}) {
+  if (state.sessionDraftRestoring || state.sessionDraftConflict) return;
+  setSessionDraftSaveStatus("saving");
+  const requestedToken = ++state.sessionDraftSaveToken;
+  if (state.sessionDraftDebounceId) window.clearTimeout(state.sessionDraftDebounceId);
+  const run = () => {
+    state.sessionDraftDebounceId = null;
+    void enqueueDurableSessionDraftSave(sessionDraftPayload(),requestedToken).catch(()=>{});
+  };
+  if (immediate) run();
+  else state.sessionDraftDebounceId = window.setTimeout(run,700);
+}
+
+async function flushDurableSessionDraft() {
+  if (state.sessionDraftDebounceId) {
+    window.clearTimeout(state.sessionDraftDebounceId);
+    state.sessionDraftDebounceId = null;
+    await enqueueDurableSessionDraftSave(sessionDraftPayload());
+  }
+  await state.sessionDraftSaveQueue;
+  return state.durableSessionDraft;
+}
+
+function saveSessionDraft(options={}) {
   const clientId = clientSelect.value || currentClient()?.id;
   if (!clientId || !form) return;
   const draft = sessionDraftPayload();
-  if (!hasMeaningfulSessionDraft(draft)) {
+  if (!state.durableSessionDraft && !options.forceStart && !hasMeaningfulSessionDraft(draft)) {
     clearSessionDraft(clientId);
     return;
   }
   state.draftCache.session[clientId] = structuredClone(draft);
+  scheduleDurableSessionDraftSave(options);
 }
 
 function loadSessionDraft(clientId) {
@@ -3428,6 +3555,39 @@ function restoreSessionDraft() {
     draft.behaviors.forEach((row) => addBehaviorRow(row.behaviorId, { ...row, __allowDuplicateExisting: true }));
   }
   formMessage.textContent = "Unsaved session draft restored.";
+}
+
+function applyDurableSessionDraftPayload(draft) {
+  if (!draft?.payload) return;
+  state.sessionDraftRestoring = true;
+  try {
+    const payload = draft.payload;
+    Object.entries(payload.fields || {}).forEach(([field,value]) => { if (form.elements[field]) form.elements[field].value=value ?? ""; });
+    programList.innerHTML = "";
+    state.loadedSessionDomainKeys = [];
+    (payload.programs || []).forEach(values => {
+      const row = addProgramRow(values.programId,values.targetId,{...values,__suppressRefresh:true,__allowDuplicateExisting:true});
+      if (row) {
+        row.responseHistory = Array.isArray(values.responseHistory) ? [...values.responseHistory] : [];
+        row.querySelector("[data-undo-response]").disabled = row.responseHistory.length === 0;
+      }
+    });
+    behaviorList.innerHTML = "";
+    (payload.behaviors || []).forEach(values => addBehaviorRow(values.behaviorId,{...values,__allowDuplicateExisting:true}));
+    renderDomainTabs();refreshTargetAvailability();refreshBehaviorAvailability();
+  } finally { state.sessionDraftRestoring=false; }
+}
+
+async function resumeDurableSessionDraft() {
+  const offered = state.resumableSessionDraft;
+  if (!offered) return;
+  try {
+    const draft = await getSessionDraft(offered.id);
+    state.durableSessionDraft=draft;state.resumableSessionDraft=null;state.sessionDraftConflict=false;
+    applyDurableSessionDraftPayload(draft);
+    if (resumeSessionDraftButton) resumeSessionDraftButton.classList.add("hidden");
+    setSessionDraftSaveStatus("saved",`Session resumed — saved ${formatDateTime(draft.lastSavedAt)}`);
+  } catch (error) { setSessionDraftSaveStatus("error","Unable to resume the saved session."); }
 }
 
 function hasMeaningfulSessionDraft(draft) {
@@ -3827,7 +3987,7 @@ function render() {
   populateSelect(intakeClientSelect, availableClients, selectedClientId);
   populateDomainSelect(addProgramForm.elements.programDomain, addProgramForm.elements.programDomain.value || clientDomains()[0]);
   syncSettingFromClient();
-  restoreSessionDraft();
+  // Durable 97153 drafts are offered explicitly after authorization is restored.
   syncBcbaSessionDefaults();
   syncParentTrainingDefaults();
   syncClientProfileForm();
