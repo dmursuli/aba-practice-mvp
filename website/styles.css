@@ -466,10 +466,10 @@ p {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: center;
-  gap: 18px 16px;
+  gap: 15px 16px;
   max-width: 980px;
   margin: 0 auto;
-  padding: 22px 24px;
+  padding: 18px 24px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
@@ -477,60 +477,57 @@ p {
 }
 
 .insurance-logo {
-  min-height: 92px;
+  min-height: 84px;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 4px 8px;
 }
 
+.insurance-logo-frame {
+  width: min(100%, 200px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Optical widths within one shared frame; the same ratios hold on mobile. */
 .insurance-logo img {
-  width: auto;
-  max-width: min(100%, var(--logo-max-width, 200px));
-  max-height: var(--logo-max-height, 70px);
+  display: block;
+  width: var(--logo-width, 100%);
+  height: auto;
   object-fit: contain;
-  transform: scale(var(--logo-scale, 1));
-  transform-origin: center;
 }
 
 .insurance-logo-aetna {
-  --logo-max-width: 190px;
-  --logo-max-height: 62px;
-  --logo-scale: 1.45;
+  --logo-width: 75%;
 }
 
 .insurance-logo-cigna {
-  --logo-max-width: 162px;
-  --logo-max-height: 62px;
+  --logo-width: 98%;
 }
 
 .insurance-logo-curative {
-  --logo-max-width: 138px;
-  --logo-max-height: 52px;
-  --logo-scale: 2.15;
+  --logo-width: 100%;
 }
 
 .insurance-logo-avmed {
-  --logo-max-width: 140px;
-  --logo-max-height: 58px;
-  --logo-scale: 1.45;
+  --logo-width: 56%;
 }
 
 .insurance-logo-unitedhealthcare {
-  --logo-max-width: 168px;
-  --logo-max-height: 52px;
+  --logo-width: 80%;
 }
 
 .insurance-logo-oscar {
-  --logo-max-width: 156px;
-  --logo-max-height: 42px;
+  --logo-width: 70%;
 }
 
 @media (max-width: 980px) and (min-width: 781px) {
   .insurance-logo-panel {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     max-width: 760px;
-    gap: 20px 22px;
+    gap: 16px 22px;
   }
 }
 
@@ -1098,18 +1095,13 @@ textarea {
 
   .insurance-logo-panel {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 24px 16px;
-    padding: 18px;
+    gap: 20px 16px;
+    padding: 16px 18px;
   }
 
   .insurance-logo {
-    min-height: 88px;
+    min-height: 82px;
     padding: 4px 6px;
-  }
-
-  .insurance-logo img {
-    max-width: min(100%, var(--logo-max-width, 180px));
-    max-height: var(--logo-max-height, 58px);
   }
 
   .contact-panel {
@@ -1137,33 +1129,15 @@ textarea {
   }
 
   .insurance-logo-panel {
-    gap: 22px 12px;
+    gap: 18px 12px;
     padding: 16px 14px;
   }
 
   .insurance-logo {
-    min-height: 84px;
+    min-height: 80px;
     padding: 4px;
   }
 
-  .insurance-logo-aetna {
-    --logo-max-height: 58px;
-    --logo-scale: 1.36;
-  }
-
-  .insurance-logo-curative {
-    --logo-max-height: 46px;
-    --logo-scale: 1.9;
-  }
-
-  .insurance-logo-avmed {
-    --logo-max-height: 54px;
-    --logo-scale: 1.34;
-  }
-
-  .insurance-logo-oscar {
-    --logo-max-width: 142px;
-  }
 }
 
 @media (max-width: 300px) {
