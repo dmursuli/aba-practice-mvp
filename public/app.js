@@ -968,7 +968,7 @@ async function ensureClientSessionsLoaded(clientId = state.activeClientId, { for
 
 function recentClientSessionRange(clientId = state.activeClientId) {
   const summary = currentClientSessionSummary(clientId);
-  const endDate = summary.lastDate || new Date().toISOString().slice(0, 10);
+  const endDate = summary.lastDate || dateInputValue();
   return {
     startDate: shiftIsoDate(endDate, -29),
     endDate
@@ -2184,11 +2184,11 @@ function showApp() {
 
 function defaultReportDateRange() {
   const today = new Date();
-  const endDate = today.toISOString().slice(0, 10);
+  const endDate = dateInputValue(today);
   const sixMonthsAgo = new Date(today);
   sixMonthsAgo.setMonth(today.getMonth() - 6);
   return {
-    startDate: sixMonthsAgo.toISOString().slice(0, 10),
+    startDate: dateInputValue(sixMonthsAgo),
     endDate
   };
 }
@@ -2208,7 +2208,7 @@ function resetFunderReportForm() {
 
 function setDefaultDate() {
   const today = new Date();
-  const todayValue = today.toISOString().slice(0, 10);
+  const todayValue = dateInputValue(today);
   form.elements.date.value = todayValue;
   bcbaSessionForm.elements.date.value = todayValue;
   parentTrainingForm.elements.date.value = todayValue;
@@ -2625,7 +2625,7 @@ async function handleMarkParentGoalMastered(row) {
     goals[rowIndex] = {
       ...goal,
       status: "mastered",
-      masteredDate: new Date().toISOString().slice(0, 10)
+      masteredDate: dateInputValue()
     };
     const updated = await updateClientProfile(client.id, {
       ...currentClientProfilePayload(client),
@@ -4169,7 +4169,7 @@ function historicalImportValueLabel(measurementType = currentHistoricalImportMea
 }
 
 function blankHistoricalImportRow(dataType = currentHistoricalImportDataType()) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = dateInputValue();
   const client = currentClient();
   return {
     id: crypto.randomUUID(),
@@ -9174,7 +9174,7 @@ function checkSessionHealth(client, sessions, issues) {
     } else if (!session.finalized) {
       issues.push(healthIssue("medium", client.name, "SOAP note", `${label} SOAP note is still a draft.`, "Review and finalize the note when complete."));
     }
-    if (session.date > new Date().toISOString().slice(0, 10)) {
+    if (session.date > dateInputValue()) {
       issues.push(healthIssue("medium", client.name, "Session date", `${label} is dated in the future.`, "Confirm the session date."));
     }
     if ((session.serviceType || "97153") === "97153" && !targetEntriesForSession(session).length) {
@@ -9894,7 +9894,7 @@ function captureReportClinicalSnapshot() {
   return sanitizeClinicalSnapshot({
     version: 1, capturedAt: new Date().toISOString(), capturedBy: state.currentUser?.id,
     clientId: client.id, clientName: client.name, sourcePlanUpdatedAt: client.planUpdatedAt,
-    preparationDate: new Date().toISOString().slice(0, 10),
+    preparationDate: dateInputValue(),
     reportingPeriod: { startDate: reportForm.elements.startDate.value, endDate: reportForm.elements.endDate.value },
     programs, behaviors: clientBehaviors(), caregiverGoals: currentParentTrainingGoals(),
     masteryCriteria: currentMasteryCriteria(), planChangeLog: client.planChangeLog || [], phases,
@@ -10239,7 +10239,7 @@ function buildFunderReportPreviewMarkup() {
       </section>
       <section class="report-signature">
         <p><strong>Prepared by:</strong> ${escapeHtml(values.get("preparedBy") || "Provider")}${values.get("credential") ? `, ${escapeHtml(values.get("credential"))}` : ""}</p>
-        <p><strong>Date:</strong> ${formatDate(context?.preparationDate || new Date().toISOString().slice(0, 10))}</p>
+        <p><strong>Date:</strong> ${formatDate(context?.preparationDate || dateInputValue())}</p>
       </section>
     </section>
   `;
@@ -11099,7 +11099,7 @@ async function handlePlanClick(event) {
     id: slugify(name, "target", program.targets.map((target) => target.id)),
     name: name.trim(),
     status: "active",
-    dateAdded: new Date().toISOString().slice(0, 10),
+    dateAdded: dateInputValue(),
     maintenanceDate: "",
     note: ""
   };
@@ -11673,7 +11673,7 @@ function currentPlanChangeDate() {
   const value = bcbaSessionForm?.elements?.date?.value;
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))
     ? value
-    : new Date().toISOString().slice(0, 10);
+    : dateInputValue();
 }
 
 function current97155SessionContext({ create = true, date = "" } = {}) {
@@ -11968,7 +11968,7 @@ function generate97151Note() {
   const endDate = values.get("endDate");
   const preparedBy = values.get("preparedBy") || values.get("assessmentConductedBy") || state.currentUser?.name || "BCBA";
   const credential = values.get("credential") || "BCBA";
-  const assessmentDate = values.get("assessmentDate") || new Date().toISOString().slice(0, 10);
+  const assessmentDate = values.get("assessmentDate") || dateInputValue();
   const assessmentType = values.get("indirectAssessmentType") || "caregiver interview and record review";
   const standardizedType = values.get("standardizedAssessmentType") || "clinical observation";
   const sessions = filteredReportSessions();
@@ -11999,7 +11999,7 @@ async function handleGenerate97151Note() {
   const note97151History = upsertNoteHistoryEntry("97151", draftNoteHistoryMetadata({
     id: cryptoId(),
     note,
-    date: values.get("assessmentDate") || new Date().toISOString().slice(0, 10),
+    date: values.get("assessmentDate") || dateInputValue(),
     providerSignature: values.get("preparedBy") || values.get("assessmentConductedBy") || state.currentUser?.name || "BCBA",
     providerCredential: values.get("credential") || "BCBA",
     activityLabel: "Behavior assessment / report update"
@@ -12039,7 +12039,7 @@ async function handleSave97151Note() {
   const note97151History = upsertNoteHistoryEntry("97151", draftNoteHistoryMetadata({
     ...selected,
     note,
-    date: selected?.date || values.get("assessmentDate") || new Date().toISOString().slice(0, 10),
+    date: selected?.date || values.get("assessmentDate") || dateInputValue(),
     providerSignature: selected?.providerSignature || values.get("preparedBy") || values.get("assessmentConductedBy") || state.currentUser?.name || "BCBA",
     providerCredential: selected?.providerCredential || values.get("credential") || "BCBA",
     activityLabel: selected?.activityLabel || "Behavior assessment / report update"
@@ -14512,7 +14512,7 @@ function readSoapEditorPayload(action = "save-draft") {
 function soapValidationErrors(payload) {
   const errors = [];
   if (payload.date) {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = dateInputValue();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.date)) {
       errors.push("Enter a valid service date.");
     } else if (payload.date > today) {
@@ -14582,7 +14582,7 @@ function noteHistoryRecordFromPayload(entry, payload, status) {
     sessionId: String(existing.sessionId || ""),
     serviceCode: entry?.type === "97151" ? "97151" : entry?.type === "97155" ? "97155" : existing.serviceCode || "",
     note: payload.soapNote,
-    date: payload.date || existing.date || new Date().toISOString().slice(0, 10),
+    date: payload.date || existing.date || dateInputValue(),
     startTime: payload.startTime,
     endTime: payload.endTime,
     setting: payload.setting,
@@ -14826,7 +14826,7 @@ async function handleFinalize() {
   if (!entry || soapEntryStatus(entry) !== "draft") return;
   noteStatus.textContent = "";
   const payload = readSoapEditorPayload("finalize");
-  if (!payload.signatureDate) payload.signatureDate = new Date().toISOString().slice(0, 10);
+  if (!payload.signatureDate) payload.signatureDate = dateInputValue();
   const errors = soapValidationErrors(payload);
   if (errors.length) {
     noteStatus.textContent = errors.join(" ");
@@ -14863,7 +14863,7 @@ async function handleAmendSoapNote() {
   }
   noteStatus.textContent = "";
   const payload = readSoapEditorPayload("amend");
-  if (!payload.signatureDate) payload.signatureDate = new Date().toISOString().slice(0, 10);
+  if (!payload.signatureDate) payload.signatureDate = dateInputValue();
   const errors = soapValidationErrors(payload);
   if (errors.length) {
     noteStatus.textContent = errors.join(" ");
@@ -15194,10 +15194,10 @@ function dateFallsInCycle(value, cycle) {
   return date >= cycle.start && date <= cycle.end;
 }
 
-function dateInputValue(date) {
-  return date instanceof Date && !Number.isNaN(date.getTime())
-    ? date.toISOString().slice(0, 10)
-    : "";
+function dateInputValue(date = new Date()) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  // Clinical date-only fields follow the clinician's local calendar, not UTC.
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function replaceClient(updated) {
@@ -15304,17 +15304,17 @@ function soapHistoryEntries() {
       updatedAt: currentClient()?.updatedAt || currentClient()?.createdAt || ""
     });
   }
-  note97155History
+  entries.unshift(...note97155History
     .slice()
-    .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))
-    .forEach((record) => {
-    entries.unshift({
+    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || ""))
+      || String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || ""))
+      || String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+    .map((record) => ({
       key: soapNoteEntryKey("97155", record.id),
       type: "97155",
       note: record.note,
       record
-    });
-  });
+    })));
   note97151History
     .slice()
     .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))
@@ -15585,7 +15585,7 @@ function cryptoId() {
 function signatureBlock(signature, credential, date) {
   const signedBy = signature?.trim() || "Provider signature";
   const credentialText = credential?.trim() ? `, ${credential.trim()}` : "";
-  return `Provider signature: ${signedBy}${credentialText}\nDate signed: ${formatDate(date || new Date().toISOString().slice(0, 10))}`;
+  return `Provider signature: ${signedBy}${credentialText}\nDate signed: ${formatDate(date || dateInputValue())}`;
 }
 
 function assessmentDocumentCanRenderInline(document, ref) {

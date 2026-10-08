@@ -97,7 +97,7 @@ test('reopening restores narrative and produces stable preview after live client
     safeReportFilePreview:()=>'',renderParentTrainingProgressSummary:String,renderParentTrainingReportSummary:()=>'',
     renderDischargeCriteria:()=>'',renderFadePlanTable:()=>'',renderServiceHoursTable:()=>''});
   for(const name of ['defaultBackgroundInformation','defaultMedicalConcerns','defaultReasonForReferral','defaultImpactOfBehaviors','defaultFamilyStrengths','defaultInitialObservations','defaultInstructionalGoalsInfo','defaultGeneralizationMaintenance','defaultBarriersToTreatmentSummary','defaultRecommendations','defaultMedicalNecessity']) ctx[name]=()=>liveDefault;
-  vm.runInContext(['reportClinicalContext','reportContextDisclosure','applyFunderReportDraft','buildFunderReportPreviewMarkup'].map(extract).join('\n'),ctx);
+  vm.runInContext(['dateInputValue','reportClinicalContext','reportContextDisclosure','applyFunderReportDraft','buildFunderReportPreviewMarkup'].map(extract).join('\n'),ctx);
   ctx.applyFunderReportDraft(draft);
   const original=ctx.buildFunderReportPreviewMarkup();
   client.name='Changed live name';liveDefault='Changed live default';

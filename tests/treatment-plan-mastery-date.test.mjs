@@ -16,7 +16,7 @@ function fixture(target={},log=[]) {
     trackPlanSave:p=>p,savePlan:async(p,b,change)=>{programs=structuredClone(p);saved.push({programs,change});},
     formMessage:{textContent:''},renderPlanReview:()=>{}
   });
-  vm.runInContext(['normalizePlanStatus','explicitPlanMasteryDate','firstPlanMasteryChangeDate','resolvePlanTargetMasteryDate','resolvePlanProgramMasteryDate','currentPlanChangeDate','handlePlanStatusChange'].map(extract).join('\n'),context);
+  vm.runInContext(['dateInputValue','normalizePlanStatus','explicitPlanMasteryDate','firstPlanMasteryChangeDate','resolvePlanTargetMasteryDate','resolvePlanProgramMasteryDate','currentPlanChangeDate','handlePlanStatusChange'].map(extract).join('\n'),context);
   const change=(value,wholeProgram=false)=>context.handlePlanStatusChange({target:{closest:selector=>{
     if(wholeProgram&&selector==='[data-plan-program-status]')return {value,dataset:{planProgramStatus:'p'}};
     if(!wholeProgram&&selector==='[data-plan-program][data-plan-target]')return {value,dataset:{planProgram:'p',planTarget:'t'}};
@@ -47,7 +47,7 @@ test('manual active/on-hold mastery uses clinical change date, preserves IDs and
   }
   const f=fixture();f.context.bcbaSessionForm.elements.date.value='';
   await f.change('mastered');
-  assert.equal(f.programs()[0].targets[0].maintenanceDate,new Date().toISOString().slice(0,10));
+  assert.equal(f.programs()[0].targets[0].maintenanceDate,f.context.dateInputValue());
 });
 
 test('reversals preserve documented dates and do not silently backfill legacy mastered records',async()=>{
