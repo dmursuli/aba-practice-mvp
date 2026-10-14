@@ -1,5 +1,5 @@
 import { sanitizeClinicalSnapshot, snapshotPhaseConfig, reportSnapshotDisclosure } from "./report-snapshot.js";
-import { assignClientProvider, cancelAppointment, completeSessionDraft, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createSessionDraft, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getSchedulingCapacity, getSessionDraft, getUsers, getVisibleSessions, importHistoricalData, listSessionDrafts, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateSessionDraft, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { discardSessionDraft, assignClientProvider, cancelAppointment, completeSessionDraft, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createSessionDraft, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getSchedulingCapacity, getSessionDraft, getUsers, getVisibleSessions, importHistoricalData, listSessionDrafts, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateSessionDraft, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { graphObservationProvider, buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { graphNumericValue } from "./graph-values.js";
@@ -134,6 +134,8 @@ const state = {
   sessionDraftSaveState: "",
   sessionDraftSaveToken: 0,
   sessionDraftConflict: false,
+  sessionDraftChecking: true,
+  sessionDraftDecisionBusy: false,
   loadedSessionDomainKeys: [],
   authFlow: "password",
   authChallenge: null,
@@ -394,6 +396,9 @@ const planMessage = document.querySelector("#plan-message");
 const parentMessage = document.querySelector("#parent-message");
 const formMessage = document.querySelector("#form-message");
 const sessionDraftStatus = document.querySelector("#session-draft-status");
+const sessionCollectionControls = document.querySelector("#session-collection-controls");
+const discardSessionDraftButton = document.querySelector("#discard-session-draft");
+const checkSessionDraftButton = document.querySelector("#check-session-draft");
 const resumeSessionDraftButton = document.querySelector("#resume-session-draft");
 const noteStatus = document.querySelector("#note-status");
 const soapEditor = document.querySelector("#soap-note");
@@ -1394,6 +1399,8 @@ function bindEvents() {
   });
   form.addEventListener("submit", handleSubmit);
   resumeSessionDraftButton?.addEventListener("click", resumeDurableSessionDraft);
+  discardSessionDraftButton?.addEventListener("click", discardDurableSessionDraft);
+  checkSessionDraftButton?.addEventListener("click", refreshDurableSessionDraftOffer);
   clientProfileForm.addEventListener("submit", handleClientProfileSubmit);
   addServiceLocationButton?.addEventListener("click", () => openServiceLocationEditor());
   cancelServiceLocationButton?.addEventListener("click", closeServiceLocationEditor);
@@ -1971,6 +1978,9 @@ function resetSensitiveState() {
   state.sessionDraftSaveQueue = Promise.resolve();
   state.sessionDraftSaveToken = 0;
   state.sessionDraftConflict = false;
+  state.sessionDraftChecking = true;
+  state.sessionDraftDecisionBusy = false;
+  updateSessionDraftControls();
   setSessionDraftSaveStatus("");
   state.historicalImportRows = [];
   state.historicalImportPreview = null;
@@ -2235,13 +2245,21 @@ function workflowClients() {
 }
 
 async function switchActiveClientWithDraft(clientId) {
+  if (state.sessionDraftDecisionBusy || (state.sessionDraftConflict && hasMeaningfulSessionDraft(sessionDraftPayload()))) {
+    [workspaceClientSelect,managementClientSelect,clientSelect].forEach(select => { if (select) select.value=state.activeClientId; });
+    setSessionDraftSaveStatus("error","Resolve the saved-session decision before changing clients. Your current entries remain on screen.");
+    return;
+  }
+  // Wait for a first create as well as updates before changing client context.
+  try {
+    await flushDurableSessionDraft();
+    if (state.sessionDraftConflict) throw new Error("Draft conflict");
+  } catch {
+    [workspaceClientSelect,managementClientSelect,clientSelect].forEach(select => { if (select) select.value=state.activeClientId; });
+    setSessionDraftSaveStatus("error","Unable to save. Resolve the session draft before changing clients.");
+    return;
+  }
   if (state.durableSessionDraft && state.durableSessionDraft.clientId !== clientId) {
-    try { await flushDurableSessionDraft(); }
-    catch {
-      [workspaceClientSelect,managementClientSelect,clientSelect].forEach(select => { if (select) select.value=state.activeClientId; });
-      setSessionDraftSaveStatus("error","Unable to save the active session. Client context was not changed.");
-      return;
-    }
     state.durableSessionDraft=null;
     state.sessionDraftConflict=false;
   }
@@ -2250,6 +2268,8 @@ async function switchActiveClientWithDraft(clientId) {
 
 function setActiveClient(clientId, { resetSession = true } = {}) {
   if (!clientId) return;
+  state.sessionDraftChecking = true;
+  updateSessionDraftControls();
   state.activeClientId = clientId;
   [
     workspaceClientSelect,
@@ -2801,10 +2821,10 @@ async function handleSubmit(event) {
   formMessage.textContent = "";
 
   try {
-    if (state.sessionDraftConflict) throw new Error("A newer saved session exists. Resume it before finishing.");
+    if (state.sessionDraftConflict || state.sessionDraftChecking || state.sessionDraftDecisionBusy || state.resumableSessionDraft) throw new Error("A newer saved session exists. Resume it before finishing.");
     if (!state.durableSessionDraft) saveSessionDraft({ immediate:true,forceStart:true });
     const draft = await flushDurableSessionDraft();
-    if (!draft) throw new Error("The in-progress session could not be saved. Try again before finishing.");
+    if (!draft || state.sessionDraftConflict) throw new Error("The in-progress session could not be saved. Try again before finishing.");
     const payload = buildSessionPayload();
     payload.soapNote = generateSoapNote(payload, lookups());
     const completed = await completeSessionDraft(draft.id,draft.revision,payload);
@@ -2817,11 +2837,17 @@ async function handleSubmit(event) {
     state.resumableSessionDraft = null;
     state.sessionDraftConflict = false;
     setSessionDraftSaveStatus("");
+    updateSessionDraftControls();
     await refreshDataAndCurrentViewSessions();
     resetRows();
     render();
     formMessage.textContent = "Session saved. Graphs and SOAP note updated.";
   } catch (error) {
+    if (error.status === 409) {
+      state.sessionDraftConflict=true;
+      state.resumableSessionDraft=error.details?.draft || state.durableSessionDraft;
+      updateSessionDraftControls();
+    }
     formMessage.textContent = error.message;
   }
 }
@@ -3428,24 +3454,43 @@ function setSessionDraftSaveStatus(status, message="") {
   if (sessionDraftStatus) sessionDraftStatus.textContent = message || ({saving:"Saving…",saved:"Saved just now",error:"Unable to save"}[status] || "");
 }
 
+function updateSessionDraftControls() {
+  const offered = state.resumableSessionDraft;
+  const candidate = offered || state.durableSessionDraft;
+  const blocked = state.sessionDraftChecking || state.sessionDraftDecisionBusy || state.sessionDraftConflict || Boolean(offered);
+  if (sessionCollectionControls) sessionCollectionControls.disabled = blocked;
+  resumeSessionDraftButton?.classList.toggle("hidden", !offered || offered.status !== "in_progress");
+  if (resumeSessionDraftButton && offered) resumeSessionDraftButton.textContent = `Resume session${offered.lastSavedAt ? ` — saved ${formatDateTime(offered.lastSavedAt)}` : ""}`;
+  discardSessionDraftButton?.classList.toggle("hidden", !candidate || candidate.status !== "in_progress");
+  checkSessionDraftButton?.classList.toggle("hidden", !state.sessionDraftChecking && !(state.sessionDraftConflict && offered?.status !== "in_progress"));
+  for (const button of [resumeSessionDraftButton,discardSessionDraftButton,checkSessionDraftButton]) if (button) button.disabled = state.sessionDraftDecisionBusy;
+}
+
 async function refreshDurableSessionDraftOffer() {
   const clientId = currentClient()?.id;
-  if (!clientId || !state.currentUser) return;
+  const user = state.currentUser;
+  state.sessionDraftChecking = true;
+  updateSessionDraftControls();
+  if (!clientId || !user) return;
   try {
     const { drafts=[] } = await listSessionDrafts(clientId);
+    if (currentClient()?.id !== clientId || state.currentUser !== user) return;
     const draft = drafts[0] || null;
-    if (state.durableSessionDraft?.id !== draft?.id) state.resumableSessionDraft = draft;
-    if (resumeSessionDraftButton) {
-      resumeSessionDraftButton.classList.toggle("hidden", !draft || state.durableSessionDraft?.id === draft.id);
-      if (draft) resumeSessionDraftButton.textContent = `Resume session${draft.lastSavedAt ? ` — saved ${formatDateTime(draft.lastSavedAt)}` : ""}`;
-    }
+    if (!draft && state.sessionDraftConflict) state.durableSessionDraft = null;
+    state.resumableSessionDraft = state.durableSessionDraft?.id === draft?.id ? null : draft;
+    state.sessionDraftChecking = false;
+    state.sessionDraftConflict = state.sessionDraftConflict && Boolean(state.resumableSessionDraft);
+    setSessionDraftSaveStatus("", draft && state.resumableSessionDraft ? "An unfinished session exists. Resume it or discard it before collecting a new session." : "");
+    updateSessionDraftControls();
   } catch (error) {
-    if (sessionDraftStatus) sessionDraftStatus.textContent = "Unable to check saved sessions.";
+    if (currentClient()?.id !== clientId || state.currentUser !== user) return;
+    setSessionDraftSaveStatus("error","Unable to check saved sessions. Check again before collecting data.");
+    updateSessionDraftControls();
   }
 }
 
 async function persistDurableSessionDraft(payload, saveToken) {
-  if (state.sessionDraftConflict) return null;
+  if (state.sessionDraftConflict || state.sessionDraftDecisionBusy || state.sessionDraftChecking) return null;
   setSessionDraftSaveStatus("saving");
   try {
     if (!state.durableSessionDraft) {
@@ -3454,7 +3499,8 @@ async function persistDurableSessionDraft(payload, saveToken) {
         state.resumableSessionDraft = created;
         state.sessionDraftConflict = true;
         if (resumeSessionDraftButton) resumeSessionDraftButton.classList.remove("hidden");
-        setSessionDraftSaveStatus("error","A newer saved session exists. Resume it before collecting more data.");
+        setSessionDraftSaveStatus("error","An unfinished session exists. Your current entries are preserved. Discard the saved draft to keep these entries, or resume it to replace them.");
+        updateSessionDraftControls();
         return null;
       }
       state.durableSessionDraft = created;
@@ -3464,16 +3510,18 @@ async function persistDurableSessionDraft(payload, saveToken) {
     if (saveToken === state.sessionDraftSaveToken) {
       setSessionDraftSaveStatus("saved",`Saved just now${state.durableSessionDraft.lastSavedAt ? ` (${formatDateTime(state.durableSessionDraft.lastSavedAt)})` : ""}`);
     }
+    updateSessionDraftControls();
     return state.durableSessionDraft;
   } catch (error) {
     if (error.status === 409) {
       state.sessionDraftConflict = true;
       state.resumableSessionDraft = error.details?.draft || state.resumableSessionDraft;
-      setSessionDraftSaveStatus("error","A newer saved version exists. Resume it before continuing.");
+      setSessionDraftSaveStatus("error","The saved draft changed. Your current entries are preserved. Review Resume/Discard before continuing.");
       if (resumeSessionDraftButton) resumeSessionDraftButton.classList.remove("hidden");
     } else if (saveToken === state.sessionDraftSaveToken) {
       setSessionDraftSaveStatus("error","Unable to save. Your latest changes are still on this screen.");
     }
+    updateSessionDraftControls();
     throw error;
   }
 }
@@ -3485,7 +3533,7 @@ function enqueueDurableSessionDraftSave(payload, requestedToken=++state.sessionD
 }
 
 function scheduleDurableSessionDraftSave({ immediate=false }={}) {
-  if (state.sessionDraftRestoring || state.sessionDraftConflict) return;
+  if (state.sessionDraftRestoring || state.sessionDraftConflict || state.sessionDraftChecking || state.sessionDraftDecisionBusy || state.resumableSessionDraft) return;
   setSessionDraftSaveStatus("saving");
   const requestedToken = ++state.sessionDraftSaveToken;
   if (state.sessionDraftDebounceId) window.clearTimeout(state.sessionDraftDebounceId);
@@ -3508,6 +3556,7 @@ async function flushDurableSessionDraft() {
 }
 
 function saveSessionDraft(options={}) {
+  if (state.sessionDraftRestoring || state.sessionDraftChecking || state.sessionDraftDecisionBusy || state.sessionDraftConflict || state.resumableSessionDraft) return;
   const clientId = clientSelect.value || currentClient()?.id;
   if (!clientId || !form) return;
   const draft = sessionDraftPayload();
@@ -3580,14 +3629,60 @@ function applyDurableSessionDraftPayload(draft) {
 
 async function resumeDurableSessionDraft() {
   const offered = state.resumableSessionDraft;
-  if (!offered) return;
+  if (!offered || state.sessionDraftDecisionBusy) return;
+  if (!window.confirm("Resume this saved session? Any current entries on this screen will be replaced with the saved draft.")) return;
+  const user = state.currentUser;
+  state.sessionDraftDecisionBusy = true;
+  updateSessionDraftControls();
   try {
     const draft = await getSessionDraft(offered.id);
-    state.durableSessionDraft=draft;state.resumableSessionDraft=null;state.sessionDraftConflict=false;
+    if (currentClient()?.id !== offered.clientId || state.currentUser !== user) return;
+    if (draft.status !== "in_progress") throw new Error("This draft is no longer resumable.");
+    if (state.sessionDraftDebounceId) window.clearTimeout(state.sessionDraftDebounceId);
+    state.sessionDraftDebounceId = null;
+    await state.sessionDraftSaveQueue.catch(()=>{});
+    state.durableSessionDraft=draft;state.resumableSessionDraft=null;state.sessionDraftConflict=false;state.sessionDraftChecking=false;
     applyDurableSessionDraftPayload(draft);
-    if (resumeSessionDraftButton) resumeSessionDraftButton.classList.add("hidden");
     setSessionDraftSaveStatus("saved",`Session resumed — saved ${formatDateTime(draft.lastSavedAt)}`);
-  } catch (error) { setSessionDraftSaveStatus("error","Unable to resume the saved session."); }
+  } catch (error) { setSessionDraftSaveStatus("error","Unable to resume the saved session. Check saved sessions again."); state.sessionDraftChecking=true; }
+  finally { state.sessionDraftDecisionBusy=false; updateSessionDraftControls(); }
+}
+
+async function discardDurableSessionDraft() {
+  const offered = state.resumableSessionDraft || state.durableSessionDraft;
+  if (!offered || state.sessionDraftDecisionBusy) return;
+  if (!window.confirm("Discard this unfinished session draft? Data collected in this draft will no longer be resumable.")) return;
+  // A conflict may concern a different draft/revision than the entries still on screen.
+  const preserveCurrentEntries = Boolean(state.resumableSessionDraft);
+  const savePreservedEntries = state.sessionDraftConflict;
+  const user = state.currentUser;
+  state.sessionDraftDecisionBusy = true;
+  updateSessionDraftControls();
+  if (state.sessionDraftDebounceId) window.clearTimeout(state.sessionDraftDebounceId);
+  state.sessionDraftDebounceId = null;
+  try {
+    await state.sessionDraftSaveQueue.catch(()=>{});
+    await discardSessionDraft(offered.id,offered.revision);
+    if (currentClient()?.id !== offered.clientId || state.currentUser !== user) return;
+    state.durableSessionDraft=null;state.resumableSessionDraft=null;state.sessionDraftConflict=false;
+    clearSessionDraft(offered.clientId);
+    if (!preserveCurrentEntries) {
+      form.reset();
+      clientSelect.value=offered.clientId;
+      form.elements.date.value=dateInputValue();
+      syncSettingFromClient();
+      applyDurableSessionDraftPayload({payload:{programs:[],behaviors:[]}});
+    }
+    state.sessionDraftDecisionBusy=false;
+    if (savePreservedEntries) saveSessionDraft({immediate:true,forceStart:true});
+    setSessionDraftSaveStatus("",preserveCurrentEntries ? "Saved draft discarded. Your current entries remain on screen; continue to save them as a new session." : "Draft discarded. You can start a new session.");
+  } catch (error) {
+    if (error.status === 409) {
+      state.resumableSessionDraft=error.details?.draft || offered;
+      state.sessionDraftConflict=true;
+    }
+    setSessionDraftSaveStatus("error","Draft was not discarded. Your entries remain on screen. The saved draft may have changed; review it before confirming again.");
+  } finally { state.sessionDraftDecisionBusy=false; updateSessionDraftControls(); }
 }
 
 function hasMeaningfulSessionDraft(draft) {

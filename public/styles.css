@@ -3845,3 +3845,5 @@ button:disabled {
 .graph-hover-tooltip ul { margin: 0; padding-left: 14px; }
 .graph-hover-tooltip li + li { margin-top: 4px; }
 @media print { .graph-hover-tooltip { display: none !important; } }
+
+#session-collection-controls { border: 0; padding: 0; margin: 0; min-width: 0; display: grid; gap: 18px; }

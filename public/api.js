@@ -603,3 +603,9 @@ async function fetchWithTimeout(path, timeoutMs) {
     window.clearTimeout(timeoutId);
   }
 }
+
+export async function discardSessionDraft(draftId, expectedRevision) {
+  return parseResponse(await fetch(`/api/session-drafts/${encodeURIComponent(draftId)}/discard`, {
+    method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({expectedRevision})
+  }));
+}

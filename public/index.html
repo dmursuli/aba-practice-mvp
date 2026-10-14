@@ -108,6 +108,13 @@
         </div>
 
         <form id="session-form" class="session-form">
+          <div class="session-draft-status-row">
+            <p class="form-message" id="session-draft-status" role="status" aria-live="polite"></p>
+            <button type="button" class="secondary-button hidden" id="resume-session-draft">Resume session</button>
+            <button type="button" class="secondary-button hidden" id="discard-session-draft">Discard draft</button>
+            <button type="button" class="secondary-button hidden" id="check-session-draft">Check saved sessions</button>
+          </div>
+          <fieldset id="session-collection-controls" disabled aria-label="97153 session collection">
           <div class="form-grid">
             <label>
               Client
@@ -224,12 +231,9 @@
             </div>
           </section>
 
-          <div class="session-draft-status-row">
-            <p class="form-message" id="session-draft-status" role="status" aria-live="polite"></p>
-            <button type="button" class="secondary-button hidden" id="resume-session-draft">Resume session</button>
-          </div>
           <p class="form-message" id="form-message" role="status"></p>
           <button class="primary-button" type="submit">Finish session and generate SOAP note</button>
+          </fieldset>
         </form>
       </section>
 

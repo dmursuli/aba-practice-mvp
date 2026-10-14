@@ -9,6 +9,7 @@ import crypto from "node:crypto";
 import { mutateJsonStateAtomically, writeJsonStateAtomically } from "./lib/json-state-store.mjs";
 import {
   completePostgresSessionDraft,
+  discardPostgresSessionDraft,
   createPostgresSessionDraft,
   getPostgresSessionDraft,
   listPostgresSessionDrafts,
@@ -894,7 +895,11 @@ async function createDurableSessionDraft(draft) {
     const { Pool } = await import("pg");
     return createPostgresSessionDraft(postgresConfig(Pool),draft);
   }
-  return mutateJsonSessionDrafts(sessionDraftDbPath, store => { store.drafts.push(draft); return structuredClone(draft); });
+  return mutateJsonSessionDrafts(sessionDraftDbPath, store => {
+    const existing = store.drafts.find(item => item.ownerUserId === draft.ownerUserId && item.clientId === draft.clientId && item.status === "in_progress");
+    if (existing) return {...structuredClone(existing),resumable:true};
+    store.drafts.push(draft); return structuredClone(draft);
+  });
 }
 
 async function updateDurableSessionDraft(id, ownerUserId, expectedRevision, payload) {
@@ -2211,6 +2216,7 @@ export function createAppServer() {
       const existing = (await listDurableSessionDrafts(user.id,client.id))[0];
       if (existing) { sendJson(res,200,{...existing,resumable:true}); return; }
       const draft = await createDurableSessionDraft(sessionDraftRecord({clientId:client.id,ownerUserId:user.id,payload:body.payload}));
+      if (draft.resumable) { sendJson(res,200,draft); return; }
       logAudit(db,req,user,"session-draft-created",{clientId:client.id,details:{draftId:draft.id,serviceType:"97153"}});
       await writeDb(db);
       sendJson(res,201,draft);
@@ -2226,12 +2232,47 @@ export function createAppServer() {
       if (!draft) { sendJson(res,404,{errors:["Session draft not found."]}); return; }
       const client = db.clients.find(item => item.id === draft.clientId);
       if (draft.ownerUserId !== auth.user.id || !client || !canAccessClient(auth.user,client,db)) { sendJson(res,403,{errors:["You cannot access this session draft."]}); return; }
+      if (draft.status === "discarded") { sendJson(res,409,{code:"DRAFT_CONFLICT",errors:["This draft has been discarded."],draft}); return; }
       if (req.method === "GET") { sendJson(res,200,draft); return; }
       const body = await readBody(req);
       const expectedRevision = Number(body.expectedRevision);
       if (!Number.isInteger(expectedRevision)) { sendJson(res,400,{errors:["Expected revision is required."]}); return; }
       const result = await updateDurableSessionDraft(draft.id,auth.user.id,expectedRevision,body.payload);
       if (result.conflict) { sendJson(res,409,{code:"DRAFT_CONFLICT",errors:["A newer version of this session draft exists. Reload or resume it before continuing."],draft:result.draft}); return; }
+      sendJson(res,200,result.draft);
+      return;
+    }
+
+    const sessionDraftDiscardMatch = url.pathname.match(/^\/api\/session-drafts\/([^/]+)\/discard$/);
+    if (req.method === "POST" && sessionDraftDiscardMatch) {
+      const db = await readDbWithUsers();
+      const auth = sessionStatus(req,db);
+      if (auth.status !== "ok") { requireAuth(req,res,db,auth); return; }
+      const draft = await getDurableSessionDraft(sessionDraftDiscardMatch[1]);
+      if (!draft) { sendJson(res,404,{errors:["Session draft not found."]}); return; }
+      const client = db.clients.find(item => item.id === draft.clientId);
+      if (!["admin","bcba","rbt"].includes(auth.user.role) || draft.ownerUserId !== auth.user.id || !client || !canAccessClient(auth.user,client,db)) {
+        sendJson(res,403,{errors:["You cannot discard this session draft."]}); return;
+      }
+      const body = await readBody(req);
+      const expectedRevision = Number(body.expectedRevision);
+      if (!Number.isInteger(expectedRevision) || expectedRevision < 1) { sendJson(res,400,{errors:["Expected revision is required."]}); return; }
+      const result = await enqueueSessionDraftCompletion(draft.id,async () => {
+        if (dataStore === "postgres") {
+          const { Pool } = await import("pg");
+          return discardPostgresSessionDraft(postgresConfig(Pool),draft.id,auth.user.id,expectedRevision);
+        }
+        return mutateJsonSessionDrafts(sessionDraftDbPath,async store => {
+          const current = store.drafts.find(item => item.id === draft.id);
+          const currentDb = await readDb();
+          if (!current || current.status !== "in_progress" || current.revision !== expectedRevision || current.completedSessionId || (currentDb.sessions || []).some(item => item.sourceDraftId === draft.id)) return {conflict:true,draft:current};
+          Object.assign(current,{status:"discarded",discardedAt:new Date().toISOString(),discardedBy:auth.user.id,updatedAt:new Date().toISOString(),revision:current.revision+1});
+          return {draft:structuredClone(current)};
+        });
+      });
+      if (result.conflict) { sendJson(res,409,{code:"DRAFT_CONFLICT",errors:["The draft changed or is no longer unfinished. Review it before discarding."],draft:result.draft}); return; }
+      // Draft payload stays in durable storage; completed-session consumers never receive it.
+      await mutateSchedulingDb(current => { logAudit(current,req,auth.user,"session-draft-discarded",{clientId:draft.clientId,details:{draftId:draft.id,revision:result.draft.revision}}); return current; });
       sendJson(res,200,result.draft);
       return;
     }

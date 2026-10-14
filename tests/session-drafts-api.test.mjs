@@ -62,3 +62,61 @@ test('explicit logout and reauthentication retain an acknowledged draft',async()
   cookie=await login();const resumed=await request(`/api/session-drafts/${draft.id}`,{cookie});
   assert.equal(resumed.response.status,200);assert.equal(resumed.json.id,draft.id);assert.deepEqual(resumed.json.payload.programs[0].responseHistory,['correct','incorrect']);
 });
+
+
+test('owner discard retains audit record and values but removes resumability and completed consumers',async()=>{
+  const cookie=await login();
+  const draft=(await request('/api/session-drafts',{method:'POST',cookie,body:{clientId:'c1',payload:payload()}})).json;
+  const discarded=await request(`/api/session-drafts/${draft.id}/discard`,{method:'POST',cookie,body:{expectedRevision:1}});
+  assert.equal(discarded.response.status,200);
+  assert.equal(discarded.json.status,'discarded');assert.equal(discarded.json.discardedBy,draft.ownerUserId);
+  assert.ok(Number.isFinite(Date.parse(discarded.json.discardedAt)));assert.equal(discarded.json.revision,2);
+  assert.deepEqual(discarded.json.payload,draft.payload);
+  assert.deepEqual((await request('/api/session-drafts?clientId=c1',{cookie})).json.drafts,[]);
+  assert.equal((await request(`/api/session-drafts/${draft.id}`,{cookie})).response.status,409);
+  assert.equal((await request(`/api/session-drafts/${draft.id}`,{method:'PUT',cookie,body:{expectedRevision:2,payload:payload()}})).response.status,409);
+  assert.equal((await request(`/api/session-drafts/${draft.id}/complete`,{method:'POST',cookie,body:{expectedRevision:2,session:completePayload()}})).response.status,409);
+  const next=await request('/api/session-drafts',{method:'POST',cookie,body:{clientId:'c1',payload:payload()}});
+  assert.equal(next.response.status,201);assert.notEqual(next.json.id,draft.id);
+  assert.deepEqual((await request('/api/sessions?clientId=c1',{cookie})).json.sessions,[]);
+  const db=JSON.parse(await readFile(process.env.DB_PATH,'utf8'));
+  assert.deepEqual(db.sessions,[]); // SOAP/Graphs/report/billing/usage all read completed sessions, not draft storage.
+  assert.equal(db.auditLog.filter(item=>item.action==='session-draft-discarded').length,1);
+  const store=JSON.parse(await readFile(process.env.SESSION_DRAFT_DB_PATH,'utf8'));
+  assert.equal(store.drafts.length,2);assert.deepEqual(store.drafts.find(item=>item.id===draft.id).payload,draft.payload);
+});
+
+test('discard refuses foreign owner, stale revisions and completed drafts',async()=>{
+  const cookie=await login();const other=await login('bcba','bcba123');
+  const draft=(await request('/api/session-drafts',{method:'POST',cookie,body:{clientId:'c1',payload:payload()}})).json;
+  const discard=(owner,revision)=>request(`/api/session-drafts/${draft.id}/discard`,{method:'POST',cookie:owner,body:{expectedRevision:revision}});
+  assert.equal((await discard(other,1)).response.status,403);
+  const updated=await request(`/api/session-drafts/${draft.id}`,{method:'PUT',cookie,body:{expectedRevision:1,payload:payload()}});
+  assert.equal(updated.json.revision,2);
+  const stale=await discard(cookie,1);assert.equal(stale.response.status,409);assert.equal(stale.json.draft.status,'in_progress');assert.equal(stale.json.draft.revision,2);
+  const completed=await request(`/api/session-drafts/${draft.id}/complete`,{method:'POST',cookie,body:{expectedRevision:2,session:completePayload()}});
+  assert.equal(completed.response.status,201);
+  assert.equal((await discard(cookie,completed.json.draft.revision)).response.status,409);
+  assert.equal((await request('/api/sessions?clientId=c1',{cookie})).json.sessions.length,1);
+});
+
+test('simultaneous first saves retain one active draft per owner/client',async()=>{
+  const cookie=await login();
+  const results=await Promise.all(Array.from({length:3},()=>request('/api/session-drafts',{method:'POST',cookie,body:{clientId:'c1',payload:payload()}})));
+  assert.equal(new Set(results.map(result=>result.json.id)).size,1);
+  assert.equal((await request('/api/session-drafts?clientId=c1',{cookie})).json.drafts.length,1);
+});
+
+test('discard requires authentication and races safely with completion',async()=>{
+  const cookie=await login();
+  const draft=(await request('/api/session-drafts',{method:'POST',cookie,body:{clientId:'c1',payload:payload()}})).json;
+  assert.equal((await request(`/api/session-drafts/${draft.id}/discard`,{method:'POST',body:{expectedRevision:1}})).response.status,401);
+  const results=await Promise.all([
+    request(`/api/session-drafts/${draft.id}/discard`,{method:'POST',cookie,body:{expectedRevision:1}}),
+    request(`/api/session-drafts/${draft.id}/complete`,{method:'POST',cookie,body:{expectedRevision:1,session:completePayload()}})
+  ]);
+  assert.equal(results.filter(result=>result.response.status===409).length,1);
+  const store=JSON.parse(await readFile(process.env.SESSION_DRAFT_DB_PATH,'utf8'));
+  const db=JSON.parse(await readFile(process.env.DB_PATH,'utf8'));
+  assert.equal(db.sessions.length,store.drafts[0].status==='completed'?1:0);
+});

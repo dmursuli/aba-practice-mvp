@@ -27,7 +27,7 @@ test('PostgreSQL uses additive draft storage and transaction locks',()=>{
 });
 test('PostgreSQL schema creation executes the additive draft table and index statements',async()=>{
   const statements=[];await ensurePostgresSessionDraftSchema({query:async sql=>{statements.push(String(sql));return {rows:[]};}});
-  assert.equal(statements.length,2);assert.match(statements[0],/create table if not exists session_drafts/);assert.match(statements[1],/create index if not exists session_drafts_owner_status_idx/);
+  assert.equal(statements.length,3);assert.match(statements[0],/create table if not exists session_drafts/);assert.match(statements[1],/discarded_at/);assert.match(statements[2],/create index if not exists session_drafts_owner_status_idx/);
 });
 test('draft API is separate from completed sessions and enforces access/revisions',()=>{
   for(const method of ['listSessionDrafts','createSessionDraft','getSessionDraft','updateSessionDraft','completeSessionDraft']) assert.match(api,new RegExp(`function ${method}\\(`));
