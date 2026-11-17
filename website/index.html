@@ -540,48 +540,62 @@
           <div>
             <p class="eyebrow">Start Here</p>
             <h2 id="contact-title">Request a consultation.</h2>
-            <p>Share general contact information and the kind of support you are looking for. Triumph Behavioral Care will follow up with next steps.</p>
+            <p>Share your contact information and Triumph Behavioral Care will follow up with next steps.</p>
             <div class="contact-links">
               <a href="mailto:dmursuli@triumphbehavioral.com">dmursuli@triumphbehavioral.com</a>
               <a href="tel:+17862237310">(786) 223-7310</a>
               <span>Monday-Friday, 10am-8pm</span>
             </div>
-            <p class="privacy-copy">This form prepares an email and is intended for general inquiries only. Please do not include diagnosis details, medical records, insurance IDs, or other sensitive health information.</p>
+            <p class="privacy-copy" id="contact-privacy">Your contact information will be used to respond to your inquiry. This form is for general inquiries only. Please do not include diagnosis details, medical records, insurance IDs, or other sensitive health information.</p>
           </div>
 
-          <form id="consultation-form" class="contact-form">
+          <form id="consultation-form" class="contact-form" name="consultation" method="POST" action="/" data-netlify="true" netlify-honeypot="bot-field" aria-describedby="contact-privacy">
+            <input type="hidden" name="form-name" value="consultation">
+            <input type="hidden" name="utm_source">
+            <input type="hidden" name="utm_medium">
+            <input type="hidden" name="utm_campaign">
+            <input type="hidden" name="landing_page">
+            <input type="hidden" name="submitted_at">
+            <p hidden><label>Leave this field empty<input name="bot-field" tabindex="-1" autocomplete="off"></label></p>
             <label>
-              Name
-              <input type="text" name="name" autocomplete="name" required>
+              Caregiver name (required)
+              <input type="text" name="name" autocomplete="name" maxlength="120" required>
             </label>
             <label>
-              Email
-              <input type="email" name="email" autocomplete="email" required>
+              Email (required)
+              <input type="email" name="email" autocomplete="email" maxlength="254" required>
             </label>
             <label>
-              Phone
-              <input type="tel" name="phone" autocomplete="tel">
+              Phone (required)
+              <input type="tel" name="phone" autocomplete="tel" maxlength="30" pattern="[+0-9\(\) .\-]{7,30}" title="Enter a phone number using digits, spaces, parentheses, plus signs, or hyphens." required>
             </label>
             <label>
-              Service interest
-              <select name="service">
-                <option value="ABA Therapy">ABA Therapy</option>
-                <option value="Parent Training">Parent Training</option>
-                <option value="School Consultation">School Consultation</option>
-                <option value="Telehealth">Telehealth</option>
-                <option value="Not sure yet">Not sure yet</option>
+              Preferred contact method (required)
+              <select name="preferred_contact_method" required>
+                <option value="">Select a contact method</option>
+                <option value="Email">Email</option>
+                <option value="Phone">Phone call</option>
               </select>
             </label>
             <label class="full-field">
-              Short note
-              <textarea name="message" rows="4" placeholder="Share the general support you are looking for. Please avoid sensitive medical details."></textarea>
+              How did you hear about us? (optional)
+              <select name="referral_source">
+                <option value="">Select a referral source</option>
+                <option>Google Search</option>
+                <option>Google Ads</option>
+                <option>Instagram/Facebook</option>
+                <option>Healthcare Provider Referral</option>
+                <option>Friend/Family Referral</option>
+                <option>Other</option>
+              </select>
             </label>
             <label class="privacy-check full-field">
-              <input type="checkbox" name="privacyAcknowledgment" required>
-              <span>I understand this email form is for general inquiries and should not include sensitive health information.</span>
+              <input type="checkbox" name="privacyAcknowledgment" value="acknowledged" required>
+              <span>I understand my contact information will be used to respond to this inquiry and that this form should not include sensitive health information. <a href="#privacy">Privacy notice</a> (required)</span>
             </label>
-            <button class="primary-button full-field" type="submit">Prepare email</button>
-            <p id="form-status" class="form-status full-field" role="status"></p>
+            <button class="primary-button full-field" type="submit" disabled>Send request</button>
+            <noscript class="full-field">Please enable JavaScript to send this form, or call <a href="tel:+17862237310">(786) 223-7310</a>.</noscript>
+            <p id="form-status" class="form-status full-field" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></p>
           </form>
         </div>
       </section>
@@ -615,6 +629,6 @@
       </div>
     </footer>
 
-    <script src="./script.js?v=2"></script>
+    <script src="./script.js?v=3"></script>
   </body>
 </html>

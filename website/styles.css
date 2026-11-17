@@ -816,6 +816,16 @@ p {
   gap: 12px;
 }
 
+.contact-form input:not([type="checkbox"]),
+.contact-form select {
+  font-size: 1rem;
+}
+
+.contact-form button:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
 label {
   display: grid;
   gap: 6px;

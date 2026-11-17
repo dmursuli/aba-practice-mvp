@@ -13,8 +13,8 @@ user-provided data collection unavailable for the Health industry category.
 
 The single `config` call sends the initial page view; do not add a second tag or
 an additional manual `page_view` event. No custom events or form listeners were
-added for analytics. Existing navigation and consultation-email behavior remain
-in `script.js`.
+added for analytics. Navigation and the asynchronous Netlify consultation form
+remain in `script.js`. See [CONTACT_FORM.md](CONTACT_FORM.md) for setup and testing.
 
 Analytics receives a fixed public homepage URL and a fixed marketing-site title.
 The tag omits the visitor's URL path, query string, fragment, referrer, and campaign
@@ -28,8 +28,8 @@ and analytics cookies still apply; this is not anonymous or cookieless analytics
 In GA4 **Admin → Data streams → select the web stream for G-60KE4Q0RGV**, keep
 **Enhanced measurement off**. This prevents automatic form, outbound-link,
 site-search, scroll, video, download, and history-change tracking. In particular,
-the site's contact flow uses a `mailto:` URL containing form values, so automatic
-link tracking must remain off. The snippet's initial page view still works.
+automatic form and link tracking must remain off. The contact form sends values
+only in its same-origin POST body. The snippet's initial page view still works.
 `send_page_view` alone does not disable Enhanced Measurement.
 
 **User-provided data collection** is unavailable for this property's Health
@@ -66,10 +66,10 @@ python3 -m http.server 8080 --bind 127.0.0.1 --directory website
    campaign values, and `TEST_ONLY` must be absent or empty.
 3. Navigate between section anchors and fill the form with dummy values. Confirm
    no extra page views, `form_start`, `form_submit`, `click`, or `view_search_results`
-   events and no field values. Do not send the prepared email. GA4 may still send
+   events and no field values. Mock the form POST during local tests. GA4 may still send
    built-in session/engagement signals; the site adds no custom events.
 4. Check GA4 Realtime for the visit; reporting can lag and blockers can prevent
-   collection. Verify the mobile menu and consultation-email behavior still work.
+   collection. Verify the mobile menu and consultation form still work.
    Stop the local server with Ctrl+C.
 
 To inspect just the queued setup without recording a visit, block
@@ -91,7 +91,8 @@ checks validate outbound requests, not receipt in GA4 Realtime.
 
 - `index.html` - Homepage content and structure.
 - `styles.css` - Custom visual system matched to the webapp.
-- `script.js` - Mobile navigation and consultation email behavior.
+- `script.js` - Mobile navigation and asynchronous consultation form.
+- `CONTACT_FORM.md` - Netlify form setup, field contract, checks, and future integration notes.
 - `assets/` - Local logo and social-sharing image assets.
 - `robots.txt` - Search crawler instructions for static hosting.
 - `sitemap.xml` - Minimal sitemap for the one-page launch site.
@@ -112,5 +113,5 @@ checks validate outbound requests, not receipt in GA4 Realtime.
 
 - Point `triumphbehavioral.com` at the chosen host.
 - Confirm the canonical URL and sitemap URL match the final domain.
-- Replace the `mailto:` consultation flow with a secure form endpoint before collecting anything beyond general inquiries.
+- Enable Netlify form detection and complete the production checks in `CONTACT_FORM.md` before accepting inquiries.
 - Confirm privacy/contact language with counsel or compliance support before launch.
