@@ -47,6 +47,7 @@ async function main() {
       await page.locator('[name="email"]').fill('synthetic@example.com');
       await page.locator('[name="phone"]').fill('(305) 555-0123');
       await page.locator('[name="preferred_contact_method"]').selectOption('Email');
+      await page.locator('[name="referral_source"]').selectOption('Google Search');
       await page.locator('[name="privacyAcknowledgment"]').check();
     };
     const send = () => page.locator('#consultation-form button').click();
@@ -54,8 +55,22 @@ async function main() {
     await open();
     assert.equal(await page.locator('form[data-netlify="true"][name="consultation"][netlify-honeypot="bot-field"]').count(), 1);
     assert.equal(await page.locator('[name="bot-field"]').isVisible(), false);
+    assert.equal(await page.getByLabel('Name (required)', { exact: true }).getAttribute('required'), '');
+    const inquiry = page.getByLabel('How can we help you? (optional)', { exact: true });
+    assert.equal(await inquiry.getAttribute('placeholder'), 'Tell us how we can help or ask a question.');
+    assert.equal(await inquiry.getAttribute('maxlength'), '1000');
+    assert.equal(await inquiry.getAttribute('required'), null);
+    assert.equal(await inquiry.evaluate(el => el.parentElement.classList.contains('full-field') && el.parentElement.nextElementSibling.classList.contains('privacy-check')), true);
+    assert.deepEqual(await page.locator('[name="referral_source"] option').allTextContents(), ['Select a referral source', 'Google Search', 'Google Ads', 'Instagram/Facebook', 'Healthcare Provider Referral', 'Friend/Family Referral', 'Other']);
     await send(); assert.equal(posts.length, 0);
     await fill();
+    await page.locator('[name="referral_source"]').selectOption('');
+    await send(); assert.equal(posts.length, 0);
+    assert.equal(await page.locator('[name="referral_source"]').evaluate(el => el.validity.valueMissing), true);
+    await fill();
+    await inquiry.fill('x'.repeat(1001));
+    assert.equal((await inquiry.inputValue()).length, 1000);
+    await inquiry.fill('A general question.\nPlease call & explain the next steps.');
     await page.locator('[name="email"]').fill('invalid');
     await send(); assert.equal(posts.length, 0);
     await page.locator('[name="email"]').fill('synthetic@example.com');
@@ -78,7 +93,8 @@ async function main() {
     release();
     await page.waitForFunction(() => document.querySelector('#form-status').textContent.startsWith('Thank you'));
     assert.equal(posts[0].body.get('utm_source'), 'google');
-    assert.equal(posts[0].body.get('referral_source'), '');
+    assert.equal(posts[0].body.get('referral_source'), 'Google Search');
+    assert.equal(posts[0].body.get('message'), 'A general question.\nPlease call & explain the next steps.');
     assert.equal(posts[0].body.get('landing_page'), 'https://triumphbehavioral.com/');
     assert.equal(posts[0].body.get('form-name'), 'consultation');
     assert.equal(posts[0].body.get('bot-field'), '');
@@ -89,10 +105,12 @@ async function main() {
     assert.equal(await page.locator('form button').isDisabled(), true);
     for (const failure of ['error', 'network', 'fallback', 'timeout']) {
       mode = failure; await open(); await fill();
+      await inquiry.fill('Keep this inquiry after a failed send.');
       if (failure === 'timeout') await page.evaluate(() => { const original = window.setTimeout; window.setTimeout = (fn, ms) => original(fn, ms === 20000 ? 50 : ms); });
       await send();
       await page.waitForFunction(() => document.querySelector('#form-status').textContent.startsWith('We could not'));
       assert.equal(await page.locator('[name="email"]').inputValue(), 'synthetic@example.com');
+      assert.equal(await inquiry.inputValue(), 'Keep this inquiry after a failed send.');
       assert.equal(await page.locator('form button').isDisabled(), false);
     }
     mode = 'success';
@@ -101,10 +119,12 @@ async function main() {
     await fill(); await page.locator('[name="referral_source"]').selectOption('Friend/Family Referral'); await send();
     await page.waitForFunction(() => document.querySelector('#form-status').textContent.startsWith('Thank you'));
     assert.equal(posts.at(-1).body.get('referral_source'), 'Friend/Family Referral');
+    assert.equal(posts.at(-1).body.get('message'), '');
     for (const width of [1440, 820, 390, 320]) {
       await page.setViewportSize({ width, height: 950 }); await open();
       await page.locator('#contact').scrollIntoViewIfNeeded();
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Overflow at ${width}`);
+      assert.equal(await inquiry.evaluate(el => Math.abs(el.getBoundingClientRect().width - el.form.getBoundingClientRect().width) < 2), true);
       await page.locator('#contact').screenshot({ path: `/tmp/triumph-contact-${width}.png` });
       assert.equal(await page.locator('a[href^="#"]').evaluateAll(links => links.filter(a => !document.getElementById(a.hash.slice(1)))).then(x => x.length), 0);
       if (width === 390) {

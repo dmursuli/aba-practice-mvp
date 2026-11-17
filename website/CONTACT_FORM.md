@@ -24,12 +24,13 @@ JavaScript must be enabled; otherwise the page offers the phone number.
 | Field | Meaning |
 | --- | --- |
 | `form-name` | `consultation`, stable form identity |
-| `name` | Required caregiver name, up to 120 characters |
+| `name` | Required name, up to 120 characters |
 | `email` | Required email address |
 | `phone` | Required phone, 7-15 digits with permitted formatting |
 | `preferred_contact_method` | Required `Email` or `Phone` |
 | `privacyAcknowledgment` | Required `acknowledged` |
-| `referral_source` | Optional self-reported dropdown selection; empty if omitted |
+| `referral_source` | Required self-reported dropdown selection |
+| `message` | Optional multiline inquiry, up to 1,000 characters |
 | `utm_source`, `utm_medium`, `utm_campaign` | Optional captured campaign labels |
 | `landing_page` | Sanitized public homepage URL |
 | `submitted_at` | Browser-generated UTC ISO timestamp; not an authoritative server time |
@@ -72,7 +73,8 @@ This UI response cannot prove storage, spam classification, or email delivery.
 
 Local checks should intercept POST `/` using synthetic contact data. Cover delayed
 success, duplicate submissions, 4xx/5xx, offline/timeout, and HTTP 200 returning
-the homepage. Check required fields, email/phone validity, optional referral source,
+the homepage. Check required fields, email/phone validity, required referral source,
+optional inquiry length and inclusion in the POST body,
 honeypot blocking, attribution sanitization, unchanged URL, and desktop/tablet/mobile
 overflow. Block Google collection during local tests to avoid polluting analytics.
 Static HTML inspection confirms detection markup only, not Netlify's deployed parser.

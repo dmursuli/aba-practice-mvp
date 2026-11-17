@@ -558,7 +558,7 @@
             <input type="hidden" name="submitted_at">
             <p hidden><label>Leave this field empty<input name="bot-field" tabindex="-1" autocomplete="off"></label></p>
             <label>
-              Caregiver name (required)
+              Name (required)
               <input type="text" name="name" autocomplete="name" maxlength="120" required>
             </label>
             <label>
@@ -578,8 +578,8 @@
               </select>
             </label>
             <label class="full-field">
-              How did you hear about us? (optional)
-              <select name="referral_source">
+              How did you hear about us? (required)
+              <select name="referral_source" required>
                 <option value="">Select a referral source</option>
                 <option>Google Search</option>
                 <option>Google Ads</option>
@@ -588,6 +588,10 @@
                 <option>Friend/Family Referral</option>
                 <option>Other</option>
               </select>
+            </label>
+            <label class="full-field">
+              How can we help you? (optional)
+              <textarea name="message" rows="4" maxlength="1000" placeholder="Tell us how we can help or ask a question."></textarea>
             </label>
             <label class="privacy-check full-field">
               <input type="checkbox" name="privacyAcknowledgment" value="acknowledged" required>
