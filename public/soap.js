@@ -82,6 +82,8 @@ export function planChangesFor97155Session(planChangeLog = [], sessionContext = 
 
 export function summarize97155TargetChanges(changes = []) {
   const summary = {
+    clinicalObservations: [],
+    phaseTransitions: [],
     programsIntroduced: [],
     targetsIntroduced: [],
     targetsMastered: [],
@@ -114,6 +116,14 @@ export function summarize97155TargetChanges(changes = []) {
     const programLabel = programChangeLabel(change);
     const modificationLabel = modificationChangeLabel(change);
 
+    if (type === "program-observation-recorded") {
+      addUnique(summary.clinicalObservations, `${targetLabel}: ${change.note || "Observation recorded"}`);
+      return;
+    }
+    if (type === "program-phase-changed") {
+      addUnique(summary.phaseTransitions, `${programLabel}: ${change.fromValue ? `${change.fromValue} → ` : ""}${change.toValue || "Phase updated"}. ${change.note || ""}`);
+      return;
+    }
     if (type === "program-added") {
       addUnique(summary.programsIntroduced, programLabel);
       return;
@@ -171,6 +181,8 @@ export function format97155TargetChangeSummary(summary = {}) {
   const sentences = [
     "The BCBA reviewed skill acquisition and behavior reduction data and implemented protocol modifications."
   ];
+  if (summary.clinicalObservations?.length) sentences.push(`Recorded clinical data: ${summary.clinicalObservations.join("; ")}`);
+  if (summary.phaseTransitions?.length) sentences.push(`Program phases: ${summary.phaseTransitions.join("; ")}`);
   if (summary.programsIntroduced?.length) {
     sentences.push(`Programs introduced during the session included ${summary.programsIntroduced.join(", ")}.`);
   }

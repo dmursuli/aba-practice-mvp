@@ -46,7 +46,7 @@ test('label layout wraps long phase names without collisions or moving anchors',
   }
 });
 
-test('elapsed spacing, same-day observations, mastery model and smoothing are independent of layout mode', () => {
+test('sequence spacing, same-day observations, mastery model and smoothing are independent of layout mode', () => {
   const series = [{ name: 'Synthetic', points: [{ x:'2026-01-01', y:0 }, { x:'2026-01-01', y:20 }, { x:'2026-01-02', y:50 }, { x:'2026-01-11', y:100 }] }];
   const options = { phaseMarkers: [{ date:'2026-01-11', label:'Target mastered', phaseType:'targetMastered', position:'after-date' }] };
   const before = JSON.stringify(series);
@@ -54,7 +54,7 @@ test('elapsed spacing, same-day observations, mastery model and smoothing are in
   assert.deepEqual(buildClinicalGraphModel(series, { ...options, layoutMode:'graphs' }), model);
   assert.deepEqual(buildMovingAverageSeriesSet(series, options), buildMovingAverageSeriesSet(series, { ...options, layoutMode:'graphs' }));
   const x = buildChartLayout(model.dates, 64, 720, model.phaseBoundary, model.phaseMarkers).dateXPositions;
-  assert.ok(Math.abs((x[1] - x[0]) / (x[2] - x[0]) - 0.1) < 1e-9);
+  assert.ok(Math.abs((x[1] - x[0]) / (x[2] - x[0]) - 0.5) < 1e-9);
   assert.equal(model.dates.length, 3);
   assert.equal(series[0].points.length, 4);
   assert.equal(JSON.stringify(series), before);

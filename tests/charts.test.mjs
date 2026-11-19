@@ -347,7 +347,7 @@ test('all-data chart layout uses full plot width without reserving an artificial
   assert.ok(Number.isFinite(positions.at(-1)));
   assert.ok(totalSpan > 450);
   assert.ok(treatmentSpan > totalSpan * 0.7);
-  assert.ok(baselineGap < totalSpan * 0.2);
+  assert.ok(baselineGap === totalSpan / 4);
 });
 
 test('phase dates remain visible when labels are thinned', () => {
@@ -468,7 +468,7 @@ test('skill graph analysis reports baseline, treatment, trend, and mastery metri
   assert.equal(analysis.analyses[0].baselineAverage, 20);
   assert.equal(analysis.analyses[0].treatmentAverage, 67.5);
   assert.equal(analysis.analyses[0].currentLevel, 90);
-  assert.equal(analysis.analyses[0].trendDirection, 'Ascending');
+  assert.equal(analysis.analyses[0].trendDirection, 'Increasing');
   assert.equal(analysis.analyses[0].masteryStatus, 'mastered');
   assert.equal(analysis.analyses[0].sessionsToMastery, 4);
 });
@@ -492,7 +492,7 @@ test('behavior graph analysis reports reduction, overlap, and immediacy metrics'
   assert.equal(analysis.analyses[0].baselineAverage, 10);
   assert.equal(analysis.analyses[0].treatmentAverage, 5);
   assert.equal(analysis.analyses[0].currentLevel, 2);
-  assert.equal(analysis.analyses[0].trendDirection, 'Descending');
+  assert.equal(analysis.analyses[0].trendDirection, 'Decreasing');
   assert.equal(analysis.analyses[0].percentReduction, '50%');
   assert.equal(analysis.analyses[0].overlap, '0%');
   assert.match(analysis.analyses[0].immediacy, /Immediate decrease/);
@@ -852,10 +852,10 @@ test('behavior analysis still calculates baseline level when stored phase labels
 
   assert.equal(analysis.analyses[0].baselineLevel, 7);
   assert.equal(analysis.analyses[0].treatmentLevel, 4);
-  assert.match(analysis.analyses[0].interpretation, /Baseline frequency averaged 7 based on 1 baseline data point/i);
+  assert.match(analysis.analyses[0].interpretation, /Baseline observations averaged 7 based on 1 baseline data point/i);
 });
 
-test('missing phase line leaves phase-specific analysis unavailable', () => {
+test('missing phase line leaves phase-dependent analytics unavailable', () => {
   const analysis = buildGraphAnalysis([{
     name: 'Independent work',
     meta: { targetId: 'fallback-target' },
@@ -891,9 +891,9 @@ test('trend direction uses all treatment points and only one is insufficient', (
   }], { treatmentPhaseLine: { date: '2026-08-02' }, graphType: 'skill' }).analyses[0].trendDirection;
 
   assert.equal(trendFor([90]), 'Insufficient data');
-  assert.equal(trendFor([90, 90]), 'Flat');
-  assert.equal(trendFor([70, 80]), 'Ascending');
-  assert.equal(trendFor([80, 70]), 'Descending');
+  assert.equal(trendFor([90, 90, 90]), 'Stable');
+  assert.equal(trendFor([60, 70, 80]), 'Increasing');
+  assert.equal(trendFor([80, 70, 60]), 'Decreasing');
 });
 
 test('sparse targets retain their own first observation and never receive fabricated dates', () => {
@@ -1234,7 +1234,7 @@ test('moving-average and raw series use the same graph-local target color', () =
   }
 });
 
-test('unconfigured renderer has no inferred phase labels, boundary stroke, tooltip phase or first-point line break', () => {
+test('unconfigured renderer has no inferred phase labels, boundary stroke or first-point line break', () => {
   const previousWindow = globalThis.window;
   globalThis.window = { devicePixelRatio: 1 };
   try {

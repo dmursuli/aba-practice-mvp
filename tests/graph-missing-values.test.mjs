@@ -56,6 +56,7 @@ test('graph builders retain unavailable dates as gaps and preserve zero and inpu
     behaviors:[{behaviorId:'behavior',frequency:value}],
     parentGoals:[{goalName:'Goal',targetName:'Target',fidelity:value,opportunities:5,independent:0}]
   }));
+  context.currentSessions=()=>sessions;
   const before=structuredClone(sessions);
   const charts=[context.buildProgramSkillChart({id:'program'},sessions), {series:context.behaviorChartSeries(sessions)}, context.buildBehaviorChart('behavior',sessions), ...context.buildParentTrainingChartModels(sessions)];
   for (const chart of charts) {
@@ -151,7 +152,7 @@ test('renderer excludes unavailable values from axes and markers while connectin
   } finally {globalThis.window=previousWindow;}
 });
 
-test('missing values retain elapsed spacing and intentional clinical breaks without synthetic observations', () => {
+test('missing values retain sequence spacing and intentional clinical breaks without synthetic observations', () => {
   const previousWindow=globalThis.window;
   globalThis.window={devicePixelRatio:1};
   try {
@@ -170,7 +171,7 @@ test('missing values retain elapsed spacing and intentional clinical breaks with
     const plain=draw({});
     const arcs=plain.calls.arcs;
     assert.equal(arcs.length,3);
-    assert.ok(Math.abs((arcs[1].x-arcs[0].x)/(arcs[2].x-arcs[0].x)-2/8)<1e-9);
+    assert.ok(Math.abs((arcs[1].x-arcs[0].x)/(arcs[2].x-arcs[0].x)-2/3)<1e-9);
     const lines=chart=>chart.calls.strokes.filter(s=>s.color==='#167c80');
     const raw=lines(plain).filter(s=>!s.dash.length);
     assert.deepEqual(raw[0].path,[arcs[0],arcs[1]]);
@@ -190,5 +191,22 @@ test('missing values retain elapsed spacing and intentional clinical breaks with
     assert.equal(lines(marker).filter(s=>!s.dash.length).length,1);
     assert.equal(lines(marker).filter(s=>s.dash.length).length,1);
     assert.deepEqual(series,before);
+  } finally {globalThis.window=previousWindow;}
+});
+
+test('between-observation phase and mastery annotations retain exact inspection dates under sequence spacing', () => {
+  const previousWindow=globalThis.window;
+  globalThis.window={devicePixelRatio:1};
+  try {
+    const series=[{name:'Sparse',points:[{x:'2026-07-01',y:0},{x:'2026-07-02',y:20},{x:'2026-09-29',y:80}]}];
+    const chart=recorder();
+    drawLineChart(chart.canvas,series,{treatmentPhaseLine:{date:'2026-08-01'},phaseMarkers:[{date:'2026-08-20',label:'Target mastered',phaseType:'targetMastered'}]});
+    const inspection=chart.canvas.__graphInspection;
+    assert.deepEqual(inspection.groups.filter(g=>g.entries.some(e=>e.kind==='observation')).map(g=>g.date),series[0].points.map(p=>p.x));
+    for(const date of ['2026-08-01','2026-08-20']) {
+      const event=inspection.groups.find(g=>g.date===date);
+      assert.ok(event);
+      assert.ok(event.entries[0].x>chart.calls.arcs[1].x && event.entries[0].x<chart.calls.arcs[2].x);
+    }
   } finally {globalThis.window=previousWindow;}
 });

@@ -1,6 +1,6 @@
 import { sanitizeClinicalSnapshot, snapshotPhaseConfig, reportSnapshotDisclosure } from "./report-snapshot.js";
-import { discardSessionDraft, assignClientProvider, cancelAppointment, completeSessionDraft, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createSessionDraft, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getSchedulingCapacity, getSessionDraft, getUsers, getVisibleSessions, importHistoricalData, listSessionDrafts, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateSessionDraft, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
-import { graphObservationProvider, buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
+import { recordProgramClinicalAction, discardSessionDraft, assignClientProvider, cancelAppointment, completeSessionDraft, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createSessionDraft, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getSchedulingCapacity, getSessionDraft, getUsers, getVisibleSessions, importHistoricalData, listSessionDrafts, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateSessionDraft, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
+import { programPhaseAt, graphObservationProvider, buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { graphNumericValue } from "./graph-values.js";
 import { buildSkillMeasurementChart, skillMeasurementSettings } from "./skill-graph-measurements.js";
@@ -1079,37 +1079,8 @@ async function loadMoreSoapSessions() {
 }
 
 async function ensureGraphSessionsLoaded(clientId = state.activeClientId, { force = false } = {}) {
-  if (!clientId) return;
-  const range = behaviorGraphRange();
-  if (!force && loadedSessionRangeMatches(clientId, range)) return;
-  if (!range.startDate && !range.endDate) {
-    await ensureClientSessionsLoaded(clientId, { force });
-    return;
-  }
-  state.sessionsLoading = true;
-  state.sessionsLoadError = "";
-  rerenderSessionBackedView("graphs");
-  try {
-    const payload = await getClientSessions(clientId, {
-      startDate: range.startDate,
-      endDate: range.endDate
-    });
-    state.sessions = payload.sessions || [];
-    state.sessionsLoadedScope = "clientRange";
-    state.sessionsLoadedClientId = clientId;
-    state.sessionsLoadedStartDate = range.startDate || "";
-    state.sessionsLoadedEndDate = range.endDate || "";
-  } catch (error) {
-    state.sessions = [];
-    state.sessionsLoadedScope = "none";
-    state.sessionsLoadedClientId = "";
-    state.sessionsLoadedStartDate = "";
-    state.sessionsLoadedEndDate = "";
-    state.sessionsLoadError = error.message || "We couldn't load graph data.";
-  } finally {
-    state.sessionsLoading = false;
-    rerenderSessionBackedView("graphs");
-  }
+  // Keep complete clinical history available; display filtering happens downstream.
+  await ensureClientSessionsLoaded(clientId, { force });
 }
 
 function reportSessionRange() {
@@ -1121,37 +1092,8 @@ function reportSessionRange() {
 }
 
 async function ensureReportSessionsLoaded(clientId = state.activeClientId, { force = false } = {}) {
-  if (!clientId) return;
-  const range = reportSessionRange();
-  if (!force && loadedSessionRangeMatches(clientId, range)) return;
-  if (!range.startDate && !range.endDate) {
-    await ensureClientSessionsLoaded(clientId, { force });
-    return;
-  }
-  state.sessionsLoading = true;
-  state.sessionsLoadError = "";
-  rerenderSessionBackedView("report");
-  try {
-    const payload = await getClientSessions(clientId, {
-      startDate: range.startDate,
-      endDate: range.endDate
-    });
-    state.sessions = payload.sessions || [];
-    state.sessionsLoadedScope = "clientRange";
-    state.sessionsLoadedClientId = clientId;
-    state.sessionsLoadedStartDate = range.startDate || "";
-    state.sessionsLoadedEndDate = range.endDate || "";
-  } catch (error) {
-    state.sessions = [];
-    state.sessionsLoadedScope = "none";
-    state.sessionsLoadedClientId = "";
-    state.sessionsLoadedStartDate = "";
-    state.sessionsLoadedEndDate = "";
-    state.sessionsLoadError = error.message || "We couldn't load report session data.";
-  } finally {
-    state.sessionsLoading = false;
-    rerenderSessionBackedView("report");
-  }
+  // Keep complete clinical history available; display filtering happens downstream.
+  await ensureClientSessionsLoaded(clientId, { force });
 }
 
 async function ensureAllVisibleSessionsLoaded({ force = false } = {}) {
@@ -9688,6 +9630,7 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
   const lines = options.phaseConfig ? options.phaseConfig.phaseMarkers : customPhaseLinesForGraph(graphKey);
   const treatmentLine = options.phaseConfig ? options.phaseConfig.treatmentPhaseLine : graphTreatmentPhaseLine(graphKey, series);
   const treatmentRecord = options.phaseConfig ? treatmentLine : treatmentPhaseRecordForGraph(graphKey);
+  const managedProgramPhase = lines.some(line => line.effectiveAt);
   const editingId = options.editingId || "";
   const editingLine = editingId ? lines.find((line) => line.id === editingId) : null;
   const editingTreatment = options.editingTreatment === true;
@@ -9704,7 +9647,7 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
               <span>${escapeHtml(formatGraphDate(line.date))} - ${escapeHtml(line.lineStyle)}</span>
               ${line.note ? `<p class="graph-phase-line-note">${escapeHtml(line.note)}</p>` : ""}
             </div>
-            ${options.readOnly ? "" : `
+            ${options.readOnly || line.editable === false ? "" : `
               <div class="graph-phase-line-actions">
                 <button type="button" class="secondary-button" data-edit-phase-line="${escapeHtml(graphKey)}" data-phase-line-id="${escapeHtml(line.id)}">Edit</button>
                 <button type="button" class="delete-button" data-delete-phase-line="${escapeHtml(graphKey)}" data-phase-line-id="${escapeHtml(line.id)}">Delete</button>
@@ -9731,8 +9674,10 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
           `}
         </div>
       `
+    : managedProgramPhase
+      ? `<p class="muted">Program phases are managed in Treatment Planning. Saved clinical transitions are retained.</p>`
     : !treatmentLine
-      ? `<p class="muted">No explicit treatment phase line. Observations are not classified as Baseline or Treatment.</p>
+      ? `<p class="muted">No explicit treatment phase line. Phase-dependent analysis requires an explicit clinical phase.</p>
           ${options.readOnly ? "" : `<button type="button" class="secondary-button" data-edit-treatment-phase-line="${escapeHtml(graphKey)}">Add treatment phase line</button>`}`
     : treatmentLine.hidden
       ? `
@@ -10919,11 +10864,62 @@ function renderPlanDomainTabs(domains) {
   });
 }
 
+function renderProgramPhaseControls(program) {
+  const records = currentClient()?.profile?.graphPhaseLines?.[`skill:${program.id}`] || [];
+  const date = currentPlanChangeDate();
+  // effectiveAt is the server's saved action time. A slightly slower client
+  // clock must not hide an already-confirmed transition in the current-phase UI.
+  const recordedAt = records.filter(record => record.date <= date && !record.deleted && !record.hidden)
+    .reduce((latest, record) => record.effectiveAt > latest ? record.effectiveAt : latest, new Date().toISOString());
+  const phase = programPhaseAt(records, {x:date, recordedAt});
+  const label = phase === "intervention" ? "Treatment" : phase ? phase.charAt(0).toUpperCase() + phase.slice(1) : "Not established";
+  return `<div class="program-phase-controls" data-phase-program="${escapeHtml(program.id)}">
+    <p><strong>Current Phase: ${escapeHtml(label)}</strong></p>
+    ${canEditClinical() ? `${!phase ? `<button type="button" class="secondary-button" data-program-clinical-action="establish-baseline" data-program-id="${escapeHtml(program.id)}">Establish Baseline going forward</button>` : ""}
+    ${phase === "baseline" ? `<button type="button" data-program-clinical-action="start-treatment" data-program-id="${escapeHtml(program.id)}">Start Treatment</button><p class="muted">Collect at least one baseline observation before beginning treatment.</p>` : ""}
+    ${phase ? `<div class="inline-fields"><label>97155 ${phase === "baseline" ? "baseline probe" : "observation"} target
+      <select data-probe-target>${(program.targets || []).map(target => `<option value="${escapeHtml(target.id)}">${escapeHtml(target.name)}</option>`).join("")}</select></label>
+      <label>${program.dataCollectionType === "frequency" ? "Frequency (count)" : "Percent correct (0–100)"}<input data-probe-value type="number" min="0" ${program.dataCollectionType === "frequency" ? 'step="1"' : 'max="100" step="any"'}></label>
+      <button type="button" class="secondary-button" data-program-clinical-action="save-observation" data-program-id="${escapeHtml(program.id)}">Save observation</button></div>
+      <p class="muted">Saved immediately to this active 97155 session, independently of SOAP generation.</p>` : ""}` : ""}
+  </div>`;
+}
+
+async function handleProgramClinicalAction(button) {
+  if (!canEditClinical() || button.disabled) return;
+  const action = button.dataset.programClinicalAction;
+  const programId = button.dataset.programId;
+  const section = button.closest("[data-phase-program]");
+  const targetId = section?.querySelector("[data-probe-target]")?.value;
+  const value = section?.querySelector("[data-probe-value]")?.value;
+  if (action === "start-treatment" && !window.confirm("Begin treatment for this program? Future observations will be classified as Treatment until the phase is changed again.")) return;
+  if (action === "establish-baseline" && !window.confirm("Establish Baseline for future observations? Existing historical observations will remain unchanged.")) return;
+  button.disabled = true;
+  try {
+    await persistCurrentPlanDraftBefore97155Generation();
+    const sessionContext = {...current97155SessionContext({create:true}),
+      startTime:bcbaSessionForm.elements.startTime.value, endTime:bcbaSessionForm.elements.endTime.value,
+      setting:bcbaSessionForm.elements.setting.value};
+    const result = await recordProgramClinicalAction(currentClient().id, programId, {action,targetId,value,sessionContext});
+    replaceClient(result.client);
+    syncGraphPhaseLineState(result.client);
+    if (result.session) {
+      const index = state.sessions.findIndex(session => session.id === result.session.id);
+      if (index >= 0) state.sessions[index] = result.session;
+      else state.sessions.push(result.session);
+    }
+    renderPlanReview();
+    planMessage.textContent = action === "save-observation" ? "Observation saved. The same 97155 session remains active." : "Program phase saved. The same 97155 session remains active.";
+  } catch (error) { planMessage.textContent = error.message; }
+  finally { button.disabled = false; }
+}
+
 function renderPlanProgram(program, tab = state.activePlanProgramTab) {
   const visibleTargets = filteredTargetsForPlanProgram(program, tab);
   const displayedProgramStatus = normalizePlanStatus(program.status || "active");
   return `
     <section class="plan-program">
+      ${renderProgramPhaseControls(program)}
       <div class="plan-program-heading">
         <label>
           Program
@@ -10954,7 +10950,7 @@ function renderPlanProgram(program, tab = state.activePlanProgramTab) {
         </label>
         <div class="plan-program-actions">
           <button type="button" class="secondary-button" data-open-plan-graph="${program.id}">View graph</button>
-          <button type="button" class="secondary-button" data-add-target="${program.id}">Add target</button>
+          <button type="button" class="secondary-button" data-add-target="${program.id}" ${state.pendingTargetAdds?.[program.id] ? "disabled" : ""}>Add target</button>
         </div>
       </div>
       <label>
@@ -11060,6 +11056,7 @@ async function handleAddProgram(event) {
     programId: programs[programs.length - 1].id,
     programName: name
   });
+  syncGraphPhaseLineState(currentClient());
 }
 
 async function handleAddDomain() {
@@ -11105,6 +11102,8 @@ async function handleDeleteDomain() {
 }
 
 async function handlePlanClick(event) {
+  const clinicalAction = event.target.closest("[data-program-clinical-action]");
+  if (clinicalAction) { await handleProgramClinicalAction(clinicalAction); return; }
   const reviewJump = event.target.closest("[data-review-jump]");
   if (reviewJump) {
     jumpToReviewState(reviewJump.dataset.reviewJump);
@@ -11194,31 +11193,45 @@ async function handlePlanClick(event) {
     return;
   }
   const addTarget = event.target.closest("[data-add-target]");
-  if (!addTarget) return;
+  if (!addTarget || addTarget.disabled) return;
+  const programId = addTarget.dataset.addTarget;
+  state.pendingTargetAdds ||= {};
+  if (state.pendingTargetAdds[programId]) return;
   const name = window.prompt("Target name");
   if (!name?.trim()) return;
-  const { programs, behaviors } = currentPlanDraft();
-  const program = programs.find((item) => item.id === addTarget.dataset.addTarget);
-  if (!program) return;
-  program.targets = program.targets || [];
-  const newTarget = {
-    id: slugify(name, "target", program.targets.map((target) => target.id)),
-    name: name.trim(),
-    status: "active",
-    dateAdded: dateInputValue(),
-    maintenanceDate: "",
-    note: ""
-  };
-  program.targets.push(newTarget);
-  await savePlan(programs, behaviors, {
-    type: "target-added",
-    domain: program.domain,
-    programId: program.id,
-    programName: program.name,
-    targetId: newTarget.id,
-    targetName: newTarget.name,
-    toStatus: "active"
-  });
+  const clientId = currentClient()?.id;
+  state.pendingTargetAdds[programId] = true;
+  addTarget.disabled = true;
+  try {
+    if (state.planSavePromise) await state.planSavePromise;
+    if (currentClient()?.id !== clientId) return;
+    const { programs, behaviors } = currentPlanDraft();
+    const program = programs.find(item => item.id === programId);
+    if (!program) return;
+    program.targets = program.targets || [];
+    const newTarget = {
+      id: slugify(name, "target", program.targets.map(target => target.id)),
+      name: name.trim(), status: "active", dateAdded: dateInputValue(), maintenanceDate: "", note: ""
+    };
+    program.targets.push(newTarget);
+    await trackPlanSave(savePlan(programs, behaviors, {
+      type: "target-added", domain: program.domain, programId: program.id,
+      programName: program.name, targetId: newTarget.id, targetName: newTarget.name, toStatus: "active"
+    }));
+    if (currentClient()?.id === clientId) {
+      // A newly active target does not match hold/mastery or review-only filters.
+      state.activePlanProgramTab = "active";
+      state.activePlanReviewFilter = "";
+      state.activePlanDomain = program.domain || clientDomains()[0];
+      renderPlanReview();
+      planMessage.textContent = `Target "${newTarget.name}" saved.`;
+    }
+  } catch (error) { planMessage.textContent = error.message; }
+  finally {
+    delete state.pendingTargetAdds[programId];
+    addTarget.disabled = false;
+    if (currentClient()?.id === clientId) renderPlanReview();
+  }
 }
 
 function jumpToReviewState(stateValue) {
@@ -11767,8 +11780,13 @@ async function savePlan(
     note97151History,
     rbtPerformanceAreas
   });
-  const index = state.clients.findIndex((item) => item.id === updated.id);
-  if (index >= 0) state.clients[index] = updated;
+  replaceClient(updated);
+  const addedTarget = changes.findLast(entry => entry.type === "target-added");
+  if (addedTarget && state.activeClientId === updated.id) {
+    state.activePlanProgramTab = "active";
+    state.activePlanReviewFilter = "";
+    state.activePlanDomain = updated.programs?.find(program => program.id === addedTarget.programId)?.domain || domains[0];
+  }
   invalidateTargetReviews(updated.id);
   resetRows();
   render();
@@ -13837,19 +13855,13 @@ function buildSkillChartsByDomain(sessions) {
 function buildProgramSkillChart(program, sessions, context = null) {
   const targets = context ? program.targets || [] : configuredTargetsForProgram(program);
   const observations = targets.flatMap((target) => sessions.flatMap((session) => {
-    const entry = targetEntries(session)
-      .filter(isActualTargetEntry)
-      .find((item) => item.programId === program.id && item.targetId === target.id);
-    return entry ? [{
-      ...entry,
-      provider: graphObservationProvider(session, entry),
-      x: session.date,
-      phase: entry.phase || "intervention",
-      sessionId: session.id,
-      programId: program.id,
-      targetId: target.id,
-      note: session.notes || ""
-    }] : [];
+    const entries = session.clinicalDataOnly
+      ? (session.programs || []).flatMap(group => (group.targets || []).map(entry => ({...entry,programId:group.programId})))
+      : targetEntries(session);
+    return entries.filter(isActualTargetEntry)
+      .filter(item => item.programId === program.id && item.targetId === target.id)
+      .map(entry => ({...entry, provider:graphObservationProvider(session,entry),x:session.date,
+        sessionId:session.id,programId:program.id,targetId:target.id,note:session.notes || ""}));
   }));
   return buildSkillMeasurementChart(program, targets, observations,
     state.skillGraphMeasurements[`${state.activeClientId}:${program.id}`]);
@@ -14013,7 +14025,7 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
       <p class="graph-analysis-note">Analysis based on ${escapeHtml(options.rangeLabel || analysis.rangeLabel || "selected date range")}.</p>
       ${analysis.measurementLabel ? `<p class="graph-analysis-note">Measurement: ${escapeHtml(analysis.measurementLabel)}</p>` : ""}
       ${analysis.measurementNotice ? `<p class="graph-analysis-note">${escapeHtml(analysis.measurementNotice)}</p>` : ""}
-      ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">No explicit treatment phase line; observations are not classified as Baseline or Treatment.</p>' : ""}
+      ${!analysis.phaseBoundary ? `<p class="graph-analysis-note">${analysis.graphType === "skill" ? "Only explicit clinical phases classify observations; mastery is an annotation." : "No explicit treatment phase line; observations are not classified as Baseline or Treatment."}</p>` : ""}
       ${options.treatmentBeforeRange ? '<p class="graph-analysis-note">Treatment phase began before selected range.</p>' : ""}
       ${showTrendLine && analysis.trendLineMessage ? `<p class="graph-analysis-note">${escapeHtml(analysis.trendLineMessage)}</p>` : ""}
       ${analysis.analyses.map((entry) => `
@@ -14038,6 +14050,7 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
               ${renderGraphMetricCell("Baseline average", formatAnalysisMetric(entry.baselineAverage, analysis.graphType))}
               ${renderGraphMetricCell("Variability", entry.variability)}
               ${renderGraphMetricCell("Stability", entry.stability)}
+              ${renderGraphMetricCell("Recent performance (last 5)", entry.recentPerformance || "Insufficient data")}
               ${analysis.graphType === "skill"
                 ? renderGraphMetricCell("Mastery status", entry.masteryStatus || "in progress")
                 : renderGraphMetricCell("Overlap", entry.overlap || "Unavailable")}
@@ -14061,7 +14074,7 @@ function renderReportGraphAnalysisMarkup(analysis, options = {}) {
       ${analysis.measurementLabel ? `<p>Measurement: ${escapeHtml(analysis.measurementLabel)}</p>` : ""}
       ${analysis.measurementNotice ? `<p class="muted">${escapeHtml(analysis.measurementNotice)}</p>` : ""}
       <p class="graph-analysis-note">Analysis based on ${escapeHtml(options.rangeLabel || analysis.rangeLabel || "selected date range")}.</p>
-      ${!analysis.phaseBoundary ? '<p class="graph-analysis-note">No explicit treatment phase line; observations are not classified as Baseline or Treatment.</p>' : ""}
+      ${!analysis.phaseBoundary ? `<p class="graph-analysis-note">${analysis.graphType === "skill" ? "Only explicit clinical phases classify observations; mastery is an annotation." : "No explicit treatment phase line; observations are not classified as Baseline or Treatment."}</p>` : ""}
       ${analysis.analyses.map((entry) => `
         <p class="report-graph-analysis-line">
           <strong>${escapeHtml(entry.label)}:</strong>
@@ -15379,7 +15392,7 @@ function selectedSession() {
 }
 
 function soapHistoryEntries() {
-  const entries = currentSessions().map((session) => ({
+  const entries = currentSessions().filter(session => !session.clinicalDataOnly).map((session) => ({
     key: session.id,
     type: "session",
     session

@@ -1,3 +1,4 @@
+import { applyProgramClinicalAction, initializeNewProgramPhases, validateManagedPhaseEdit } from "./lib/program-phase-workflow.mjs";
 import { sanitizeClinicalSnapshot } from "./public/report-snapshot.js";
 import { hasMeaningfulFunderReportDraft } from "./public/report-utils.js";
 import { createServer } from "node:http";
@@ -286,6 +287,7 @@ function validateSession(payload, db) {
             errors.push("Frequency must be a number greater than or equal to zero.");
           }
           return {
+            recordedAt: new Date().toISOString(),
             targetId: target.targetId,
             dataCollectionType: "frequency",
             frequency: Number.isFinite(rawFrequency) ? Math.max(0, Math.floor(rawFrequency)) : 0,
@@ -299,6 +301,7 @@ function validateSession(payload, db) {
         const denominator = trials || correct + incorrect;
         const independence = denominator > 0 ? Math.round((correct / denominator) * 100) : 0;
         return {
+          recordedAt: new Date().toISOString(),
           targetId: target.targetId,
           dataCollectionType: "percent_correct",
           trials,
@@ -2921,6 +2924,29 @@ export function createAppServer() {
       return;
     }
 
+    const programClinicalMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/programs\/([^/]+)\/clinical-phase$/);
+    if (req.method === "POST" && programClinicalMatch) {
+      const db = await readDb();
+      if (!requireRole(req, res, db, ["admin", "bcba"])) return;
+      const actor = currentUser(req, db);
+      const client = db.clients.find(item => item.id === programClinicalMatch[1]);
+      if (!client || !canAccessClient(actor, client, db)) { sendJson(res, 403, {errors:["You cannot access this client."]}); return; }
+      const payload = await readBody(req);
+      let result;
+      try {
+        await mutateSchedulingDb(current => {
+          const liveClient = current.clients.find(item => item.id === client.id);
+          const liveActor = currentUser(req, current);
+          if (!liveClient || !canAccessClient(liveActor, liveClient, current)) throw Object.assign(new Error("You cannot access this client."), {status:403});
+          result = applyProgramClinicalAction(current, client.id, programClinicalMatch[2], payload, liveActor);
+          logAudit(current, req, liveActor, "program-clinical-action", {clientId:client.id, details:{programId:programClinicalMatch[2],action:payload.action}});
+          return current;
+        });
+        sendJson(res, 200, result);
+      } catch (error) { if (!error.status) throw error; sendJson(res, error.status, {errors:[error.message]}); }
+      return;
+    }
+
     const graphPhaseLineMatch = url.pathname.match(/^\/api\/clients\/([^/]+)\/graph-phase-lines$/);
     if (req.method === "PUT" && graphPhaseLineMatch) {
       const db = await readDbWithUsers();
@@ -2937,6 +2963,8 @@ export function createAppServer() {
         return;
       }
       const nextGraphPhaseLines = sanitizeGraphPhaseLines(payload.graphPhaseLines || {});
+      try { validateManagedPhaseEdit(client, nextGraphPhaseLines); }
+      catch (error) { sendJson(res, error.status || 400, {errors:[error.message]}); return; }
       client.profile = {
         ...(client.profile || {}),
         graphPhaseLines: nextGraphPhaseLines
@@ -3111,7 +3139,13 @@ export function createAppServer() {
       }
       const before = treatmentPlanAuditSnapshot(client);
       client.domains = sanitizeDomains(payload.domains || client.domains || []);
+      const previousProgramIds = new Set((client.programs || []).map(program => program.id));
       client.programs = sanitizePrograms(payload.programs || client.programs || []);
+      const creationContext = [...(payload.planChangeLog || [])].reverse().find(change => change.type === "program-added" && !previousProgramIds.has(change.programId) && client.programs.some(program => program.id === change.programId)) || {};
+      initializeNewProgramPhases(client, previousProgramIds, {
+        sessionId: creationContext.sessionId || "",
+        sessionDate: /^\d{4}-\d{2}-\d{2}$/.test(creationContext.sessionDate || creationContext.date || "") ? (creationContext.sessionDate || creationContext.date) : new Date().toISOString().slice(0,10)
+      });
       client.behaviors = sanitizeBehaviors(payload.behaviors || client.behaviors || []);
       client.rbtPerformanceAreas = sanitizeRbtPerformanceAreas(payload.rbtPerformanceAreas || client.rbtPerformanceAreas || []);
       client.planChangeLog = sanitizePlanChangeLog(payload.planChangeLog || client.planChangeLog || []);
@@ -6416,6 +6450,7 @@ function sanitizeGraphPhaseLines(source) {
         return entries;
       }
       entries.push({
+        ...(line?.effectiveAt ? {effectiveAt:text(line.effectiveAt),clinicalPhase:text(line.clinicalPhase),sessionId:text(line.sessionId),initial:Boolean(line.initial)} : {}),
         id: text(line?.id) || (phaseType === "treatment" ? `${key}:treatment` : `${key}:${date}:${label.toLowerCase()}`),
         graphId: key,
         graphType: text(line?.graphType) || key.split(":")[0] || "",

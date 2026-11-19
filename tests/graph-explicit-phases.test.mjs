@@ -14,7 +14,7 @@ const series = [{ name: 'Synthetic target', points: [
 const phases = model => series[0].points.map((point,i) => classifySeriesPointPhase(point,i,model.phaseBoundary,model.dates));
 const line = { id:'saved-treatment', date:'2026-01-04', label:'Treatment', lineStyle:'dashed', sourceType:'userTreatmentOverride' };
 
-test('unconfigured observations remain unclassified, including the first observation and legacy point phase tags', () => {
+test('unconfigured graph has no visual phase line and no inferred phase classification', () => {
   const before=structuredClone(series), model=buildClinicalGraphModel(series);
   assert.equal(model.phaseBoundary,null);
   assert.deepEqual(phases(model),[null,null,null,null]);

@@ -1,0 +1,53 @@
+import test,{before,after} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,readFile,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+process.env.DATA_STORE='json';process.env.ABA_DISABLE_AUTOSTART='1';process.env.MFA_ENABLED='false';
+const directory=await mkdtemp(join(tmpdir(),'program-phase-test-'));
+process.env.DB_PATH=join(directory,'db.json');
+const fixture={clients:[{id:'c',name:'Synthetic',agency:'Triumph ABA',status:'active',programs:[{id:'old',name:'Historical',targets:[{id:'old-target',name:'Historical target'}]}],behaviors:[],planChangeLog:[],note97155History:[],profile:{graphPhaseLines:{'skill:old':[{id:'historical-phase',date:'2025-01-01',label:'Maintenance',phaseType:'environmental'}]},funderReport:{background:'Existing narrative'}}}],sessions:[{id:'historical-session',agency:'Triumph ABA',clientId:'c',date:'2025-01-01',soapNote:'Existing SOAP',programs:[{programId:'old',targets:[{targetId:'old-target',independence:0}]}]}],users:[],auditLog:[]};
+await writeFile(process.env.DB_PATH,JSON.stringify(fixture));
+const {createAppServer,resetRuntimeState}=await import('../server.js');
+let server,url,cookie;
+async function request(path,method='GET',body,auth=cookie){const response=await fetch(url+path,{method,headers:{'content-type':'application/json',...(auth?{cookie:auth}:{})},...(body?{body:JSON.stringify(body)}:{})});return {status:response.status,json:await response.json(),cookie:response.headers.get('set-cookie')?.split(';')[0]};}
+before(async()=>{server=createAppServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));url=`http://127.0.0.1:${server.address().port}`;const login=await request('/api/auth/login','POST',{username:'admin',password:'admin123'},'');assert.equal(login.status,200);cookie=login.cookie;});
+after(async()=>{await new Promise(resolve=>server.close(resolve));resetRuntimeState();await rm(directory,{recursive:true,force:true});});
+const date='2026-11-19';const context={clientId:'c',sessionId:'same-97155',sessionDate:date,startTime:'09:30',endTime:'11:30'};
+const act=payload=>request('/api/clients/c/programs/new/clinical-phase','POST',{sessionContext:context,...payload});
+let client;
+test('new program API writes only a prospective initial Baseline; historical phases and observations survive',async()=>{
+ const response=await request('/api/clients/c/plan','PUT',{programs:[...fixture.clients[0].programs,{id:'new',name:'New',dataCollectionType:'percent_correct',targets:[{id:'a',name:'A'}]}],planChangeLog:[{id:'creation',...context,date,type:'program-added',programId:'new',programName:'New'}]});
+ assert.equal(response.status,200);client=response.json;
+ assert.equal(client.profile.graphPhaseLines['skill:new'][0].clinicalPhase,'baseline');
+ assert.deepEqual(client.profile.graphPhaseLines['skill:old'],fixture.clients[0].profile.graphPhaseLines['skill:old']);
+ const stored=JSON.parse(await readFile(process.env.DB_PATH,'utf8'));assert.deepEqual(stored.sessions,fixture.sessions);
+});
+test('baseline saves immediately; transition, later data, and plan changes keep one active session without a SOAP draft',async()=>{
+ let result=await act({action:'start-treatment'});assert.equal(result.status,400);assert.match(result.json.errors[0],/Collect at least/);
+ result=await act({action:'save-observation',targetId:'a',value:null});assert.equal(result.status,400);
+ result=await act({action:'save-observation',targetId:'a',value:0});assert.equal(result.status,200);assert.equal(result.json.session.id,context.sessionId);
+ let stored=JSON.parse(await readFile(process.env.DB_PATH,'utf8'));assert.equal(stored.sessions[1].programs[0].targets[0].independence,0);assert.equal(stored.clients[0].note97155History.length,0);
+ const baseline=structuredClone(stored.sessions[1].programs[0].targets[0]);
+ result=await act({action:'start-treatment'});assert.equal(result.status,200);client=result.json.client;
+ assert.equal(client.profile.graphPhaseLines['skill:new'][1].clinicalPhase,'intervention');
+ client.programs.find(p=>p.id==='new').targets.push({id:'b',name:'B'});
+ result=await request('/api/clients/c/plan','PUT',{programs:client.programs,planChangeLog:[...client.planChangeLog,{id:'later-target',...context,date,type:'target-added',programId:'new',targetId:'b',targetName:'B'}]});assert.equal(result.status,200);
+ result=await act({action:'save-observation',targetId:'b',value:80});assert.equal(result.status,200);
+ stored=JSON.parse(await readFile(process.env.DB_PATH,'utf8'));
+ assert.equal(stored.sessions.length,2);assert.deepEqual(stored.sessions[0],fixture.sessions[0]);
+ assert.deepEqual(stored.sessions[1].programs[0].targets[0],baseline);
+ assert.equal(stored.sessions[1].programs[0].targets[1].phase,'intervention');
+ assert.equal(stored.clients[0].profile.graphPhaseLines['skill:new'].length,2);
+ assert.equal(stored.clients[0].note97155History.length,0);
+});
+test('unauthorized callers cannot change phase or record 97155 probes; graph editor cannot remove workflow records',async()=>{
+ const anonymous=await request('/api/clients/c/programs/new/clinical-phase','POST',{action:'start-treatment',sessionContext:context},'');assert.ok([401,403].includes(anonymous.status));
+ const rbt=await request('/api/auth/login','POST',{username:'rbt',password:'rbt123'},'');assert.equal(rbt.status,200);
+ const rejected=await request('/api/clients/c/programs/new/clinical-phase','POST',{action:'start-treatment',sessionContext:context},rbt.cookie);assert.equal(rejected.status,403);
+ const before=await readFile(process.env.DB_PATH,'utf8');
+ const removed=await request('/api/clients/c/graph-phase-lines','PUT',{graphPhaseLines:{}});assert.equal(removed.status,409);
+ const after=JSON.parse(await readFile(process.env.DB_PATH,'utf8'));
+ assert.deepEqual(after.sessions,JSON.parse(before).sessions);
+ assert.deepEqual(after.clients[0].profile.graphPhaseLines,JSON.parse(before).clients[0].profile.graphPhaseLines);
+});

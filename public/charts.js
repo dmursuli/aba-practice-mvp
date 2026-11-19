@@ -18,7 +18,8 @@ const PLOT_RIGHT_MARGIN = 20;
 export function drawLineChart(canvas, series, options = {}) {
   if (!canvas) return;
   canvas.__clinicalGraphRenderState = { series, options: { ...options } };
-  // Retain unavailable dates for elapsed spacing without changing input records.
+  // Derive phases on copies; historical dates and records remain untouched.
+  series = deriveProgramPhases(series, options);
   series = series.map((item) => ({
     ...item,
     points: item.points.map((point) => ({ ...point, y: graphNumericValue(point.y) }))
@@ -56,8 +57,11 @@ export function drawLineChart(canvas, series, options = {}) {
   }
 
   const model = buildClinicalGraphModel(series, options);
-  const { dates, phaseBoundary, phaseMarkers } = model;
-  const layout = buildChartLayout(dates, margin.left, plotWidth, phaseBoundary, phaseMarkers);
+  const { dates, phaseBoundary } = model;
+  const layout = options.graphType === "behavior"
+    ? buildChartLayout(dates, margin.left, plotWidth, phaseBoundary, model.phaseMarkers, "calendar")
+    : buildPhaseTransitionLayout(series, model, margin.left, plotWidth);
+  const phaseMarkers = layout.phaseMarkers || model.phaseMarkers;
   const xPositions = layout.dateXPositions;
   ctx.font = "11px system-ui, sans-serif";
   const dateLabelLayout = responsive
@@ -169,12 +173,13 @@ export function drawLineChart(canvas, series, options = {}) {
     : [];
   movingAverageSeries.forEach((item, seriesIndex) => {
     const color = seriesStyles[seriesIndex].color;
+    const sourcePoints = series[seriesIndex].points.slice().sort(compareGraphObservations);
     const points = item.points
       .slice()
-      .sort((a, b) => a.x.localeCompare(b.x))
-      .map((point) => {
+      .sort(compareGraphObservations)
+      .map((point, pointIndex) => {
         const dateIndex = dates.indexOf(point.x);
-        const baseX = xPositions[dateIndex];
+        const baseX = layout.pointX ? layout.pointX(sourcePoints[pointIndex]) : xPositions[dateIndex];
         return {
           x: baseX,
           y: point.y === null ? null : margin.top + plotHeight - (point.y / yTop) * plotHeight,
@@ -198,10 +203,10 @@ export function drawLineChart(canvas, series, options = {}) {
     const color = style.color;
     const points = item.points
       .slice()
-      .sort((a, b) => a.x.localeCompare(b.x))
+      .sort(compareGraphObservations)
       .map((point, pointIndex) => {
         const dateIndex = dates.indexOf(point.x);
-        const baseX = xPositions[dateIndex];
+        const baseX = layout.pointX ? layout.pointX(point) : xPositions[dateIndex];
         return {
           x: baseX,
           y: point.y === null ? null : margin.top + plotHeight - (point.y / yTop) * plotHeight,
@@ -235,6 +240,10 @@ export function drawLineChart(canvas, series, options = {}) {
     ...marker, x: xPositionForMarkerDateWithMode(marker, dates, xPositions, layout.markerXByDate),
     top: margin.top - 24, bottom: margin.top + plotHeight
   })).filter(marker => Number.isFinite(marker.x));
+  if (phaseBoundary && Number.isFinite(phaseLineX)) inspectionMarkers.push({
+    ...phaseBoundary, date: phaseBoundary.configuredDate, x: phaseLineX,
+    top: margin.top - 24, bottom: margin.top + plotHeight
+  });
   bindCanvasInspection(canvas, interactivePoints, inspectionMarkers, options);
 }
 
@@ -277,8 +286,46 @@ export function buildSeriesStyles(series = []) {
   }));
 }
 
+// Within a clinical date, use recorded ordering when both observations have it.
+// Date-only legacy observations retain their existing stable input order.
+function compareGraphObservations(a, b) {
+  return a.x.localeCompare(b.x) || (a.recordedAt && b.recordedAt ? a.recordedAt.localeCompare(b.recordedAt) : 0);
+}
+
+// Only clinician-authored phase records classify observations. Legacy treatment
+// boundaries retain their historical pre-boundary baseline semantics. New timed
+// records never classify older observations with unknown same-day timing.
+export function clinicalPhaseOf(record) {
+  if (!record || record.hidden || record.deleted || ["mastered", "targetMastered", "objective", "objectiveChange"].includes(record.phaseType)) return null;
+  if (["treatment", "baselineToTreatment", "userTreatmentOverride"].includes(record.phaseType)) return "intervention";
+  const value = String(record.clinicalPhase || record.label || record.phaseType || "").trim().toLowerCase();
+  return value === "treatment" ? "intervention" : ["baseline", "intervention", "maintenance", "generalization"].includes(value) ? value : null;
+}
+
+export function programPhaseAt(records = [], point = {}) {
+  const events = records.filter(record => clinicalPhaseOf(record) && record.date)
+    .slice().sort((a,b) => a.date.localeCompare(b.date) || String(a.effectiveAt || "").localeCompare(String(b.effectiveAt || "")));
+  const linked = point.phaseRecordId && events.find(record => record.id === point.phaseRecordId);
+  if (linked) return clinicalPhaseOf(linked);
+  const eligible = events.filter(record => record.date < point.x || (record.date === point.x
+    && (!record.effectiveAt || (point.recordedAt && record.effectiveAt <= point.recordedAt))));
+  const event = eligible.at(-1);
+  if (event) return clinicalPhaseOf(event);
+  // Preserve existing date-only Treatment line behavior; no fabricated transition.
+  if (events.some(record => !record.effectiveAt && clinicalPhaseOf(record) === "intervention")) return "baseline";
+  return null;
+}
+
+export function deriveProgramPhases(series, options = {}) {
+  const records = [...(options.phaseMarkers || []), ...(options.treatmentPhaseLine ? [{...options.treatmentPhaseLine,phaseType:"treatment"}] : [])];
+  return series.map(item => ({...item, points: (item.points || []).map(point => ({
+    ...point, effectiveProgramPhase: programPhaseAt(records, point)
+  }))}));
+}
+
 export function buildGraphAnalysis(series, options = {}) {
   const graphType = options.graphType === "behavior" ? "behavior" : "skill";
+  series = deriveProgramPhases(series, options);
   const model = buildClinicalGraphModel(series, options);
   const movingAverageSeries = buildMovingAverageSeriesSet(series, {
     dates: model.dates,
@@ -423,7 +470,7 @@ export function buildMovingAveragePoints(points, options = {}) {
   const windowSize = options.windowSize || MOVING_AVERAGE_WINDOW;
   const normalized = (points || [])
     .slice()
-    .sort((a, b) => a.x.localeCompare(b.x))
+    .sort(compareGraphObservations)
     .map((point, pointIndex) => {
       const dateIndex = dates.indexOf(point.x);
       return {
@@ -451,7 +498,7 @@ function analyzeSingleSeries(series, options) {
   const treatmentPoints = [];
   const normalized = (series.points || [])
     .slice()
-    .sort((a, b) => a.x.localeCompare(b.x))
+    .sort(compareGraphObservations)
     .map((point, pointIndex) => {
       const dateIndex = options.dates.indexOf(point.x);
       const phase = classifySeriesPointPhase(point, pointIndex, options.phaseBoundary, options.dates);
@@ -471,6 +518,10 @@ function analyzeSingleSeries(series, options) {
   const treatmentCurrent = treatmentValues.length ? treatmentValues[treatmentValues.length - 1] : null;
   const trend = classifyTrend(treatmentValues, graphType);
   const variability = classifyVariability(evaluationValues);
+  const recentTrend = classifyTrend(treatmentValues.slice(-5), graphType);
+  const recentPerformance = recentTrend.direction === "Increasing" ? (graphType === "behavior" ? "Recent increase" : "Recent improvement")
+    : recentTrend.direction === "Decreasing" ? (graphType === "behavior" ? "Recent decrease" : "Recent decline")
+    : recentTrend.direction === "Stable" ? "Recent stability / plateau" : recentTrend.direction;
   const stability = classifyStability(evaluationValues);
   const difference = baselineAverage !== null && treatmentAverage !== null
     ? graphType === "behavior"
@@ -528,7 +579,8 @@ function analyzeSingleSeries(series, options) {
     baselineLevel: roundMetric(baselineAverage),
     treatmentAverage: roundMetric(treatmentAverage),
     treatmentLevel: roundMetric(treatmentAverage),
-    currentLevel: roundMetric(treatmentCurrent ?? baselineCurrent ?? normalized.at(-1)?.y),
+    currentLevel: roundMetric(normalized.at(-1)?.y),
+    recentPerformance,
     trendDirection: trend.direction,
     trendConfidence: trend.confidence,
     variability,
@@ -579,7 +631,8 @@ export function normalizePhaseMarkers(markers = [], dates = [], phaseBoundary = 
     .map((marker) => normalizePhaseMarker(marker))
     .filter(Boolean)
     .filter((marker) => {
-      if (!marker.date) return false;
+      if (!marker.date || marker.hidden || marker.deleted || marker.initial) return false;
+      if (["baseline", "treatment", "intervention", "maintenance", "generalization"].includes(String(marker.label || marker.phaseType).toLowerCase())) return true;
       if (!phaseBoundary) {
         return true;
       }
@@ -629,6 +682,7 @@ export function derivedPointPhase(dateIndex, phaseBoundary = null) {
 }
 
 export function classifySeriesPointPhase(point, pointIndex, phaseBoundary = null, dates = []) {
+  if (Object.hasOwn(point || {}, "effectiveProgramPhase")) return point.effectiveProgramPhase;
   const hasExplicitBoundary = Boolean(phaseBoundary);
   if (hasExplicitBoundary) {
     const pointDate = point?.x || dates[pointIndex];
@@ -724,6 +778,7 @@ function xPositionForMarkerDate(date, dates, xPositions, markerXByDate = new Map
 }
 
 function xPositionForMarkerDateWithMode(marker, dates, xPositions, markerXByDate = new Map()) {
+  if (Object.hasOwn(marker || {}, "renderX")) return marker.renderX;
   const date = marker?.date;
   if (marker?.position === "after-date" && markerXByDate.has(date)) {
     return markerXByDate.get(date);
@@ -791,7 +846,62 @@ function drawPhaseSegments(ctx, points, phaseBoundary, breakLines = []) {
   });
 }
 
-export function buildChartLayout(dates, left, width, phaseBoundary, markers = []) {
+// Rendering only: split a date into before/after positions only when an explicit
+// timed treatment transition has valid observations on both sides. Dates and
+// clinical classification remain unchanged; inspection still groups by date.
+export function buildPhaseTransitionLayout(series, model, left, width) {
+  const {dates, phaseBoundary, phaseMarkers} = model;
+  const base = buildChartLayout(dates, left, width, phaseBoundary, phaseMarkers);
+  const points = series.flatMap(item => item.points || []).filter(point => graphNumericValue(point.y) !== null);
+  const transitions = phaseMarkers.filter(marker => clinicalPhaseOf(marker) === "intervention");
+  const before = (point, marker) => point.x < marker.date || (point.x === marker.date
+    && marker.effectiveAt && point.recordedAt && (point.recordedAt < marker.effectiveAt
+      || (point.recordedAt === marker.effectiveAt && point.phaseRecordId && point.effectiveProgramPhase === "baseline")));
+  const after = (point, marker) => point.x > marker.date || (point.x === marker.date
+    && (!marker.effectiveAt || point.phaseRecordId === marker.id
+      || (point.recordedAt && (point.recordedAt > marker.effectiveAt
+        || (point.recordedAt === marker.effectiveAt && !(point.phaseRecordId && point.effectiveProgramPhase === "baseline"))))));
+  const boundaries = transitions.map(marker => ({marker,
+    baseline: points.filter(point => point.effectiveProgramPhase === "baseline" && before(point, marker)),
+    treatment: points.filter(point => point.effectiveProgramPhase === "intervention" && after(point, marker))
+  }));
+  const cuts = boundaries.filter(({marker,baseline,treatment}) => marker.effectiveAt
+    && baseline.some(point => point.x === marker.date) && treatment.some(point => point.x === marker.date))
+    .map(({marker}) => marker).sort((a,b) => a.effectiveAt.localeCompare(b.effectiveAt));
+  const groupFor = point => cuts.filter(marker => marker.date === point.x && after(point, marker)).length;
+  const slots = dates.flatMap(date => Array.from({length:1 + cuts.filter(marker => marker.date === date).length}, (_, group) => ({date,group})));
+  const positions = cuts.length ? buildChartLayout(slots.map(slot => slot.date), left, width, null).dateXPositions : base.dateXPositions;
+  const pointX = point => positions[slots.findIndex(slot => slot.date === point.x && slot.group === groupFor(point))];
+  const dateXPositions = dates.map(date => {
+    const indexes = slots.flatMap((slot,index) => slot.date === date ? [index] : []);
+    return (positions[indexes[0]] + positions[indexes.at(-1)]) / 2;
+  });
+  const markerXByDate = new Map(base.markerXByDate);
+  for (const marker of phaseMarkers.filter(marker => marker.position === "after-date" && cuts.some(cut => cut.date === marker.date))) {
+    const last = slots.findLastIndex(slot => slot.date === marker.date);
+    const gap = positions[last + 1] - positions[last];
+    markerXByDate.set(marker.date, positions[last] + (Number.isFinite(gap) ? Math.min(16,gap / 5) : 10));
+  }
+  const renderedMarkers = phaseMarkers.map(marker => {
+    const boundary = boundaries.find(boundary => boundary.marker === marker);
+    if (!boundary) return marker;
+    const lastBaselineX = Math.max(...boundary.baseline.map(pointX));
+    const firstTreatmentX = Math.min(...boundary.treatment.map(pointX));
+    // The saved transition is visible immediately, even before treatment data.
+    // Use the existing plot padding after baseline; never synthesize a point.
+    const renderX = Number.isFinite(lastBaselineX)
+      ? Number.isFinite(firstTreatmentX) && lastBaselineX < firstTreatmentX
+        ? (lastBaselineX + firstTreatmentX) / 2
+        : !boundary.treatment.length
+          ? lastBaselineX + Math.min(16, (left + width - lastBaselineX) / 2)
+          : NaN
+      : NaN;
+    return {...marker, renderX};
+  });
+  return {dateXPositions, markerXByDate, pointX, phaseMarkers:renderedMarkers};
+}
+
+export function buildChartLayout(dates, left, width, phaseBoundary, markers = [], spacing = "sequence") {
   const dateXPositions = Array(dates.length).fill(NaN);
   const markerXByDate = new Map();
   const padding = Math.min(28, width * 0.08);
@@ -806,7 +916,8 @@ export function buildChartLayout(dates, left, width, phaseBoundary, markers = []
     const maxValue = dateValues[dateValues.length - 1];
     const valueSpan = Math.max(1, maxValue - minValue);
     dateValues.forEach((value, index) => {
-      const x = start + ((value - minValue) / valueSpan) * (end - start);
+      const fraction = spacing === "calendar" ? (value - minValue) / valueSpan : index / (dates.length - 1);
+      const x = start + fraction * (end - start);
       dateXPositions[index] = x;
     });
   }
@@ -869,18 +980,21 @@ export function formatGraphDate(value) {
 }
 
 function classifyTrend(values, graphType) {
-  if (!Array.isArray(values) || values.length < 2) {
-    return {
-      direction: "Insufficient data",
-      slope: 0,
-      confidence: "Insufficient data for trend interpretation."
-    };
+  if (!Array.isArray(values) || values.length < 3) {
+    return { direction: "Insufficient data", slope: 0, confidence: "Insufficient data for trend interpretation (at least 3 treatment observations required)." };
   }
   const slope = linearRegressionSlope(values);
-  if (Math.abs(slope) <= TREND_SLOPE_TOLERANCE) {
-    return { direction: "Flat", slope, confidence: "" };
-  }
-  return { direction: slope > 0 ? "Ascending" : "Descending", slope, confidence: "" };
+  const average = mean(values);
+  const total = values.reduce((sum, value) => sum + (value - average) ** 2, 0);
+  const residual = values.reduce((sum, value, index) => sum + (value - (average + slope * (index - (values.length - 1) / 2))) ** 2, 0);
+  const rSquared = total ? Math.max(0, 1 - residual / total) : 1;
+  // Percent-correct values use 0–100: < 2 percentage points/observation is stable.
+  // Behavior metrics retain their existing .01 tolerance and directional semantics.
+  // Descriptive, not statistical or clinical significance;
+  // a directional label additionally requires the fitted line to explain >= 50% of variance.
+  if (graphType === "skill" ? Math.abs(slope) < 2 : Math.abs(slope) <= TREND_SLOPE_TOLERANCE) return { direction: "Stable", slope, confidence: "" };
+  if (rSquared < 0.5) return { direction: "Variable", slope, confidence: "High uncertainty: no consistent directional trend." };
+  return { direction: slope > 0 ? "Increasing" : "Decreasing", slope, confidence: values.length < 5 ? "Limited confidence with fewer than 5 treatment observations." : "" };
 }
 
 function classifyVariability(values) {
@@ -991,26 +1105,26 @@ function buildInterpretation(context) {
     sessionsToMastery
   } = context;
   if (!baselineValues.length) {
-    return `${label}: Baseline unavailable. ${treatmentValues.length ? `Treatment level is currently ${roundMetric(treatmentAverage ?? mean(treatmentValues), 1)}${graphType === "skill" ? "%" : ""}.` : "Treatment data are unavailable."} ${trend.confidence || ""}`.trim();
+    return `${label}: Baseline unavailable. ${treatmentValues.length ? `Treatment level is currently ${roundMetric(treatmentAverage ?? mean(treatmentValues), 1)}${graphType === "skill" ? "%" : ""}.` : "Treatment data are unavailable."} ${treatmentValues.length ? `Trend: ${trend.direction.toLowerCase()}; variability: ${variability}.` : ""} ${trend.confidence || ""}`.trim();
   }
   if (!treatmentValues.length) {
     return `${label}: Baseline level was ${roundMetric(baselineAverage, 1)}${graphType === "skill" ? "%" : ""}. Treatment data are unavailable.`;
   }
   if (graphType === "behavior") {
     const limitedConfidence = baselineValues.length < 3 || treatmentValues.length < 3;
-    let reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, indicating no change from baseline.`;
+    let reductionClause = `Treatment observations averaged ${roundMetric(treatmentAverage, 1)}, indicating no change from baseline.`;
     if (baselineAverage === 0) {
       if (changeFromBaseline > 0) {
-        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${roundMetric(changeFromBaseline, 1)}-point absolute increase from baseline.`;
+        reductionClause = `Treatment observations averaged ${roundMetric(treatmentAverage, 1)}, representing a ${roundMetric(changeFromBaseline, 1)}-point absolute increase from baseline.`;
       } else if (changeFromBaseline < 0) {
-        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${Math.abs(roundMetric(changeFromBaseline, 1))}-point absolute decrease from baseline.`;
+        reductionClause = `Treatment observations averaged ${roundMetric(treatmentAverage, 1)}, representing a ${Math.abs(roundMetric(changeFromBaseline, 1))}-point absolute decrease from baseline.`;
       }
     } else {
       const relativeValue = Number.parseFloat(relativePercentChange);
       if (changeFromBaseline > 0) {
-        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${Math.abs(relativeValue)}% increase from baseline.`;
+        reductionClause = `Treatment observations averaged ${roundMetric(treatmentAverage, 1)}, representing a ${Math.abs(relativeValue)}% increase from baseline.`;
       } else if (changeFromBaseline < 0) {
-        reductionClause = `Treatment frequency averaged ${roundMetric(treatmentAverage, 1)}, representing a ${Math.abs(relativeValue)}% reduction from baseline.`;
+        reductionClause = `Treatment observations averaged ${roundMetric(treatmentAverage, 1)}, representing a ${Math.abs(relativeValue)}% reduction from baseline.`;
       }
     }
     const trendClause = trend.direction === "Insufficient data"
@@ -1022,7 +1136,7 @@ function buildInterpretation(context) {
       overlap && overlap !== "Unavailable" ? `overlap was ${overlap}` : "",
       immediacy && immediacy !== "Unavailable" ? String(immediacy).toLowerCase() : ""
     ].filter(Boolean);
-    return `${label}: Baseline frequency averaged ${roundMetric(baselineAverage, 1)} based on ${baselineValues.length} baseline data point${baselineValues.length === 1 ? "" : "s"}. ${reductionClause} ${trendClause}${supportClauses.length ? ` Observed response showed ${supportClauses.join(", ")}.` : ""}${limitedConfidence ? " Interpretation is limited by the small number of data points." : ""}`.trim();
+    return `${label}: Baseline observations averaged ${roundMetric(baselineAverage, 1)} based on ${baselineValues.length} baseline data point${baselineValues.length === 1 ? "" : "s"}. ${reductionClause} ${trendClause}${supportClauses.length ? ` Observed response showed ${supportClauses.join(", ")}.` : ""}${limitedConfidence ? " Interpretation is limited by the small number of data points." : ""}`.trim();
   }
   const limitedConfidence = baselineValues.length < 3 || treatmentValues.length < 3;
   const pointChange = Math.abs(roundMetric(changeFromBaseline, 1));
@@ -1044,7 +1158,7 @@ function buildInterpretation(context) {
   const masterySentence = masteryStatus === "mastered" && sessionsToMastery
     ? ` Mastery was reached after ${sessionsToMastery} treatment session${sessionsToMastery === 1 ? "" : "s"}.`
     : ` Current mastery status is ${masteryStatus || "in progress"}.`;
-  return `${label}: Baseline level was ${roundMetric(baselineAverage, 1)}% based on ${baselineValues.length} baseline data point${baselineValues.length === 1 ? "" : "s"}. ${changeClause} ${trendClause}${supportClauses.length ? ` Observed response showed ${supportClauses.join(" and ")}.` : ""}${limitedConfidence ? " Interpretation is limited by the small number of data points." : ""}${masterySentence}`.trim();
+  return `${label}: Baseline level was ${roundMetric(baselineAverage, 1)}% based on ${baselineValues.length} baseline data point${baselineValues.length === 1 ? "" : "s"}. ${changeClause} ${trendClause}${supportClauses.length ? ` Observed response showed ${supportClauses.join(" and ")}.` : ""}${limitedConfidence ? " Interpretation is limited by the small number of data points." : ""}${masterySentence} ${trend.confidence || ""}`.trim();
 }
 
 function linearRegressionSlope(values) {
@@ -1207,11 +1321,11 @@ function bindCanvasInspection(canvas, points, markers, options) {
       const row = doc.createElement("li");
       if (entry.kind === "marker") {
         row.textContent = [formatGraphDate(entry.date), entry.label,
-          entry.detail, entry.targetName, entry.objectiveName, entry.note].filter(Boolean).join(" — ");
+          entry.effectiveAt ? `Transition recorded: ${entry.effectiveAt}` : "", entry.detail, entry.targetName, entry.objectiveName, entry.note].filter(Boolean).join(" — ");
       } else {
         row.textContent = [formatGraphDate(entry.date), entry.label,
           `${entry.value}${options.yLabel ? ` ${options.yLabel}` : ""}`,
-          entry.phase ? `Phase: ${entry.phase === "baseline" ? "Baseline" : "Treatment"}` : "",
+          entry.phase ? `Phase: ${entry.phase === "baseline" ? "Baseline" : entry.phase === "intervention" ? "Treatment" : entry.phase.charAt(0).toUpperCase() + entry.phase.slice(1)}` : "",
           entry.source?.provider ? `Provider: ${entry.source.provider}` : "",
           entry.source?.note].filter(Boolean).join(" — ");
       }

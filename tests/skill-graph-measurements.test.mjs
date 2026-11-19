@@ -54,7 +54,7 @@ test('single-unit programs select their only type; mixed histories partition bef
   assert.deepEqual(observations,before);
 });
 
-test('typed missing values remain unavailable, zeros survive, and selected dates retain elapsed spacing',()=>{
+test('typed missing values remain unavailable, zeros survive, and selected dates retain sequence spacing',()=>{
   for(const type of ['percent_correct','frequency']) {
     const values=[0,'0',null,undefined,'','  ','invalid',NaN,Infinity];
     const chart=build(values.map((value,i)=>({targetId:'a',x:`2026-04-${String(i+1).padStart(2,'0')}`,dataCollectionType:type,[type==='frequency'?'frequency':'independence']:value})),type);
@@ -63,7 +63,7 @@ test('typed missing values remain unavailable, zeros survive, and selected dates
   }
   const dates=['2026-04-01','2026-04-03','2026-04-11'];
   const x=buildChartLayout(dates,64,720,null).dateXPositions;
-  assert.ok(Math.abs((x[1]-x[0])/(x[2]-x[0])-0.2)<1e-9);
+  assert.ok(Math.abs((x[1]-x[0])/(x[2]-x[0])-0.5)<1e-9);
 });
 
 const read=file=>readFileSync(new URL(`../public/${file}`,import.meta.url),'utf8');

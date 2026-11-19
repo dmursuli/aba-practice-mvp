@@ -150,6 +150,7 @@ export function sanitizeCustomPhaseLines(source = {}) {
         return entries;
       }
       entries.push({
+        ...(line?.effectiveAt ? {effectiveAt:sanitizeText(line.effectiveAt),clinicalPhase:sanitizeText(line.clinicalPhase),sessionId:sanitizeText(line.sessionId),initial:Boolean(line.initial)} : {}),
         id: sanitizeText(line?.id) || (normalizedPhaseType === "treatment" ? `${key}:treatment` : `${key}:${date}:${label.toLowerCase()}`),
         graphId: key,
         graphType: sanitizeText(line?.graphType) || key.split(":")[0] || "",

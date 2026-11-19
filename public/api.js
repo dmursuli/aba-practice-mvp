@@ -609,3 +609,9 @@ export async function discardSessionDraft(draftId, expectedRevision) {
     method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({expectedRevision})
   }));
 }
+
+export async function recordProgramClinicalAction(clientId, programId, payload) {
+  return parseResponse(await fetch(`/api/clients/${encodeURIComponent(clientId)}/programs/${encodeURIComponent(programId)}/clinical-phase`, {
+    method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(payload)
+  }));
+}
