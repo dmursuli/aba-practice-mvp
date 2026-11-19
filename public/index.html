@@ -2104,16 +2104,16 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
         <div class="skill-collection skill-percent-collection" data-percent-collection>
           <div class="skill-response-row">
             <div class="skill-count-control">
-              <span>Correct</span>
-              <button type="button" class="skill-counter-button" data-record-response="correct" data-response-step="-1" aria-label="Decrease correct">−</button>
-              <strong data-correct-summary aria-live="polite">0</strong>
-              <button type="button" class="skill-counter-button" data-record-response="correct" data-response-step="1" aria-label="Increase correct">+</button>
-            </div>
-            <div class="skill-count-control">
               <span>Incorrect</span>
               <button type="button" class="skill-counter-button" data-record-response="incorrect" data-response-step="-1" aria-label="Decrease incorrect">−</button>
               <strong data-incorrect-summary aria-live="polite">0</strong>
               <button type="button" class="skill-counter-button" data-record-response="incorrect" data-response-step="1" aria-label="Increase incorrect">+</button>
+            </div>
+            <div class="skill-count-control">
+              <span>Correct</span>
+              <button type="button" class="skill-counter-button" data-record-response="correct" data-response-step="-1" aria-label="Decrease correct">−</button>
+              <strong data-correct-summary aria-live="polite">0</strong>
+              <button type="button" class="skill-counter-button" data-record-response="correct" data-response-step="1" aria-label="Increase correct">+</button>
             </div>
           </div>
           <div class="skill-running-summary" aria-live="polite">
@@ -2125,8 +2125,8 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
             <summary>Edit totals</summary>
             <div>
               <label>Trials <input type="number" data-field="trials" min="0" value="0" required></label>
-              <label>Correct <input type="number" data-field="correct" min="0" value="0" required></label>
               <label>Incorrect <input type="number" data-field="incorrect" min="0" value="0" required></label>
+              <label>Correct <input type="number" data-field="correct" min="0" value="0" required></label>
             </div>
           </details>
         </div>
@@ -2176,16 +2176,16 @@ Focused ABA Treatment. Focused ABA generally ranges from 10-25 hours per week of
             <div class="parent-goal-collection-main">
               <div class="skill-response-row">
                 <div class="skill-count-control">
-                  <span>Independent</span>
-                  <button type="button" class="skill-counter-button" data-parent-goal-response="independent" data-response-step="-1" aria-label="Decrease independent responses">−</button>
-                  <strong data-parent-goal-independent-summary aria-live="polite">0</strong>
-                  <button type="button" class="skill-counter-button" data-parent-goal-response="independent" data-response-step="1" aria-label="Increase independent responses">+</button>
-                </div>
-                <div class="skill-count-control">
                   <span>Prompted</span>
                   <button type="button" class="skill-counter-button" data-parent-goal-response="prompted" data-response-step="-1" aria-label="Decrease prompted responses">−</button>
                   <strong data-parent-goal-prompted-summary aria-live="polite">0</strong>
                   <button type="button" class="skill-counter-button" data-parent-goal-response="prompted" data-response-step="1" aria-label="Increase prompted responses">+</button>
+                </div>
+                <div class="skill-count-control">
+                  <span>Independent</span>
+                  <button type="button" class="skill-counter-button" data-parent-goal-response="independent" data-response-step="-1" aria-label="Decrease independent responses">−</button>
+                  <strong data-parent-goal-independent-summary aria-live="polite">0</strong>
+                  <button type="button" class="skill-counter-button" data-parent-goal-response="independent" data-response-step="1" aria-label="Increase independent responses">+</button>
                 </div>
               </div>
               <label class="parent-goal-prompt-field">

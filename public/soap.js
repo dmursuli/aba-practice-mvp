@@ -93,7 +93,22 @@ export function summarize97155TargetChanges(changes = []) {
     protocolModifications: []
   };
 
-  (Array.isArray(changes) ? changes : []).forEach((change) => {
+  const entries = Array.isArray(changes) ? changes : [];
+  const finalLifecycleEvents = new Map();
+  // savePlan appends audit events; preserve that order (including timestamp ties).
+  // This index affects narrative only and never edits or removes audit records.
+  entries.forEach((change, index) => {
+    const type = String(change?.type || "").toLowerCase();
+    if (!["target-status-changed", "target-removed", "target-deleted"].includes(type)) return;
+    const program = change.programId || change.programName || "";
+    const target = change.targetId || change.targetName;
+    // Legacy named targets can be grouped; unnamed/unidentified events cannot safely be merged.
+    const key = target ? JSON.stringify([program, target]) : index;
+    finalLifecycleEvents.set(key, index);
+  });
+  const effectiveLifecycleIndexes = new Set(finalLifecycleEvents.values());
+
+  entries.forEach((change, index) => {
     const type = String(change?.type || "").toLowerCase();
     const targetLabel = targetChangeLabel(change);
     const programLabel = programChangeLabel(change);
@@ -108,6 +123,7 @@ export function summarize97155TargetChanges(changes = []) {
       return;
     }
     if (type === "target-status-changed") {
+      if (!effectiveLifecycleIndexes.has(index)) return;
       const toStatus = normalizeStatus(change?.toStatus);
       if (toStatus === "mastered") {
         addUnique(summary.targetsMastered, targetLabel);
@@ -123,6 +139,7 @@ export function summarize97155TargetChanges(changes = []) {
       return;
     }
     if (type === "target-removed" || type === "target-deleted") {
+      if (!effectiveLifecycleIndexes.has(index)) return;
       addUnique(summary.targetsRemoved, targetLabel);
       return;
     }

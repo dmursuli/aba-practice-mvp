@@ -1963,6 +1963,7 @@ function resetSensitiveState() {
   state.selectedSessionId = null;
   state.selectedSoapEntryKey = "";
   state.activeClientId = "";
+  state.active97155SessionId = "";
   state.activeDomain = "";
   state.activeGraphDomain = "";
   state.activePlanDomain = "";
@@ -2270,6 +2271,7 @@ function setActiveClient(clientId, { resetSession = true } = {}) {
   if (!clientId) return;
   state.sessionDraftChecking = true;
   updateSessionDraftControls();
+  if (state.activeClientId !== clientId) state.active97155SessionId = "";
   state.activeClientId = clientId;
   [
     workspaceClientSelect,
@@ -2367,6 +2369,7 @@ function addProgramRow(programId = "", targetId = "", values = {}) {
     });
   });
   programList.append(row);
+  sortSessionProgramRows();
   syncSkillCollectionMode(row, values.dataCollectionType);
   syncTrialBalance(row);
   updateProgramIndependence(row);
@@ -8317,13 +8320,20 @@ function findMasteryWindow(qualifyingSessions, consecutiveSessions, thresholdPer
 }
 
 function masteryReviewCounts() {
-  return targetReviewCacheEntry()?.snapshot?.counts || {
+  const counts = targetReviewCacheEntry()?.snapshot?.counts || {
     ready: 0,
     close: 0,
     stagnant: 0,
     mastered: 0,
     none: 0
   };
+  return {...counts, stagnant: clientPrograms().reduce((sum, program) => sum + (program.targets || [])
+    .filter(target => activeStagnantTarget(program, target)).length, 0)};
+}
+
+function activeStagnantTarget(program, target) {
+  return String(target.status || "active").toLowerCase() === "active"
+    && masteryReviewForTarget(program.id, target.id).state === "stagnant";
 }
 
 function stagnantReviewForTarget(criteria, qualifyingSessions, baseResult) {
@@ -10850,6 +10860,7 @@ function targetMatchesPlanTab(target, tab) {
 
 function targetMatchesPlanReviewFilter(program, target) {
   if (!state.activePlanReviewFilter) return true;
+  if (state.activePlanReviewFilter === "stagnant") return activeStagnantTarget(program, target);
   return masteryReviewForTarget(program.id, target.id).state === state.activePlanReviewFilter;
 }
 
@@ -11212,7 +11223,7 @@ async function handlePlanClick(event) {
 
 function jumpToReviewState(stateValue) {
   const matches = clientPrograms().flatMap((program) => (
-    (program.targets || []).map((target) => ({
+    (program.targets || []).filter(target => stateValue !== "stagnant" || activeStagnantTarget(program, target)).map((target) => ({
       domain: program.domain || clientDomains()[0],
       programId: program.id,
       targetId: target.id,
@@ -11772,19 +11783,26 @@ function currentPlanChangeDate() {
 }
 
 function current97155SessionContext({ create = true, date = "" } = {}) {
-  if (!state.active97155SessionId && create) {
-    state.active97155SessionId = cryptoId();
+  const client = currentClient();
+  const sessionDate = /^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) ? date : currentPlanChangeDate();
+  const startTime = bcbaSessionForm?.elements?.startTime?.value || "";
+  const history = client?.note97155History || [];
+  const active = history.find(entry => (entry.sessionId || entry.id) === state.active97155SessionId);
+  const change = (client?.planChangeLog || []).find(entry => entry.sessionId === state.active97155SessionId);
+  if ((active && (soapEntryStatus({type:"97155",record:active}) !== "draft" || active.date !== sessionDate || (active.startTime || "") !== startTime))
+      || (change && (change.sessionDate || change.date) !== sessionDate)) {
+    state.active97155SessionId = "";
   }
-  const sessionDate = /^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))
-    ? date
-    : currentPlanChangeDate();
-  return {
-    clientId: currentClient()?.id || "",
-    sessionId: state.active97155SessionId || "",
-    sessionDate,
-    serviceCode: "97155",
-    context: "treatment-planning"
-  };
+  // Recover the latest matching draft after returning to this client or reloading.
+  // A closed matching record must never cause an older draft to be reopened.
+  if (!state.active97155SessionId) {
+    const matching = [...history].filter(entry => entry.date === sessionDate && (entry.startTime || "") === startTime
+      && entry.lastSavedBy === state.currentUser?.id)
+      .sort((a,b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))[0];
+    if (matching && soapEntryStatus({type:"97155",record:matching}) === "draft") state.active97155SessionId = matching.sessionId || matching.id;
+  }
+  if (!state.active97155SessionId && create) state.active97155SessionId = cryptoId();
+  return {clientId:client?.id || "",sessionId:state.active97155SessionId || "",sessionDate,serviceCode:"97155",context:"treatment-planning"};
 }
 
 function soapNoteEntryKey(serviceCode, entryId) {
@@ -11814,6 +11832,7 @@ function selectedNoteHistoryEntry(serviceCode) {
 function upsertNoteHistoryEntry(serviceCode, record) {
   const entries = noteHistoryEntriesFor(serviceCode);
   const latest = entries[0];
+  const existing = entries.find(entry => entry.id === record.id);
   const matchesCurrentSession = latest
     && latest.date === record.date
     && latest.startTime === record.startTime
@@ -11825,7 +11844,7 @@ function upsertNoteHistoryEntry(serviceCode, record) {
     ...record,
     serviceCode,
     id: record.id || (matchesCurrentSession ? latest.id : cryptoId()),
-    createdAt: matchesCurrentSession ? latest.createdAt : (record.createdAt || new Date().toISOString()),
+    createdAt: existing?.createdAt || (matchesCurrentSession ? latest.createdAt : (record.createdAt || new Date().toISOString())),
     updatedAt: new Date().toISOString()
   };
   const remaining = entries.filter((entry) => entry.id !== normalized.id);
@@ -11985,13 +12004,13 @@ async function refreshCurrentClientPlanBefore97155Generation() {
 
 async function handleGenerate97155Note() {
   note97155Status.textContent = "Refreshing treatment-plan changes...";
-  await persistCurrentPlanDraftBefore97155Generation();
-  const sessionContext = current97155SessionContext({ create: true });
   try {
     await refreshCurrentClientPlanBefore97155Generation();
   } catch (error) {
     note97155Status.textContent = "Using locally loaded treatment-plan changes.";
   }
+  await persistCurrentPlanDraftBefore97155Generation();
+  const sessionContext = current97155SessionContext({ create: true });
   const sessionDetails = readBcbaSessionDetails();
   if (sessionDetails.rbtPresent && !sessionDetails.rbtUserId) {
     note97155Status.textContent = "Select the assigned RBT being supervised.";
@@ -12006,12 +12025,11 @@ async function handleGenerate97155Note() {
     note97155Status.textContent = "Regeneration canceled.";
     return;
   }
-  const selected = selectedNoteHistoryEntry("97155");
-  const selectedStatus = soapEntryStatus({ type: "97155", record: selected });
-  const selectedLocked = selected && ["finalized", "amended"].includes(selectedStatus)
-    && (selected.sessionId === sessionContext.sessionId || selected.id === sessionContext.sessionId);
+  const existingDraft = noteHistoryEntriesFor("97155").find(entry =>
+    (entry.sessionId || entry.id) === sessionContext.sessionId && soapEntryStatus({type:"97155",record:entry}) === "draft");
   const note97155History = upsertNoteHistoryEntry("97155", draftNoteHistoryMetadata({
-    id: selectedLocked ? cryptoId() : (sessionContext.sessionId || selected?.id || cryptoId()),
+    ...existingDraft,
+    id: existingDraft?.id || sessionContext.sessionId,
     sessionId: sessionContext.sessionId || "",
     note,
     date: sessionDetails.date,
@@ -12048,7 +12066,6 @@ async function handleGenerate97155Note() {
     rbtWrittenFeedback.value = "";
   }
   state.selectedSoapEntryKey = soapNoteEntryKey("97155", note97155History[0].id);
-  state.active97155SessionId = "";
   note97155Status.textContent = "97155 note generated.";
   planMessage.textContent = "97155 note generated. Review or edit it below.";
   renderHistory();
@@ -14742,6 +14759,8 @@ async function saveNoteHistoryRecord(entry, record, message) {
     note97155History,
     note97151History
   );
+  if (serviceCode === "97155" && ["finalized","amended"].includes(soapEntryStatus({type:serviceCode,record}))
+      && state.active97155SessionId === (record.sessionId || record.id)) state.active97155SessionId = "";
   state.selectedSoapEntryKey = soapNoteEntryKey(serviceCode, record.id);
   state.soapAmendmentModeKey = "";
   noteStatus.textContent = message;
@@ -15535,7 +15554,16 @@ function renderTargetStatusTabs() {
   document.querySelector("#add-maintenance-target")?.classList.toggle("hidden", state.activeSessionTargetTab !== "maintenance");
 }
 
+function sortSessionProgramRows() {
+  const names = new Map(clientPrograms().map(program => [program.id, program.name || ""]));
+  const rows = [...programList.querySelectorAll(".program-row")];
+  rows.sort((a, b) => String(names.get(a.querySelector('[data-field="programId"]').value) || "")
+    .localeCompare(String(names.get(b.querySelector('[data-field="programId"]').value) || ""), undefined, { sensitivity: "base" }));
+  rows.forEach(row => programList.append(row));
+}
+
 function applySessionTargetFilter() {
+  sortSessionProgramRows();
   [...programList.querySelectorAll(".program-row")].forEach((row) => {
     const rowMode = row.querySelector('[data-field="entryMode"]')?.value || "active";
     const domainMatches = !state.activeDomain || (row.dataset.domain || "General") === state.activeDomain;
