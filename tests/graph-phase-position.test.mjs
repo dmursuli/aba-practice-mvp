@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {drawLineChart,buildGraphAnalysis} from '../public/charts.js';
+import {drawLineChart,buildGraphAnalysis,buildObservationEventPositions} from '../public/charts.js';
 const baseline={id:'baseline',date:'2026-11-19',effectiveAt:'2026-11-19T14:30:00.000Z',clinicalPhase:'baseline',phaseType:'environmental',label:'Baseline',initial:true};
 const treatment={id:'treatment',date:'2026-11-19',effectiveAt:'2026-11-19T14:45:00.000Z',clinicalPhase:'intervention',phaseType:'environmental',label:'Treatment'};
 const point=(y,at='14:35',phaseRecordId='baseline',date='2026-11-19')=>({x:date,y,recordedAt:`${date}T${at}:00.000Z`,phaseRecordId,sessionId:'same-97155'});
@@ -108,4 +108,34 @@ test('explicit Maintenance and other clinical annotations use the same timed bou
   const result=draw([{name:'A',points:[point(10),point(20,'15:00')]}],[{id:'event',date:treatment.date,effectiveAt:treatment.effectiveAt,...marker}]);
   assert.ok(result.points[0].x<result.markers[0].x && result.markers[0].x<result.points[1].x);
  }
+});
+
+for (const [name,points,event,expected] of [
+ ['single observation, same-date mastery',[point(0)],{date:'2026-11-19',phaseType:'targetMastered'},0.5],
+ ['single observation, later mastery',[point(0)],{date:'2026-11-20',phaseType:'targetMastered'},0.5],
+ ['mastery on final observation date',[point(0),point(40,'15:00')],{date:'2026-11-19',phaseType:'targetMastered'},1.5],
+ ['mastery between observations',[point(0),point(40,'15:00')],{date:'2026-11-19',timestamp:treatment.effectiveAt,phaseType:'targetMastered'},0.5],
+ ['Treatment between observations',[point(0),point(40,'15:00','treatment')],treatment,0.5],
+ ['Treatment after final Baseline',[point(0)],treatment,0.5]
+]) test(`integer observation / half-step event coordinates: ${name}`,()=>{
+ const marker={label:'Clinical event',...event};const series=[{name:'A',points}];
+ const original=structuredClone({series,marker});
+ const positions=buildObservationEventPositions(series,[marker]);
+ assert.deepEqual(points.map(positions.observationPosition),points.map((_,i)=>i));
+ assert.equal(positions.events[0].displayPosition,expected);
+ for(const p of points) assert.notEqual(positions.events[0].displayPosition,positions.observationPosition(p));
+ const result=draw(series,[baseline,marker]);
+ const rendered=result.markers[0];
+ assert.ok(rendered.x>result.points[Math.floor(expected)].x);
+ if(points.length>Math.ceil(expected)) assert.ok(rendered.x<result.points[Math.ceil(expected)].x);
+ assert.ok(result.points.every(p=>p.x!==rendered.x));
+ assert.equal(rendered.date,event.date);
+ assert.deepEqual({series,marker},original);
+});
+
+test('date-only historical Treatment is before the first observation, including a single-point graph',()=>{
+ const record={id:'historical',date:'2026-11-19',phaseType:'environmental',clinicalPhase:'intervention',label:'Treatment',historicalDecision:true,baselineBefore:false};
+ const result=draw([{name:'A',points:[{x:record.date,y:0}]}],[record]);
+ assert.ok(result.markers[0].x<result.points[0].x);
+ assert.equal(result.points[0].phase,'intervention');
 });

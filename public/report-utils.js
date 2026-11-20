@@ -12,7 +12,7 @@ export function buildCompactGraphAnalysisSentence(entry, graphType) {
     `Baseline: ${formatMetricValue(entry.baselineLevel, graphType)}`,
     `Treatment: ${formatMetricValue(entry.treatmentLevel ?? entry.treatmentAverage, graphType)}`,
     `Change: ${formatMetricValue(entry.changeFromBaseline ?? entry.difference, graphType)}${(entry.relativePercentChange || entry.percentChange) && !String(entry.relativePercentChange || entry.percentChange).includes("unavailable") ? ` (${entry.relativePercentChange || entry.percentChange})` : ""}`,
-    `Trend: ${entry.trendDirection || "Unavailable"}`
+    `Trend: ${entry.trendDisplay || entry.trendDirection || "Unavailable"}`
   ];
   return `${metrics.join(". ")}. ${String(entry.interpretation || "").trim()}`.replace(/\s+/g, " ").trim();
 }

@@ -57,9 +57,10 @@ export function drawLineChart(canvas, series, options = {}) {
   }
 
   const model = buildClinicalGraphModel(series, options);
-  const { dates, phaseBoundary } = model;
+  const { dates } = model;
   const layout = buildPhaseTransitionLayout(series, model, margin.left, plotWidth,
     options.graphType === "behavior" ? "calendar" : "sequence");
+  const phaseBoundary = layout.phaseBoundary;
   const phaseMarkers = layout.phaseMarkers || model.phaseMarkers;
   const xPositions = layout.dateXPositions;
   ctx.font = "11px system-ui, sans-serif";
@@ -591,6 +592,7 @@ function analyzeSingleSeries(series, options) {
     classificationMessage,
     recentPerformance,
     trendDirection: trend.direction,
+    trendDisplay: trend.direction === "Insufficient data" ? "Insufficient Treatment data for trend." : trend.direction,
     trendConfidence: trend.confidence,
     variability,
     stability,
@@ -822,6 +824,7 @@ function markerPositions(markers, dates, xPositions, markerXByDate = new Map()) 
 }
 
 function phaseLinePosition(phaseBoundary, xPositions) {
+  if (Object.hasOwn(phaseBoundary, "renderX")) return phaseBoundary.renderX;
   const baselineX = xPositions[phaseBoundary.leftIndex];
   const interventionX = xPositions[phaseBoundary.rightIndex];
   return baselineX + (interventionX - baselineX) / 2;
@@ -871,54 +874,65 @@ function observationSideOfEvent(point, marker) {
     // At identical timestamps, annotations follow the associated observation.
     if (!clinicalPhaseOf(marker)) return -1;
   }
+  if (clinicalPhaseOf(marker)) return 1;
   if (marker.position === "after-date") return -1;
   return clinicalPhaseOf(marker) ? 1 : -1;
 }
 
+// Observations have integer coordinates; events have half-integer coordinates.
+// This model is independent of pixels, dates, canvas width, and available padding.
+export function buildObservationEventPositions(series, markers = []) {
+  const observations = series.flatMap(item => item.points || [])
+    .slice().sort((a,b) => compareGraphObservations(a,b) || markers.reduce((order,marker) => order || observationSideOfEvent(a,marker)-observationSideOfEvent(b,marker),0));
+  const coordinates = new Map(observations.map((point,index) => [point,index]));
+  const events = markers.map(marker => {
+    // Unknown intraday order follows the deterministic clinical relationship.
+    // Place after the last preceding observation, including the final one.
+    let preceding = -1;
+    observations.forEach((point,index) => {
+      if (observationSideOfEvent(point,marker) < 0) preceding = index;
+    });
+    return {...marker,displayPosition:preceding + 0.5};
+  });
+  return {observations,observationPosition:point => coordinates.get(point),events};
+}
+
 export function buildPhaseTransitionLayout(series, model, left, width, spacing = "sequence") {
   const {dates, phaseBoundary, phaseMarkers} = model;
-  const base = buildChartLayout(dates, left, width, phaseBoundary, phaseMarkers, spacing);
-  const points = series.flatMap(item => item.points || []).filter(point => graphNumericValue(point.y) !== null);
-  const boundaries = phaseMarkers.map(marker => ({marker,
-    before:points.filter(point => observationSideOfEvent(point,marker) < 0),
-    after:points.filter(point => observationSideOfEvent(point,marker) > 0)
-  }));
-  const cuts = [];
-  const seen = new Set();
-  for (const {marker,before,after} of boundaries) {
-    if (!before.some(point => point.x === marker.date) || !after.some(point => point.x === marker.date)) continue;
-    const signature = marker.date + points.filter(point => point.x === marker.date).map(point => observationSideOfEvent(point,marker)).join(",");
-    if (!seen.has(signature)) {seen.add(signature);cuts.push(marker);}
-  }
-  const groupFor = point => cuts.filter(marker => marker.date === point.x && observationSideOfEvent(point,marker) > 0).length;
-  const slots = dates.flatMap(date => Array.from({length:1 + cuts.filter(marker => marker.date === date).length}, (_, group) => ({date,group})));
-  let positions = cuts.length ? buildChartLayout(slots.map(slot => slot.date), left, width, null).dateXPositions : base.dateXPositions;
-  if (spacing === "calendar" && cuts.length) {
-    positions = slots.map(slot => {
-      const index = dates.indexOf(slot.date), count = cuts.filter(marker => marker.date === slot.date).length;
-      const center = base.dateXPositions[index];
-      const gap = Math.min(center - (base.dateXPositions[index-1] ?? left), (base.dateXPositions[index+1] ?? left+width) - center);
-      const halfWidth = Math.min(20, gap / 3);
-      return count ? center + halfWidth * (2 * slot.group / count - 1) : center;
+  const boundaryMarker = phaseBoundary ? {...phaseBoundary,date:phaseBoundary.configuredDate,position:"date"} : null;
+  const ordered = buildObservationEventPositions(series, [...phaseMarkers,...(boundaryMarker ? [boundaryMarker] : [])]);
+  const count = ordered.observations.length;
+  const padding = Math.min(28,width * 0.08);
+  const start = left + padding, end = left + width - padding;
+  const coordinates = [0,Math.max(0,count-1),...ordered.events.map(event => event.displayPosition)];
+  const minimum = Math.min(...coordinates), maximum = Math.max(...coordinates);
+  const scale = position => maximum === minimum ? (start+end)/2 : start + (position-minimum)/(maximum-minimum)*(end-start);
+  let positions = ordered.observations.map((point,index) => scale(index));
+  if (spacing === "calendar" && dates.length > 1) {
+    const centers = buildChartLayout(dates,left,width,null,[],"calendar").dateXPositions;
+    positions = ordered.observations.map(point => {
+      const index = dates.indexOf(point.x), center = centers[index];
+      const sameDate = ordered.observations.filter(item => item.x === point.x);
+      const gap = Math.min(center-(centers[index-1] ?? left),(centers[index+1] ?? left+width)-center);
+      const halfWidth = Math.min(20,gap/3);
+      return sameDate.length === 1 ? center : center + halfWidth*(2*sameDate.indexOf(point)/(sameDate.length-1)-1);
     });
   }
-  const pointX = point => positions[slots.findIndex(slot => slot.date === point.x && slot.group === groupFor(point))];
+  const pointX = point => positions[ordered.observationPosition(point)];
+  const eventX = position => {
+    if (spacing !== "calendar" || dates.length <= 1) return scale(position);
+    const before = positions[Math.floor(position)], after = positions[Math.ceil(position)];
+    if (Number.isFinite(before) && Number.isFinite(after)) return (before+after)/2;
+    return Number.isFinite(before) ? (before+left+width)/2 : (left+after)/2;
+  };
+  const renderedMarkers = ordered.events.map(marker => ({...marker,renderX:eventX(marker.displayPosition)}));
+  const renderedBoundary = boundaryMarker ? renderedMarkers.pop() : null;
   const dateXPositions = dates.map(date => {
-    const indexes = slots.flatMap((slot,index) => slot.date === date ? [index] : []);
-    return (positions[indexes[0]] + positions[indexes.at(-1)]) / 2;
+    const sameDate = ordered.observations.filter(point => point.x === date).map(pointX);
+    return sameDate.length ? (sameDate[0]+sameDate.at(-1))/2 : NaN;
   });
-  const renderedMarkers = boundaries.map(({marker,before,after}) => {
-    const previousX = Math.max(...before.map(pointX));
-    const nextX = Math.min(...after.map(pointX));
-    const renderX = Number.isFinite(previousX) && Number.isFinite(nextX) && previousX < nextX
-      ? (previousX + nextX) / 2
-      : Number.isFinite(previousX) && !after.length
-        ? previousX + Math.min(16, (left + width - previousX) / 2)
-        : Number.isFinite(nextX) && !before.length
-          ? nextX - Math.min(16, (nextX - left) / 2) : NaN;
-    return {...marker,renderX};
-  });
-  return {dateXPositions, markerXByDate:base.markerXByDate, pointX, phaseMarkers:renderedMarkers};
+  return {dateXPositions,markerXByDate:new Map(),pointX,phaseMarkers:renderedMarkers,
+    phaseBoundary:renderedBoundary ? {...phaseBoundary,renderX:renderedBoundary.renderX} : null};
 }
 
 export function buildChartLayout(dates, left, width, phaseBoundary, markers = [], spacing = "sequence") {
@@ -1001,7 +1015,7 @@ export function formatGraphDate(value) {
 
 function classifyTrend(values, graphType) {
   if (!Array.isArray(values) || values.length < 3) {
-    return { direction: "Insufficient data", slope: 0, confidence: "Insufficient data for trend interpretation (at least 3 treatment observations required)." };
+    return { direction: "Insufficient data", slope: 0, confidence: "Insufficient Treatment data for trend. At least 3 valid Treatment observations are required." };
   }
   const slope = linearRegressionSlope(values);
   const average = mean(values);

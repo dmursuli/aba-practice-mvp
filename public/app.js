@@ -10869,7 +10869,8 @@ function renderHistoricalPhaseControls(program) {
   const dates = historicalProgramDates(program.id, currentSessions());
   if (!dates.length) return '<p class="muted">No eligible recorded observations exist for this program.</p>';
   return `<div class="historical-phase-controls">
-    <p>Record a clinical phase decision for existing data. Observations will not be changed.</p>
+    <p><strong>Historical phase not established</strong></p>
+    <p>This program-level decision applies to every target. Observations will not be changed.</p>
     <button type="button" data-program-clinical-action="classify-historical" data-boundary-mode="first" data-program-id="${escapeHtml(program.id)}">Treatment from first recorded observation</button>
     <label>Treatment start date<select data-history-date>${dates.map(date => `<option value="${date}">${escapeHtml(formatGraphDate(date))}</option>`).join("")}</select></label>
     <p class="muted">All observations on the selected date and afterward will be Treatment. This is a date boundary, including all same-day observations.</p>
@@ -12750,24 +12751,7 @@ function handleGraphAnalysisControlChange(event) {
   graphContainer.querySelector("[data-graph-trend-toggle]")?.focus();
 }
 
-async function openHistoricalPhaseManagement(programId) {
-  if (!canEditClinical()) return;
-  const program = clientPrograms().find(program => program.id === programId);
-  if (!program) return;
-  state.activePlanDomain = program.domain || clientDomains()[0];
-  state.activePlanProgramTab = normalizePlanStatus(program.status || "active");
-  state.activePlanReviewFilter = "";
-  state.historicalPhaseProgramId = programId;
-  closeProgramGraphModal();
-  await switchView("plan");
-  await ensureClientSessionsLoaded(currentClient().id);
-  renderPlanReview();
-  planReview.querySelector(`[data-phase-program="${CSS.escape(programId)}"]`)?.scrollIntoView({block:"center"});
-}
-
 function handleGraphAnalysisClick(event) {
-  const manage = event.target.closest("[data-manage-historical-phase]");
-  if (manage) { void openHistoricalPhaseManagement(manage.dataset.manageHistoricalPhase); return; }
   const insert = event.target.closest("[data-insert-graph-analysis]");
   if (!insert) return;
   const graphKey = insert.dataset.insertGraphAnalysis;
@@ -14054,8 +14038,6 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
       ${analysis.measurementLabel ? `<p class="graph-analysis-note">Measurement: ${escapeHtml(analysis.measurementLabel)}</p>` : ""}
       ${analysis.measurementNotice ? `<p class="graph-analysis-note">${escapeHtml(analysis.measurementNotice)}</p>` : ""}
       ${!analysis.phaseBoundary ? `<p class="graph-analysis-note">${analysis.graphType === "skill" ? "Only explicit clinical phases classify observations; mastery is an annotation." : "No explicit treatment phase line; observations are not classified as Baseline or Treatment."}</p>` : ""}
-      ${analysis.analyses.some(entry => entry.phaseUnclassified) && graphKey.startsWith("skill:") && canEditClinical()
-        ? `<button type="button" class="secondary-button" data-manage-historical-phase="${escapeHtml(graphKey.slice(6))}">Establish historical Treatment phase</button>` : ""}
       ${options.treatmentBeforeRange ? '<p class="graph-analysis-note">Treatment phase began before selected range.</p>' : ""}
       ${showTrendLine && analysis.trendLineMessage ? `<p class="graph-analysis-note">${escapeHtml(analysis.trendLineMessage)}</p>` : ""}
       ${analysis.analyses.map((entry) => `
@@ -14069,7 +14051,7 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
             ${renderGraphMetricCell("Baseline level", formatAnalysisMetric(entry.baselineLevel, analysis.graphType))}
             ${renderGraphMetricCell("Treatment level", formatAnalysisMetric(entry.treatmentLevel ?? entry.treatmentAverage, analysis.graphType))}
             ${renderGraphMetricCell("Current level", formatAnalysisMetric(entry.currentLevel, analysis.graphType))}
-            ${renderGraphMetricCell("Trend", entry.trendDirection)}
+            ${renderGraphMetricCell("Trend", entry.trendDisplay || entry.trendDirection)}
             ${renderGraphMetricCell("Change from baseline", entry.relativePercentChange && !String(entry.relativePercentChange).includes("unavailable")
               ? `${formatAnalysisMetric(entry.changeFromBaseline ?? entry.difference, analysis.graphType)} (${entry.relativePercentChange})`
               : formatAnalysisMetric(entry.changeFromBaseline ?? entry.difference, analysis.graphType))}

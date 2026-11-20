@@ -72,3 +72,48 @@ test('actual UI handler requires confirmation, preserves session, and immediatel
   assert.equal(button.disabled,false);
  }
 });
+
+test('one historical program decision updates all twelve targets without per-target records or observation writes',()=>{
+ const {db,client,act}=fixture();
+ client.programs[0].targets=Array.from({length:12},(_,i)=>({id:`t${i}`,name:`Target ${i}`}));
+ db.sessions.forEach((session,i)=>{session.programs[0].targets=client.programs[0].targets
+  .filter((target,j)=>j<11 || i>=8).map(target=>({id:`${session.id}-${target.id}`,targetId:target.id,independence:i*10}));});
+ const before=JSON.stringify(db.sessions);act();
+ assert.equal(programPhaseRecords(client,'p').length,1);
+ assert.deepEqual(Object.keys(client.profile.graphPhaseLines),['skill:p']);
+ for (const target of client.programs[0].targets) {
+  const points=db.sessions.flatMap(s=>s.programs[0].targets.filter(p=>p.targetId===target.id).map(p=>({x:s.date,y:p.independence})));
+  const result=buildGraphAnalysis([{name:target.name,points}],{phaseMarkers:programPhaseRecords(client,'p')}).analyses[0];
+  assert.equal(result.treatmentLevel,target.id==='t11'?85:45);assert.equal(result.currentLevel,90);
+  assert.equal(result.baselineLevel,null);
+  if(target.id==='t11') {assert.equal(result.trendDisplay,'Insufficient Treatment data for trend.');assert.match(result.trendConfidence,/Insufficient Treatment data/);}
+  else {assert.equal(result.trendDirection,'Increasing');assert.equal(result.recentPerformance,'Recent improvement');}
+ }
+ assert.equal(JSON.stringify(db.sessions),before);
+});
+
+test('historical phase controls belong to Treatment Planning program and are absent from graph and report analysis',async()=>{
+ const {readFileSync}=await import('node:fs');const {default:vm}=await import('node:vm');
+ const {historicalProgramDates}=await import('../public/skill-graph-measurements.js');
+ const {clinicalPhaseOf}=await import('../public/charts.js');
+ const {buildCompactGraphAnalysisSentence}=await import('../public/report-utils.js');
+ const app=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
+ const extract=name=>app.match(new RegExp(`^(?:async )?function ${name}\\([^\\n]*\\{[\\s\\S]*?^}`, 'm'))[0];
+ const f=fixture();
+ const sandbox={state:{historicalPhaseProgramId:'p'},currentClient:()=>f.client,currentSessions:()=>f.db.sessions,
+  currentPlanChangeDate:()=>context.sessionDate,canEditClinical:()=>true,escapeHtml:String,formatGraphDate:String,
+  clinicalPhaseOf,programPhaseAt,historicalProgramDates,buildCompactGraphAnalysisSentence};
+ vm.createContext(sandbox);
+ vm.runInContext(['renderHistoricalPhaseControls','renderProgramPhaseControls','renderGraphAnalysisMarkup','renderReportGraphAnalysisMarkup','renderGraphMetricCell','formatAnalysisMetric'].map(extract).join('\n'),sandbox);
+ const markup=sandbox.renderProgramPhaseControls(f.client.programs[0]);
+ assert.equal((markup.match(/data-boundary-mode="first"/g)||[]).length,1);
+ assert.match(markup,/program-level decision applies to every target/);
+ const analysis={graphType:'skill',analyses:[f.analysis()]};
+ // Analyze the actual renderer source: no graph owns a historical action.
+ for(const name of ['renderGraphAnalysisMarkup','renderReportGraphAnalysisMarkup']) assert.doesNotMatch(extract(name),/data-manage-historical-phase|data-program-clinical-action/);
+ assert.equal((extract('renderPlanProgram').match(/renderProgramPhaseControls\(program\)/g)||[]).length,1);
+ f.act();assert.doesNotMatch(sandbox.renderProgramPhaseControls(f.client.programs[0]),/data-boundary-mode/);
+ assert.equal(buildCompactGraphAnalysisSentence({...f.analysis(),trendDisplay:'Insufficient Treatment data for trend.'},'skill').includes('Insufficient Treatment data for trend.'),true);
+ sandbox.canEditClinical=()=>false;f.client.profile.graphPhaseLines={};
+ assert.doesNotMatch(sandbox.renderProgramPhaseControls(f.client.programs[0]),/data-program-clinical-action/);
+});
