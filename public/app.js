@@ -1,9 +1,9 @@
 import { sanitizeClinicalSnapshot, snapshotPhaseConfig, reportSnapshotDisclosure } from "./report-snapshot.js";
 import { recordProgramClinicalAction, discardSessionDraft, assignClientProvider, cancelAppointment, completeSessionDraft, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createSessionDraft, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getSchedulingCapacity, getSessionDraft, getUsers, getVisibleSessions, importHistoricalData, listSessionDrafts, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateSessionDraft, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
-import { programPhaseAt, graphObservationProvider, buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
+import { clinicalPhaseOf, programPhaseAt, graphObservationProvider, buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
 import { graphScopeVisibility } from "./graph-ui.js";
 import { graphNumericValue } from "./graph-values.js";
-import { buildSkillMeasurementChart, skillMeasurementSettings } from "./skill-graph-measurements.js";
+import { historicalProgramDates, buildSkillMeasurementChart, skillMeasurementSettings } from "./skill-graph-measurements.js";
 import { behaviorGraphMeasurement, behaviorMeasurementGate, behaviorMeasurementLabel, drawBehaviorMeasurementChart, buildBehaviorMeasurementAnalysis } from "./behavior-graph-measurements.js";
 import { buildHistoricalImportCsvTemplate, parseHistoricalImportCsv, validateHistoricalImportRows } from "./historical-import-utils.js";
 import { adjustParentTrainingResponse, buildEditableParentTrainingSummary, explicitParentTrainingGoalState, filterMasteredGoalsForPeriod, isLegacyGeneratedParentTrainingSummary, parentTrainingCollectionMetrics, parentTrainingGoalKey, parentTrainingGoalLabel, parentTrainingGoalLifecycleState, parentTrainingGoalMasteryDate, summarizeParentTrainingReport } from "./parent-training-report.js";
@@ -9630,7 +9630,7 @@ function renderCustomPhaseLineManager(graphKey, series, options = {}) {
   const lines = options.phaseConfig ? options.phaseConfig.phaseMarkers : customPhaseLinesForGraph(graphKey);
   const treatmentLine = options.phaseConfig ? options.phaseConfig.treatmentPhaseLine : graphTreatmentPhaseLine(graphKey, series);
   const treatmentRecord = options.phaseConfig ? treatmentLine : treatmentPhaseRecordForGraph(graphKey);
-  const managedProgramPhase = lines.some(line => line.effectiveAt);
+  const managedProgramPhase = lines.some(line => line.effectiveAt || line.historicalDecision);
   const editingId = options.editingId || "";
   const editingLine = editingId ? lines.find((line) => line.id === editingId) : null;
   const editingTreatment = options.editingTreatment === true;
@@ -10864,6 +10864,21 @@ function renderPlanDomainTabs(domains) {
   });
 }
 
+function renderHistoricalPhaseControls(program) {
+  if (state.historicalPhaseProgramId !== program.id) return `<button type="button" class="secondary-button" data-program-clinical-action="review-history" data-program-id="${escapeHtml(program.id)}">Classify historical data</button>`;
+  const dates = historicalProgramDates(program.id, currentSessions());
+  if (!dates.length) return '<p class="muted">No eligible recorded observations exist for this program.</p>';
+  return `<div class="historical-phase-controls">
+    <p>Record a clinical phase decision for existing data. Observations will not be changed.</p>
+    <button type="button" data-program-clinical-action="classify-historical" data-boundary-mode="first" data-program-id="${escapeHtml(program.id)}">Treatment from first recorded observation</button>
+    <label>Treatment start date<select data-history-date>${dates.map(date => `<option value="${date}">${escapeHtml(formatGraphDate(date))}</option>`).join("")}</select></label>
+    <p class="muted">All observations on the selected date and afterward will be Treatment. This is a date boundary, including all same-day observations.</p>
+    <label><input type="checkbox" data-history-baseline> Explicitly classify observations before this date as Baseline</label>
+    <p class="muted">If unchecked, earlier observations remain unclassified.</p>
+    <button type="button" data-program-clinical-action="classify-historical" data-boundary-mode="date" data-program-id="${escapeHtml(program.id)}">Choose Treatment start</button>
+  </div>`;
+}
+
 function renderProgramPhaseControls(program) {
   const records = currentClient()?.profile?.graphPhaseLines?.[`skill:${program.id}`] || [];
   const date = currentPlanChangeDate();
@@ -10875,7 +10890,7 @@ function renderProgramPhaseControls(program) {
   const label = phase === "intervention" ? "Treatment" : phase ? phase.charAt(0).toUpperCase() + phase.slice(1) : "Not established";
   return `<div class="program-phase-controls" data-phase-program="${escapeHtml(program.id)}">
     <p><strong>Current Phase: ${escapeHtml(label)}</strong></p>
-    ${canEditClinical() ? `${!phase ? `<button type="button" class="secondary-button" data-program-clinical-action="establish-baseline" data-program-id="${escapeHtml(program.id)}">Establish Baseline going forward</button>` : ""}
+    ${canEditClinical() ? `${!records.some(record => clinicalPhaseOf(record)) ? renderHistoricalPhaseControls(program) : ""}${!phase ? `<button type="button" class="secondary-button" data-program-clinical-action="establish-baseline" data-program-id="${escapeHtml(program.id)}">Establish Baseline going forward</button>` : ""}
     ${phase === "baseline" ? `<button type="button" data-program-clinical-action="start-treatment" data-program-id="${escapeHtml(program.id)}">Start Treatment</button><p class="muted">Collect at least one baseline observation before beginning treatment.</p>` : ""}
     ${phase ? `<div class="inline-fields"><label>97155 ${phase === "baseline" ? "baseline probe" : "observation"} target
       <select data-probe-target>${(program.targets || []).map(target => `<option value="${escapeHtml(target.id)}">${escapeHtml(target.name)}</option>`).join("")}</select></label>
@@ -10889,9 +10904,28 @@ async function handleProgramClinicalAction(button) {
   if (!canEditClinical() || button.disabled) return;
   const action = button.dataset.programClinicalAction;
   const programId = button.dataset.programId;
+  if (action === "review-history") {
+    button.disabled = true;
+    try {
+      await ensureClientSessionsLoaded(currentClient().id);
+      state.historicalPhaseProgramId = programId;
+      renderPlanReview();
+    } catch (error) { planMessage.textContent = error.message; }
+    finally { button.disabled = false; }
+    return;
+  }
   const section = button.closest("[data-phase-program]");
   const targetId = section?.querySelector("[data-probe-target]")?.value;
   const value = section?.querySelector("[data-probe-value]")?.value;
+  const historical = action === "classify-historical" ? {
+    boundaryMode:button.dataset.boundaryMode,
+    startDate:section?.querySelector("[data-history-date]")?.value,
+    baselineBefore:button.dataset.boundaryMode === "date" && Boolean(section?.querySelector("[data-history-baseline]")?.checked),
+    confirmed:true
+  } : {};
+  if (action === "classify-historical" && !window.confirm(historical.boundaryMode === "first"
+    ? "Confirm that this program was already in Treatment from its first eligible recorded observation? No observations will be changed."
+    : `Establish Treatment from ${historical.startDate}? Earlier observations ${historical.baselineBefore ? "will be classified as Baseline" : "will remain unclassified"}. No observations will be changed.`)) return;
   if (action === "start-treatment" && !window.confirm("Begin treatment for this program? Future observations will be classified as Treatment until the phase is changed again.")) return;
   if (action === "establish-baseline" && !window.confirm("Establish Baseline for future observations? Existing historical observations will remain unchanged.")) return;
   button.disabled = true;
@@ -10900,7 +10934,7 @@ async function handleProgramClinicalAction(button) {
     const sessionContext = {...current97155SessionContext({create:true}),
       startTime:bcbaSessionForm.elements.startTime.value, endTime:bcbaSessionForm.elements.endTime.value,
       setting:bcbaSessionForm.elements.setting.value};
-    const result = await recordProgramClinicalAction(currentClient().id, programId, {action,targetId,value,sessionContext});
+    const result = await recordProgramClinicalAction(currentClient().id, programId, {action,targetId,value,sessionContext,...historical});
     replaceClient(result.client);
     syncGraphPhaseLineState(result.client);
     if (result.session) {
@@ -12716,7 +12750,24 @@ function handleGraphAnalysisControlChange(event) {
   graphContainer.querySelector("[data-graph-trend-toggle]")?.focus();
 }
 
+async function openHistoricalPhaseManagement(programId) {
+  if (!canEditClinical()) return;
+  const program = clientPrograms().find(program => program.id === programId);
+  if (!program) return;
+  state.activePlanDomain = program.domain || clientDomains()[0];
+  state.activePlanProgramTab = normalizePlanStatus(program.status || "active");
+  state.activePlanReviewFilter = "";
+  state.historicalPhaseProgramId = programId;
+  closeProgramGraphModal();
+  await switchView("plan");
+  await ensureClientSessionsLoaded(currentClient().id);
+  renderPlanReview();
+  planReview.querySelector(`[data-phase-program="${CSS.escape(programId)}"]`)?.scrollIntoView({block:"center"});
+}
+
 function handleGraphAnalysisClick(event) {
+  const manage = event.target.closest("[data-manage-historical-phase]");
+  if (manage) { void openHistoricalPhaseManagement(manage.dataset.manageHistoricalPhase); return; }
   const insert = event.target.closest("[data-insert-graph-analysis]");
   if (!insert) return;
   const graphKey = insert.dataset.insertGraphAnalysis;
@@ -13935,36 +13986,13 @@ function buildParentTrainingChartModels(sessions) {
 }
 
 function masteryMarkersForProgram(programId) {
-  const markers = (currentClient()?.planChangeLog || [])
-    .filter((change) => (
-      change.type === "target-status-changed"
-      && change.programId === programId
-      && change.toStatus === "mastered"
-      && change.date
-    ))
-    .reduce((map, change) => {
-      if (!map.has(change.date)) {
-        map.set(change.date, []);
-      }
-      map.get(change.date).push(change.targetName);
-      return map;
-    }, new Map());
-
-  return [...markers.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([date, targetNames]) => ({
-      date,
-      label: "Target mastered",
-      detail: targetNames.join(", "),
-      targetIds: targetNames.map((targetName) => (
-        clientPrograms()
-          .find((program) => program.id === programId)
-          ?.targets?.find((target) => target.name === targetName)?.id
-      )).filter(Boolean),
-      phaseType: "targetMastered",
-      lineStyle: "dashed",
-      position: "after-date"
-    }));
+  // Retain the actual event ordering instead of collapsing all actions to a date.
+  return (currentClient()?.planChangeLog || [])
+    .filter(change => change.type === "target-status-changed" && change.programId === programId && change.toStatus === "mastered" && change.date)
+    .map(change => ({id:change.id,date:change.date,...(change.timestamp ? {timestamp:change.timestamp} : {}),
+      label:"Target mastered",detail:change.targetName || "",targetIds:change.targetId ? [change.targetId] : [],
+      phaseType:"targetMastered",lineStyle:"dashed",position:"after-date"}))
+    .sort((a,b) => a.date.localeCompare(b.date) || String(a.timestamp || "").localeCompare(String(b.timestamp || "")));
 }
 
 function renderGraphLegendMarkup(series, options = {}) {
@@ -14026,6 +14054,8 @@ function renderGraphAnalysisMarkup(analysis, graphKey, options = {}) {
       ${analysis.measurementLabel ? `<p class="graph-analysis-note">Measurement: ${escapeHtml(analysis.measurementLabel)}</p>` : ""}
       ${analysis.measurementNotice ? `<p class="graph-analysis-note">${escapeHtml(analysis.measurementNotice)}</p>` : ""}
       ${!analysis.phaseBoundary ? `<p class="graph-analysis-note">${analysis.graphType === "skill" ? "Only explicit clinical phases classify observations; mastery is an annotation." : "No explicit treatment phase line; observations are not classified as Baseline or Treatment."}</p>` : ""}
+      ${analysis.analyses.some(entry => entry.phaseUnclassified) && graphKey.startsWith("skill:") && canEditClinical()
+        ? `<button type="button" class="secondary-button" data-manage-historical-phase="${escapeHtml(graphKey.slice(6))}">Establish historical Treatment phase</button>` : ""}
       ${options.treatmentBeforeRange ? '<p class="graph-analysis-note">Treatment phase began before selected range.</p>' : ""}
       ${showTrendLine && analysis.trendLineMessage ? `<p class="graph-analysis-note">${escapeHtml(analysis.trendLineMessage)}</p>` : ""}
       ${analysis.analyses.map((entry) => `

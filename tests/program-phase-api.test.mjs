@@ -45,6 +45,7 @@ test('unauthorized callers cannot change phase or record 97155 probes; graph edi
  const anonymous=await request('/api/clients/c/programs/new/clinical-phase','POST',{action:'start-treatment',sessionContext:context},'');assert.ok([401,403].includes(anonymous.status));
  const rbt=await request('/api/auth/login','POST',{username:'rbt',password:'rbt123'},'');assert.equal(rbt.status,200);
  const rejected=await request('/api/clients/c/programs/new/clinical-phase','POST',{action:'start-treatment',sessionContext:context},rbt.cookie);assert.equal(rejected.status,403);
+ const historicalRejected=await request('/api/clients/c/programs/old/clinical-phase','POST',{action:'classify-historical',boundaryMode:'first',baselineBefore:false,confirmed:true,sessionContext:context},rbt.cookie);assert.equal(historicalRejected.status,403);
  const before=await readFile(process.env.DB_PATH,'utf8');
  const removed=await request('/api/clients/c/graph-phase-lines','PUT',{graphPhaseLines:{}});assert.equal(removed.status,409);
  const after=JSON.parse(await readFile(process.env.DB_PATH,'utf8'));

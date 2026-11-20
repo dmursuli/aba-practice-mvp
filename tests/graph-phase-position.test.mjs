@@ -79,3 +79,33 @@ test('legacy explicit boundary still classifies dates, and same-date mastery rem
  assert.deepEqual(legacy.points.map(p=>p.phase),['baseline','intervention']);
  assert.ok(legacy.markers[0].x>legacy.points[0].x && legacy.markers[0].x<legacy.points[1].x);
 });
+
+for (const graphType of ['skill','behavior']) {
+ test(`${graphType}: timed mastery between same-date observations uses a boundary without changing analysis`,()=>{
+  const series=[{name:'A',points:[point(0),point(40,'15:00','treatment'),point(60,'15:30','treatment')]}];
+  const mastery={id:'mastery',date:treatment.date,timestamp:'2026-11-19T15:15:00.000Z',label:'Target mastered',phaseType:'targetMastered',position:'after-date'};
+  const before=structuredClone(series);
+  const result=draw(series,[baseline,treatment,mastery],{graphType});
+  const marker=result.markers.find(m=>m.phaseType==='targetMastered');
+  assert.ok(result.points[1].x<marker.x && marker.x<result.points[2].x);
+  assert.equal(result.canvas.__graphInspection.groups.length,1);
+  const a=buildGraphAnalysis(series,{graphType,phaseMarkers:[baseline,treatment]}).analyses[0];
+  const b=buildGraphAnalysis(series,{graphType,phaseMarkers:[baseline,treatment,mastery]}).analyses[0];
+  for(const field of ['baselineLevel','treatmentLevel','trendDirection','currentLevel','recentPerformance']) assert.deepEqual(b[field],a[field]);
+  assert.deepEqual(series,before);
+ });
+}
+test('mastery after final observation and date-only annotation never overlap the final dot',()=>{
+ const series=[{name:'A',points:[point(0)]}];
+ for(const metadata of [{timestamp:'2026-11-19T14:36:00.000Z'},{}]) {
+  const result=draw(series,[{id:'m',date:treatment.date,label:'Target mastered',phaseType:'targetMastered',...metadata}]);
+  assert.ok(result.markers[0].x>result.points[0].x);
+  assert.equal(result.points[0].phase,null);
+ }
+});
+test('explicit Maintenance and other clinical annotations use the same timed boundary',()=>{
+ for(const marker of [{label:'Maintenance',clinicalPhase:'maintenance',phaseType:'environmental'}, {label:'Protocol changed',phaseType:'environmental'}]) {
+  const result=draw([{name:'A',points:[point(10),point(20,'15:00')]}],[{id:'event',date:treatment.date,effectiveAt:treatment.effectiveAt,...marker}]);
+  assert.ok(result.points[0].x<result.markers[0].x && result.markers[0].x<result.points[1].x);
+ }
+});

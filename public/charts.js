@@ -58,9 +58,8 @@ export function drawLineChart(canvas, series, options = {}) {
 
   const model = buildClinicalGraphModel(series, options);
   const { dates, phaseBoundary } = model;
-  const layout = options.graphType === "behavior"
-    ? buildChartLayout(dates, margin.left, plotWidth, phaseBoundary, model.phaseMarkers, "calendar")
-    : buildPhaseTransitionLayout(series, model, margin.left, plotWidth);
+  const layout = buildPhaseTransitionLayout(series, model, margin.left, plotWidth,
+    options.graphType === "behavior" ? "calendar" : "sequence");
   const phaseMarkers = layout.phaseMarkers || model.phaseMarkers;
   const xPositions = layout.dateXPositions;
   ctx.font = "11px system-ui, sans-serif";
@@ -312,7 +311,8 @@ export function programPhaseAt(records = [], point = {}) {
   const event = eligible.at(-1);
   if (event) return clinicalPhaseOf(event);
   // Preserve existing date-only Treatment line behavior; no fabricated transition.
-  if (events.some(record => !record.effectiveAt && clinicalPhaseOf(record) === "intervention")) return "baseline";
+  if (events.some(record => !record.effectiveAt && clinicalPhaseOf(record) === "intervention"
+    && (!record.historicalDecision || record.baselineBefore === true))) return "baseline";
   return null;
 }
 
@@ -334,6 +334,8 @@ export function buildGraphAnalysis(series, options = {}) {
   });
   const analyses = series.map((item, index) => analyzeSingleSeries(item, {
     graphType,
+    hasExplicitPhase: [...(options.phaseMarkers || []), ...(options.treatmentPhaseLine ? [{...options.treatmentPhaseLine,phaseType:"treatment"}] : [])].some(record => clinicalPhaseOf(record)),
+    hasTreatmentPhase: Boolean(model.phaseBoundary) || (options.phaseMarkers || []).some(record => clinicalPhaseOf(record) === "intervention"),
     dates: model.dates,
     phaseBoundary: model.phaseBoundary,
     phaseMarkers: model.phaseMarkers,
@@ -516,10 +518,15 @@ function analyzeSingleSeries(series, options) {
   const treatmentAverage = treatmentValues.length ? mean(treatmentValues) : null;
   const baselineCurrent = baselineValues.length ? baselineValues[baselineValues.length - 1] : null;
   const treatmentCurrent = treatmentValues.length ? treatmentValues[treatmentValues.length - 1] : null;
-  const trend = classifyTrend(treatmentValues, graphType);
+  const phaseUnclassified = normalized.length > 0 && !treatmentValues.length && !options.hasExplicitPhase;
+  const classificationMessage = phaseUnclassified ? "Treatment phase not established for historical data." : "";
+  const treatmentPending = !options.hasTreatmentPhase && !treatmentValues.length;
+  const trend = treatmentPending
+    ? {direction:phaseUnclassified ? "Phase not established" : "Treatment not started",confidence:classificationMessage || "Treatment phase has not been established.",slope:0}
+    : classifyTrend(treatmentValues, graphType);
   const variability = classifyVariability(evaluationValues);
   const recentTrend = classifyTrend(treatmentValues.slice(-5), graphType);
-  const recentPerformance = recentTrend.direction === "Increasing" ? (graphType === "behavior" ? "Recent increase" : "Recent improvement")
+  const recentPerformance = treatmentPending ? trend.direction : recentTrend.direction === "Increasing" ? (graphType === "behavior" ? "Recent increase" : "Recent improvement")
     : recentTrend.direction === "Decreasing" ? (graphType === "behavior" ? "Recent decrease" : "Recent decline")
     : recentTrend.direction === "Stable" ? "Recent stability / plateau" : recentTrend.direction;
   const stability = classifyStability(evaluationValues);
@@ -580,6 +587,8 @@ function analyzeSingleSeries(series, options) {
     treatmentAverage: roundMetric(treatmentAverage),
     treatmentLevel: roundMetric(treatmentAverage),
     currentLevel: roundMetric(normalized.at(-1)?.y),
+    phaseUnclassified,
+    classificationMessage,
     recentPerformance,
     trendDirection: trend.direction,
     trendConfidence: trend.confidence,
@@ -846,59 +855,70 @@ function drawPhaseSegments(ctx, points, phaseBoundary, breakLines = []) {
   });
 }
 
-// Rendering only: split a date into before/after positions only when an explicit
-// timed treatment transition has valid observations on both sides. Dates and
-// clinical classification remain unchanged; inspection still groups by date.
-export function buildPhaseTransitionLayout(series, model, left, width) {
+// All clinical event markers use observation boundaries, not observation dots.
+// Recorded times win. Without intraday evidence, phase starts precede that day's
+// observations; mastery/other annotations follow that day's observations.
+function observationSideOfEvent(point, marker) {
+  if (point.x !== marker.date) return point.x < marker.date ? -1 : 1;
+  const eventTime = marker.effectiveAt || marker.timestamp;
+  if (eventTime && point.recordedAt) {
+    const difference = Date.parse(point.recordedAt) - Date.parse(eventTime);
+    if (Number.isFinite(difference) && difference !== 0) return difference < 0 ? -1 : 1;
+    if (point.phaseRecordId && clinicalPhaseOf(marker)) {
+      if (point.phaseRecordId === marker.id) return 1;
+      if (point.effectiveProgramPhase === "baseline" && clinicalPhaseOf(marker) === "intervention") return -1;
+    }
+    // At identical timestamps, annotations follow the associated observation.
+    if (!clinicalPhaseOf(marker)) return -1;
+  }
+  if (marker.position === "after-date") return -1;
+  return clinicalPhaseOf(marker) ? 1 : -1;
+}
+
+export function buildPhaseTransitionLayout(series, model, left, width, spacing = "sequence") {
   const {dates, phaseBoundary, phaseMarkers} = model;
-  const base = buildChartLayout(dates, left, width, phaseBoundary, phaseMarkers);
+  const base = buildChartLayout(dates, left, width, phaseBoundary, phaseMarkers, spacing);
   const points = series.flatMap(item => item.points || []).filter(point => graphNumericValue(point.y) !== null);
-  const transitions = phaseMarkers.filter(marker => clinicalPhaseOf(marker) === "intervention");
-  const before = (point, marker) => point.x < marker.date || (point.x === marker.date
-    && marker.effectiveAt && point.recordedAt && (point.recordedAt < marker.effectiveAt
-      || (point.recordedAt === marker.effectiveAt && point.phaseRecordId && point.effectiveProgramPhase === "baseline")));
-  const after = (point, marker) => point.x > marker.date || (point.x === marker.date
-    && (!marker.effectiveAt || point.phaseRecordId === marker.id
-      || (point.recordedAt && (point.recordedAt > marker.effectiveAt
-        || (point.recordedAt === marker.effectiveAt && !(point.phaseRecordId && point.effectiveProgramPhase === "baseline"))))));
-  const boundaries = transitions.map(marker => ({marker,
-    baseline: points.filter(point => point.effectiveProgramPhase === "baseline" && before(point, marker)),
-    treatment: points.filter(point => point.effectiveProgramPhase === "intervention" && after(point, marker))
+  const boundaries = phaseMarkers.map(marker => ({marker,
+    before:points.filter(point => observationSideOfEvent(point,marker) < 0),
+    after:points.filter(point => observationSideOfEvent(point,marker) > 0)
   }));
-  const cuts = boundaries.filter(({marker,baseline,treatment}) => marker.effectiveAt
-    && baseline.some(point => point.x === marker.date) && treatment.some(point => point.x === marker.date))
-    .map(({marker}) => marker).sort((a,b) => a.effectiveAt.localeCompare(b.effectiveAt));
-  const groupFor = point => cuts.filter(marker => marker.date === point.x && after(point, marker)).length;
+  const cuts = [];
+  const seen = new Set();
+  for (const {marker,before,after} of boundaries) {
+    if (!before.some(point => point.x === marker.date) || !after.some(point => point.x === marker.date)) continue;
+    const signature = marker.date + points.filter(point => point.x === marker.date).map(point => observationSideOfEvent(point,marker)).join(",");
+    if (!seen.has(signature)) {seen.add(signature);cuts.push(marker);}
+  }
+  const groupFor = point => cuts.filter(marker => marker.date === point.x && observationSideOfEvent(point,marker) > 0).length;
   const slots = dates.flatMap(date => Array.from({length:1 + cuts.filter(marker => marker.date === date).length}, (_, group) => ({date,group})));
-  const positions = cuts.length ? buildChartLayout(slots.map(slot => slot.date), left, width, null).dateXPositions : base.dateXPositions;
+  let positions = cuts.length ? buildChartLayout(slots.map(slot => slot.date), left, width, null).dateXPositions : base.dateXPositions;
+  if (spacing === "calendar" && cuts.length) {
+    positions = slots.map(slot => {
+      const index = dates.indexOf(slot.date), count = cuts.filter(marker => marker.date === slot.date).length;
+      const center = base.dateXPositions[index];
+      const gap = Math.min(center - (base.dateXPositions[index-1] ?? left), (base.dateXPositions[index+1] ?? left+width) - center);
+      const halfWidth = Math.min(20, gap / 3);
+      return count ? center + halfWidth * (2 * slot.group / count - 1) : center;
+    });
+  }
   const pointX = point => positions[slots.findIndex(slot => slot.date === point.x && slot.group === groupFor(point))];
   const dateXPositions = dates.map(date => {
     const indexes = slots.flatMap((slot,index) => slot.date === date ? [index] : []);
     return (positions[indexes[0]] + positions[indexes.at(-1)]) / 2;
   });
-  const markerXByDate = new Map(base.markerXByDate);
-  for (const marker of phaseMarkers.filter(marker => marker.position === "after-date" && cuts.some(cut => cut.date === marker.date))) {
-    const last = slots.findLastIndex(slot => slot.date === marker.date);
-    const gap = positions[last + 1] - positions[last];
-    markerXByDate.set(marker.date, positions[last] + (Number.isFinite(gap) ? Math.min(16,gap / 5) : 10));
-  }
-  const renderedMarkers = phaseMarkers.map(marker => {
-    const boundary = boundaries.find(boundary => boundary.marker === marker);
-    if (!boundary) return marker;
-    const lastBaselineX = Math.max(...boundary.baseline.map(pointX));
-    const firstTreatmentX = Math.min(...boundary.treatment.map(pointX));
-    // The saved transition is visible immediately, even before treatment data.
-    // Use the existing plot padding after baseline; never synthesize a point.
-    const renderX = Number.isFinite(lastBaselineX)
-      ? Number.isFinite(firstTreatmentX) && lastBaselineX < firstTreatmentX
-        ? (lastBaselineX + firstTreatmentX) / 2
-        : !boundary.treatment.length
-          ? lastBaselineX + Math.min(16, (left + width - lastBaselineX) / 2)
-          : NaN
-      : NaN;
-    return {...marker, renderX};
+  const renderedMarkers = boundaries.map(({marker,before,after}) => {
+    const previousX = Math.max(...before.map(pointX));
+    const nextX = Math.min(...after.map(pointX));
+    const renderX = Number.isFinite(previousX) && Number.isFinite(nextX) && previousX < nextX
+      ? (previousX + nextX) / 2
+      : Number.isFinite(previousX) && !after.length
+        ? previousX + Math.min(16, (left + width - previousX) / 2)
+        : Number.isFinite(nextX) && !before.length
+          ? nextX - Math.min(16, (nextX - left) / 2) : NaN;
+    return {...marker,renderX};
   });
-  return {dateXPositions, markerXByDate, pointX, phaseMarkers:renderedMarkers};
+  return {dateXPositions, markerXByDate:base.markerXByDate, pointX, phaseMarkers:renderedMarkers};
 }
 
 export function buildChartLayout(dates, left, width, phaseBoundary, markers = [], spacing = "sequence") {

@@ -39,3 +39,18 @@ export function skillMeasurementSettings(chart) {
     ? { mode: "frequency", yLabel: "Frequency", emptyMessage: "No frequency data for this program" }
     : { mode: "percent_correct", maxY: 100, yStep: 10, yLabel: "Percent correct", emptyMessage: "No percentage data for this program" };
 }
+
+// Read-only candidates for a clinician's historical date-boundary decision.
+// Never infer phase, convert missing to zero, or consult another program/client.
+export function historicalProgramDates(programId, sessions = []) {
+  const dates = sessions.flatMap(session => (session.programs || [])
+    .filter(program => program.programId === programId)
+    .flatMap(program => (program.targets || [program]).flatMap(point => {
+      const type = skillGraphMeasurement(point);
+      const value = type && graphNumericValue(type === 'frequency' ? point.frequency : point.independence);
+      const valid = point.targetId && point.targetId !== programId && type && value !== null && value >= 0
+        && (type === 'frequency' ? Number.isInteger(value) : value <= 100);
+      return valid && /^\d{4}-\d{2}-\d{2}$/.test(session.date || '') ? [session.date] : [];
+    })));
+  return [...new Set(dates)].sort();
+}

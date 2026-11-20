@@ -6450,6 +6450,7 @@ function sanitizeGraphPhaseLines(source) {
         return entries;
       }
       entries.push({
+        ...(line?.historicalDecision === true ? {historicalDecision:true,baselineBefore:line.baselineBefore === true,clinicalPhase:"intervention",decidedBy:text(line.decidedBy),decidedAt:text(line.decidedAt),sessionId:text(line.sessionId)} : {}),
         ...(line?.effectiveAt ? {effectiveAt:text(line.effectiveAt),clinicalPhase:text(line.clinicalPhase),sessionId:text(line.sessionId),initial:Boolean(line.initial)} : {}),
         id: text(line?.id) || (phaseType === "treatment" ? `${key}:treatment` : `${key}:${date}:${label.toLowerCase()}`),
         graphId: key,
