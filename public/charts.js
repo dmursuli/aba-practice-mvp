@@ -879,58 +879,55 @@ function observationSideOfEvent(point, marker) {
   return clinicalPhaseOf(marker) ? 1 : -1;
 }
 
-// Observations have integer coordinates; events have half-integer coordinates.
-// This model is independent of pixels, dates, canvas width, and available padding.
+// Dates define the primary slots. Intraday positions depend only on observation
+// metadata, never on annotations or inferred phases. Unknown times stay centered.
 export function buildObservationEventPositions(series, markers = []) {
-  const observations = series.flatMap(item => item.points || [])
-    .slice().sort((a,b) => compareGraphObservations(a,b) || markers.reduce((order,marker) => order || observationSideOfEvent(a,marker)-observationSideOfEvent(b,marker),0));
-  const coordinates = new Map(observations.map((point,index) => [point,index]));
-  const events = markers.map(marker => {
-    // Unknown intraday order follows the deterministic clinical relationship.
-    // Place after the last preceding observation, including the final one.
-    let preceding = -1;
-    observations.forEach((point,index) => {
-      if (observationSideOfEvent(point,marker) < 0) preceding = index;
+  const observations = series.flatMap(item => item.points || []).slice().sort(compareGraphObservations);
+  const dates = [...new Set(observations.map(point => point.x))].sort();
+  const coordinates = new Map();
+  const intradayOffsets = new Map();
+  dates.forEach((date,index) => {
+    const sameDate = observations.filter(point => point.x === date);
+    const timeKey = point => point.recordedAt ? `${point.recordedAt}|${point.phaseRecordId || ""}` : null;
+    const times = [...new Set(sameDate.map(timeKey).filter(Boolean))];
+    sameDate.forEach(point => {
+      const key = timeKey(point);
+      const offset = key && times.length > 1 ? 2*times.indexOf(key)/(times.length-1)-1 : 0;
+      coordinates.set(point,index);
+      intradayOffsets.set(point,offset);
     });
-    return {...marker,displayPosition:preceding + 0.5};
   });
-  return {observations,observationPosition:point => coordinates.get(point),events};
+  return {observations,dates,observationPosition:point => coordinates.get(point),
+    intradayOffset:point => intradayOffsets.get(point),events:markers.map(marker => ({...marker}))};
 }
 
 export function buildPhaseTransitionLayout(series, model, left, width, spacing = "sequence") {
   const {dates, phaseBoundary, phaseMarkers} = model;
   const boundaryMarker = phaseBoundary ? {...phaseBoundary,date:phaseBoundary.configuredDate,position:"date"} : null;
   const ordered = buildObservationEventPositions(series, [...phaseMarkers,...(boundaryMarker ? [boundaryMarker] : [])]);
-  const count = ordered.observations.length;
-  const padding = Math.min(28,width * 0.08);
-  const start = left + padding, end = left + width - padding;
-  const coordinates = [0,Math.max(0,count-1),...ordered.events.map(event => event.displayPosition)];
-  const minimum = Math.min(...coordinates), maximum = Math.max(...coordinates);
-  const scale = position => maximum === minimum ? (start+end)/2 : start + (position-minimum)/(maximum-minimum)*(end-start);
-  let positions = ordered.observations.map((point,index) => scale(index));
-  if (spacing === "calendar" && dates.length > 1) {
-    const centers = buildChartLayout(dates,left,width,null,[],"calendar").dateXPositions;
-    positions = ordered.observations.map(point => {
-      const index = dates.indexOf(point.x), center = centers[index];
-      const sameDate = ordered.observations.filter(item => item.x === point.x);
-      const gap = Math.min(center-(centers[index-1] ?? left),(centers[index+1] ?? left+width)-center);
-      const halfWidth = Math.min(20,gap/3);
-      return sameDate.length === 1 ? center : center + halfWidth*(2*sameDate.indexOf(point)/(sameDate.length-1)-1);
-    });
-  }
-  const pointX = point => positions[ordered.observationPosition(point)];
-  const eventX = position => {
-    if (spacing !== "calendar" || dates.length <= 1) return scale(position);
-    const before = positions[Math.floor(position)], after = positions[Math.ceil(position)];
-    if (Number.isFinite(before) && Number.isFinite(after)) return (before+after)/2;
-    return Number.isFinite(before) ? (before+left+width)/2 : (left+after)/2;
-  };
-  const renderedMarkers = ordered.events.map(marker => ({...marker,renderX:eventX(marker.displayPosition)}));
-  const renderedBoundary = boundaryMarker ? renderedMarkers.pop() : null;
-  const dateXPositions = dates.map(date => {
-    const sameDate = ordered.observations.filter(point => point.x === date).map(pointX);
-    return sameDate.length ? (sameDate[0]+sameDate.at(-1))/2 : NaN;
+  // Freeze the data axis before consulting any event. Missing-value entries keep
+  // their existing date slots and do not become plotted observations.
+  const {dateXPositions} = buildChartLayout(dates,left,width,null,[],spacing);
+  const positions = new Map(ordered.observations.map(point => {
+    const index = dates.indexOf(point.x), center = dateXPositions[index];
+    const gap = Math.min(center-(dateXPositions[index-1] ?? left),(dateXPositions[index+1] ?? left+width)-center);
+    const halfWidth = Math.min(12,gap/3);
+    return [point,center + halfWidth*ordered.intradayOffset(point)];
+  }));
+  const pointX = point => positions.get(point);
+  const renderedMarkers = ordered.events.map(marker => {
+    const before = ordered.observations.filter(point => observationSideOfEvent(point,marker)<0).map(pointX);
+    const after = ordered.observations.filter(point => observationSideOfEvent(point,marker)>0).map(pointX);
+    const previous = Math.max(...before), next = Math.min(...after);
+    const renderX = Number.isFinite(previous) && Number.isFinite(next) && previous < next
+      ? (previous+next)/2
+      : Number.isFinite(previous) && !after.length
+        ? previous + Math.min(16,(left+width-previous)/2)
+        : Number.isFinite(next) && !before.length
+          ? next - Math.min(16,(next-left)/2) : NaN;
+    return {...marker,renderX};
   });
+  const renderedBoundary = boundaryMarker ? renderedMarkers.pop() : null;
   return {dateXPositions,markerXByDate:new Map(),pointX,phaseMarkers:renderedMarkers,
     phaseBoundary:renderedBoundary ? {...phaseBoundary,renderX:renderedBoundary.renderX} : null};
 }

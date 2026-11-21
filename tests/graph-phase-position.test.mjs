@@ -117,15 +117,15 @@ for (const [name,points,event,expected] of [
  ['mastery between observations',[point(0),point(40,'15:00')],{date:'2026-11-19',timestamp:treatment.effectiveAt,phaseType:'targetMastered'},0.5],
  ['Treatment between observations',[point(0),point(40,'15:00','treatment')],treatment,0.5],
  ['Treatment after final Baseline',[point(0)],treatment,0.5]
-]) test(`integer observation / half-step event coordinates: ${name}`,()=>{
+]) test(`frozen date slots with event overlays: ${name}`,()=>{
  const marker={label:'Clinical event',...event};const series=[{name:'A',points}];
  const original=structuredClone({series,marker});
  const positions=buildObservationEventPositions(series,[marker]);
- assert.deepEqual(points.map(positions.observationPosition),points.map((_,i)=>i));
- assert.equal(positions.events[0].displayPosition,expected);
- for(const p of points) assert.notEqual(positions.events[0].displayPosition,positions.observationPosition(p));
+ assert.deepEqual(points.map(positions.observationPosition),points.map(()=>0));
+ const without=draw(series,[baseline]);
  const result=draw(series,[baseline,marker]);
  const rendered=result.markers[0];
+ assert.deepEqual(result.points.map(p=>p.x),without.points.map(p=>p.x));
  assert.ok(rendered.x>result.points[Math.floor(expected)].x);
  if(points.length>Math.ceil(expected)) assert.ok(rendered.x<result.points[Math.ceil(expected)].x);
  assert.ok(result.points.every(p=>p.x!==rendered.x));
@@ -138,4 +138,67 @@ test('date-only historical Treatment is before the first observation, including 
  const result=draw([{name:'A',points:[{x:record.date,y:0}]}],[record]);
  assert.ok(result.markers[0].x<result.points[0].x);
  assert.equal(result.points[0].phase,'intervention');
+});
+
+test('100 observations share ten date slots; mastery and Treatment overlays cannot move data',()=>{
+ const dates=Array.from({length:10},(_,i)=>`2026-${String(i+1).padStart(2,'0')}-01`);
+ const series=Array.from({length:10},(_,t)=>({name:`Target ${t}`,points:dates.map((x,i)=>({x,y:i*10+t,targetId:`t${t}`}))}));
+ const original=structuredClone(series);
+ const plain=draw(series,[]);
+ assert.equal(new Set(plain.points.map(point=>point.x)).size,10);
+ const base=dates.map(date=>plain.points.find(point=>point.date===date).x);
+ for(let i=2;i<base.length;i++) assert.ok(Math.abs((base[i]-base[i-1])-(base[1]-base[0]))<1e-9);
+ for(const date of dates) assert.equal(new Set(plain.points.filter(point=>point.date===date).map(point=>point.x)).size,1);
+ for(const markers of [
+  [{date:dates.at(-1),phaseType:'targetMastered',label:'Target mastered'}],
+  [{date:dates[4],phaseType:'environmental',clinicalPhase:'intervention',label:'Treatment'}],
+  dates.map(date=>({date,phaseType:'targetMastered',label:'Target mastered'}))
+ ]) {
+  const result=draw(series,markers);
+  assert.deepEqual(result.points.map(point=>point.x),plain.points.map(point=>point.x));
+  assert.deepEqual(result.canvas.__graphInspection.groups.filter(group=>group.entries.some(entry=>entry.kind==='observation')).length,10);
+  assert.ok(result.markers.every(marker=>!result.points.some(point=>point.x===marker.x)));
+ }
+ for(const target of series) {
+  const points=plain.points.filter(p=>p.label===target.name);
+  assert.ok(points.every((point,i)=>i===0 || point.x>points[i-1].x));
+ }
+ assert.deepEqual(series,original);
+});
+
+test('single observation stays centered with bounded mastery overlays before and after',()=>{
+ const series=[{name:'A',points:[{x:'2026-07-05',y:50}]}];
+ const plain=draw(series,[]);const x=plain.points[0].x;
+ assert.equal(x,424,'normal single-point plot center');
+ for(const [date,direction] of [['2026-07-01',-1],['2026-07-05',1],['2026-07-10',1]]) {
+  const result=draw(series,[{date,label:'Target mastered',phaseType:'targetMastered'}]);
+  assert.equal(result.points[0].x,x);
+  const offset=result.markers[0].x-x;
+  assert.ok(offset*direction>0 && Math.abs(offset)<=16);
+ }
+});
+
+test('between-date events use frozen midpoint; final events use bounded offset; analytics remain unchanged',()=>{
+ const series=[{name:'A',points:[{x:'2026-07-01',y:0},{x:'2026-08-01',y:50},{x:'2026-09-01',y:80}]}];
+ const phases=[{date:'2026-07-01',label:'Treatment',clinicalPhase:'intervention',phaseType:'environmental',historicalDecision:true,baselineBefore:false}];
+ const before=buildGraphAnalysis(series,{phaseMarkers:phases});
+ const markers=[...phases,{date:'2026-07-15',label:'Target mastered',phaseType:'targetMastered'},{date:'2026-09-01',label:'Target mastered',phaseType:'targetMastered'}];
+ const plain=draw(series,phases),result=draw(series,markers);
+ assert.deepEqual(result.points.map(p=>p.x),plain.points.map(p=>p.x));
+ assert.equal(result.markers[1].x,(result.points[0].x+result.points[1].x)/2);
+ assert.ok(result.markers[2].x>result.points[2].x && result.markers[2].x-result.points[2].x<=16);
+ assert.deepEqual(buildGraphAnalysis(series,{phaseMarkers:phases}),before);
+ const after=buildGraphAnalysis(series,{phaseMarkers:markers});
+ for(const key of ['baselineLevel','treatmentLevel','currentLevel','recentPerformance','trendDirection']) assert.deepEqual(after.analyses[0][key],before.analyses[0][key]);
+});
+
+test('intraday offsets are small, metadata-driven, and invariant under event additions',()=>{
+ const series=[{name:'A',points:[point(0),point(60,'15:00','treatment')]},
+  {name:'B',points:[{x:'2026-11-19',y:30,targetId:'b'}]}];
+ const plain=draw(series,[]),result=draw(series,[baseline,treatment]);
+ assert.deepEqual(result.points.map(p=>p.x),plain.points.map(p=>p.x));
+ assert.equal(result.points[2].x,424,'untimed target stays at the shared date center');
+ assert.ok(result.points.every(p=>Math.abs(p.x-424)<=12));
+ assert.ok(result.points[0].x<result.markers[0].x && result.markers[0].x<result.points[1].x);
+ assert.equal(result.canvas.__graphInspection.groups.length,1);
 });
