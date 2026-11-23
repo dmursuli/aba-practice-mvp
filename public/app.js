@@ -13970,11 +13970,11 @@ function buildParentTrainingChartModels(sessions) {
 }
 
 function masteryMarkersForProgram(programId) {
-  // Retain the actual event ordering instead of collapsing all actions to a date.
+  // Preserve target association and clinical date; mastery display follows same-day target observations.
   return (currentClient()?.planChangeLog || [])
     .filter(change => change.type === "target-status-changed" && change.programId === programId && change.toStatus === "mastered" && change.date)
     .map(change => ({id:change.id,date:change.date,...(change.timestamp ? {timestamp:change.timestamp} : {}),
-      label:"Target mastered",detail:change.targetName || "",targetIds:change.targetId ? [change.targetId] : [],
+      label:"Target mastered",targetName:change.targetName || "",detail:change.targetName || "",targetIds:change.targetId ? [change.targetId] : [],
       phaseType:"targetMastered",lineStyle:"dashed",position:"after-date"}))
     .sort((a,b) => a.date.localeCompare(b.date) || String(a.timestamp || "").localeCompare(String(b.timestamp || "")));
 }

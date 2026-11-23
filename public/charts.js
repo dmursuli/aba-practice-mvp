@@ -858,11 +858,32 @@ function drawPhaseSegments(ctx, points, phaseBoundary, breakLines = []) {
   });
 }
 
-// All clinical event markers use observation boundaries, not observation dots.
-// Recorded times win. Without intraday evidence, phase starts precede that day's
-// observations; mastery/other annotations follow that day's observations.
+function isTargetMasteryMarker(marker) {
+  return ["targetMastered","mastered"].includes(marker.phaseType)
+    || String(marker.label || "").trim().toLowerCase() === "target mastered";
+}
+
+// Resolve only rendering metadata. Explicit IDs win; legacy names must identify
+// one series. Unassociated single-series annotations belong to that series.
+// Ambiguous multi-target annotations are not attached to an unrelated target.
+function masteryObservations(series, marker) {
+  const ids = new Set([marker.targetId,...(marker.targetIds || [])].filter(Boolean));
+  if (ids.size) return series.flatMap(item => (item.points || []).filter(point =>
+    ids.has(point.targetId || item.meta?.targetId)));
+  const name = marker.targetName || marker.detail;
+  if (name) {
+    const matches = series.filter(item => item.name === name || item.meta?.targetName === name);
+    if (matches.length === 1) return matches[0].points || [];
+    return [];
+  }
+  return series.length === 1 ? series[0].points || [] : [];
+}
+
+// Phase transitions retain timestamp ordering. Mastery instead annotates the
+// outcome after its target's observations on the clinical mastery date.
 function observationSideOfEvent(point, marker) {
   if (point.x !== marker.date) return point.x < marker.date ? -1 : 1;
+  if (isTargetMasteryMarker(marker)) return -1;
   const eventTime = marker.effectiveAt || marker.timestamp;
   if (eventTime && point.recordedAt) {
     const difference = Date.parse(point.recordedAt) - Date.parse(eventTime);
@@ -916,8 +937,11 @@ export function buildPhaseTransitionLayout(series, model, left, width, spacing =
   }));
   const pointX = point => positions.get(point);
   const renderedMarkers = ordered.events.map(marker => {
-    const before = ordered.observations.filter(point => observationSideOfEvent(point,marker)<0).map(pointX);
-    const after = ordered.observations.filter(point => observationSideOfEvent(point,marker)>0).map(pointX);
+    const observations = isTargetMasteryMarker(marker)
+      ? masteryObservations(series,marker).filter(point => graphNumericValue(point.y) !== null)
+      : ordered.observations;
+    const before = observations.filter(point => observationSideOfEvent(point,marker)<0).map(pointX);
+    const after = observations.filter(point => observationSideOfEvent(point,marker)>0).map(pointX);
     const previous = Math.max(...before), next = Math.min(...after);
     const renderX = Number.isFinite(previous) && Number.isFinite(next) && previous < next
       ? (previous+next)/2

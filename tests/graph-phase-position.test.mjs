@@ -81,13 +81,13 @@ test('legacy explicit boundary still classifies dates, and same-date mastery rem
 });
 
 for (const graphType of ['skill','behavior']) {
- test(`${graphType}: timed mastery between same-date observations uses a boundary without changing analysis`,()=>{
+ test(`${graphType}: mastery follows all same-date target observations without changing analysis`,()=>{
   const series=[{name:'A',points:[point(0),point(40,'15:00','treatment'),point(60,'15:30','treatment')]}];
   const mastery={id:'mastery',date:treatment.date,timestamp:'2026-11-19T15:15:00.000Z',label:'Target mastered',phaseType:'targetMastered',position:'after-date'};
   const before=structuredClone(series);
   const result=draw(series,[baseline,treatment,mastery],{graphType});
   const marker=result.markers.find(m=>m.phaseType==='targetMastered');
-  assert.ok(result.points[1].x<marker.x && marker.x<result.points[2].x);
+  assert.ok(marker.x>Math.max(...result.points.map(point=>point.x)));
   assert.equal(result.canvas.__graphInspection.groups.length,1);
   const a=buildGraphAnalysis(series,{graphType,phaseMarkers:[baseline,treatment]}).analyses[0];
   const b=buildGraphAnalysis(series,{graphType,phaseMarkers:[baseline,treatment,mastery]}).analyses[0];
@@ -114,7 +114,7 @@ for (const [name,points,event,expected] of [
  ['single observation, same-date mastery',[point(0)],{date:'2026-11-19',phaseType:'targetMastered'},0.5],
  ['single observation, later mastery',[point(0)],{date:'2026-11-20',phaseType:'targetMastered'},0.5],
  ['mastery on final observation date',[point(0),point(40,'15:00')],{date:'2026-11-19',phaseType:'targetMastered'},1.5],
- ['mastery between observations',[point(0),point(40,'15:00')],{date:'2026-11-19',timestamp:treatment.effectiveAt,phaseType:'targetMastered'},0.5],
+ ['mastery follows same-date observations despite earlier timestamp',[point(0),point(40,'15:00')],{date:'2026-11-19',timestamp:treatment.effectiveAt,phaseType:'targetMastered'},1.5],
  ['Treatment between observations',[point(0),point(40,'15:00','treatment')],treatment,0.5],
  ['Treatment after final Baseline',[point(0)],treatment,0.5]
 ]) test(`frozen date slots with event overlays: ${name}`,()=>{
@@ -150,9 +150,9 @@ test('100 observations share ten date slots; mastery and Treatment overlays cann
  for(let i=2;i<base.length;i++) assert.ok(Math.abs((base[i]-base[i-1])-(base[1]-base[0]))<1e-9);
  for(const date of dates) assert.equal(new Set(plain.points.filter(point=>point.date===date).map(point=>point.x)).size,1);
  for(const markers of [
-  [{date:dates.at(-1),phaseType:'targetMastered',label:'Target mastered'}],
+  [{date:dates.at(-1),phaseType:'targetMastered',label:'Target mastered',targetIds:['t0']}],
   [{date:dates[4],phaseType:'environmental',clinicalPhase:'intervention',label:'Treatment'}],
-  dates.map(date=>({date,phaseType:'targetMastered',label:'Target mastered'}))
+  dates.map(date=>({date,phaseType:'targetMastered',label:'Target mastered',targetIds:['t0']}))
  ]) {
   const result=draw(series,markers);
   assert.deepEqual(result.points.map(point=>point.x),plain.points.map(point=>point.x));
@@ -201,4 +201,59 @@ test('intraday offsets are small, metadata-driven, and invariant under event add
  assert.ok(result.points.every(p=>Math.abs(p.x-424)<=12));
  assert.ok(result.points[0].x<result.markers[0].x && result.markers[0].x<result.points[1].x);
  assert.equal(result.canvas.__graphInspection.groups.length,1);
+});
+
+for(const timestamp of ['2026-11-19T14:00:00.000Z','2026-11-19T16:00:00.000Z']) test(`one-point mastery follows its target despite save time ${timestamp}`,()=>{
+ const series=[{name:'A',meta:{targetId:'a'},points:[{...point(80),targetId:'a'}]}];
+ const marker={date:'2026-11-19',label:'Target mastered',phaseType:'targetMastered',targetIds:['a'],timestamp,masteredAt:timestamp};
+ const before=structuredClone({series,marker});const plain=draw(series,[]),result=draw(series,[marker]);
+ assert.equal(result.markers.length,1);
+ assert.equal(result.points[0].x,424);
+ assert.equal(result.points[0].x,plain.points[0].x);
+ assert.ok(result.markers[0].x>result.points[0].x && result.markers[0].x-result.points[0].x<=16);
+ assert.deepEqual({series,marker},before);
+});
+
+test('mastery follows every same-day target observation but precedes later maintenance data',()=>{
+ const series=[{name:'A',meta:{targetId:'a'},points:[point(50),point(80,'15:00'),point(90,'16:00'),point(95,'14:00','','2026-11-20')]}];
+ const marker={date:'2026-11-19',label:'Target mastered',phaseType:'targetMastered',targetId:'a',timestamp:'2026-11-19T14:00:00.000Z'};
+ const plain=draw(series,[]),result=draw(series,[marker]);
+ assert.equal(result.markers.length,1);
+ assert.ok(result.points.slice(0,3).every(p=>p.x<result.markers[0].x));
+ assert.ok(result.points[3].x>result.markers[0].x);
+ assert.deepEqual(result.points.map(p=>p.x),plain.points.map(p=>p.x));
+ assert.equal(result.canvas.__graphInspection.groups.length,2);
+});
+
+test('Target A mastery uses only A observations, not later same-day Target B observations',()=>{
+ const series=[{name:'A',meta:{targetId:'a'},points:[point(80)]},{name:'B',meta:{targetId:'b'},points:[point(70,'16:00')]}];
+ const marker={date:'2026-11-19',label:'Target mastered',phaseType:'targetMastered',targetIds:['a'],timestamp:'2026-11-19T13:00:00.000Z'};
+ const plain=draw(series,[]),result=draw(series,[marker]);
+ assert.equal(result.markers.length,1);
+ assert.ok(result.markers[0].x>result.points[0].x);
+ assert.ok(result.markers[0].x<result.points[1].x,'B must not move mastery after B');
+ assert.equal(result.markers[0].x-result.points[0].x,16);
+ assert.deepEqual(result.points.map(p=>p.x),plain.points.map(p=>p.x));
+});
+
+test('legacy mastery association resolves unique target names and does not guess ambiguous targets',()=>{
+ const series=[{name:'A',meta:{targetId:'a'},points:[point(80)]},{name:'B',meta:{targetId:'b'},points:[point(70,'16:00')]}];
+ const marker={date:'2026-11-19',label:'Target mastered',phaseType:'objectiveChange',targetName:'A',timestamp:'2026-11-19T13:00:00.000Z'};
+ const named=draw(series,[marker]),identified=draw(series,[{...marker,targetIds:['a']}]);
+ assert.equal(named.markers.length,1);assert.equal(named.markers[0].x,identified.markers[0].x);
+ assert.equal(draw(series,[{...marker,targetName:'',detail:''}]).markers.length,0);
+ assert.equal(draw(series,[{...marker,targetIds:['absent']}]).markers.length,0,'explicit IDs cannot be overridden by a name');
+ assert.equal(draw([{...series[0],name:'Same'},{...series[1],name:'Same'}],[{...marker,targetName:'Same'}]).markers.length,0);
+});
+
+test('mastery source preserves target association and timestamp without changing status history',async()=>{
+ const {readFileSync}=await import('node:fs');const {default:vm}=await import('node:vm');
+ const app=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
+ const source=app.match(/^function masteryMarkersForProgram\([^\n]*\{[\s\S]*?^}/m)[0];
+ const history=[{id:'m',programId:'p',targetId:'a',targetName:'A',type:'target-status-changed',toStatus:'mastered',date:'2026-11-19',timestamp:'2026-11-19T13:00:00.000Z'}];
+ const before=structuredClone(history),sandbox={currentClient:()=>({planChangeLog:history})};
+ vm.createContext(sandbox);vm.runInContext(source,sandbox);
+ const marker=sandbox.masteryMarkersForProgram('p')[0];
+ assert.equal(marker.targetIds[0],'a');assert.equal(marker.targetName,'A');assert.equal(marker.timestamp,history[0].timestamp);
+ assert.deepEqual(history,before);
 });
