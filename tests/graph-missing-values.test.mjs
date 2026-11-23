@@ -179,17 +179,17 @@ test('missing values retain sequence spacing and intentional clinical breaks wit
     const missingX=arcs[0].x+(arcs[1].x-arcs[0].x)/2;
     assert.equal(plain.canvas.__graphInspection.groups.length,3);
     assert.equal(plain.canvas.title,'');
-    // The Treatment boundary still breaks raw lines. The existing rolling
-    // trend intentionally spans that boundary and is not changed here.
+    // Treatment still separates raw phases; the rolling stroke now leaves a
+    // visual gap at the same resolved boundary without changing its values.
     const phase=draw({treatmentPhaseLine:{date:'2026-01-02'}});
     assert.equal(lines(phase).filter(s=>!s.dash.length).length,1);
-    assert.equal(lines(phase).filter(s=>s.dash.length).length,2);
+    assert.equal(lines(phase).filter(s=>s.dash.length).length,3);
     assert.deepEqual(lines(phase).filter(s=>!s.dash.length)[0].path,[arcs[1],arcs[2]]);
     // Existing environmental marker discontinuities still break both lines,
     // even when the marker occurs on a missing observation's date.
     const marker=draw({phaseMarkers:[{date:'2026-01-02',label:'Environment',phaseType:'environmentalChange',position:'after-date'}]});
-    assert.equal(lines(marker).filter(s=>!s.dash.length).length,1);
-    assert.equal(lines(marker).filter(s=>s.dash.length).length,1);
+    assert.equal(lines(marker).filter(s=>!s.dash.length).length,3);
+    assert.equal(lines(marker).filter(s=>s.dash.length).length,3);
     assert.deepEqual(series,before);
   } finally {globalThis.window=previousWindow;}
 });

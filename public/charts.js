@@ -87,11 +87,6 @@ export function drawLineChart(canvas, series, options = {}) {
   const maxY = Math.max(options.maxY || 0, ...allPoints.map((point) => point.y), 1);
   const yTop = options.maxY || Math.max(options.yStep || 1, Math.ceil(maxY * 1.15));
   const phaseLineX = phaseBoundary?.renderX ?? null;
-  const phaseMarkerXs = layout.markerBreakXs;
-  const breakLines = [
-    ...(Number.isFinite(phaseLineX) ? [phaseLineX] : []),
-    ...phaseMarkerXs
-  ];
 
   let phaseLabels = [];
   if (responsive) {
@@ -196,7 +191,7 @@ export function drawLineChart(canvas, series, options = {}) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.setLineDash([8, 6]);
-    drawPhaseSegments(ctx, points.map((point) => ({ ...point, phase: "rolling" })), null, phaseMarkerXs);
+    drawPhaseSegments(ctx, points.map((point) => ({ ...point, phase: "rolling" })), layout.strokeBreakXsForSeries(series[seriesIndex]));
     ctx.restore();
   });
   series.forEach((item, seriesIndex) => {
@@ -224,7 +219,7 @@ export function drawLineChart(canvas, series, options = {}) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 3;
     ctx.setLineDash(style.dashPattern);
-    drawPhaseSegments(ctx, points, phaseBoundary, breakLines);
+    drawPhaseSegments(ctx, points, layout.strokeBreakXsForSeries(item));
     ctx.restore();
 
     points.forEach((point) => {
@@ -785,28 +780,37 @@ function drawPhaseMarkers(ctx, margin, plotHeight, markers, showLabels = true) {
   });
 }
 
-function drawPhaseSegments(ctx, points, phaseBoundary, breakLines = []) {
-  let previousPoint = null;
-  points.forEach((point) => {
-    if (point.y === null) {
-      // Missing values omit a point, not the segment between valid observations.
-      return;
+// Clip only strokes, never observation or event anchors. Interpolation preserves
+// the original slope. Overlapping gap ranges merge naturally in parameter space.
+export function buildStrokeSegments(points, breakXs = [], halfGap = 3) {
+  const segments = [];
+  let previous = null;
+  for (const point of points) {
+    if (point.y === null) continue;
+    if (previous && previous.phase === point.phase) {
+      const start = previous, dx = point.x-start.x, dy = point.y-start.y;
+      const cuts = breakXs.filter(x => Number.isFinite(x) && x >= Math.min(start.x,point.x) && x <= Math.max(start.x,point.x));
+      const gaps = dx === 0 ? (cuts.length ? [[0,1]] : []) : cuts.map(x => {
+        const t = (x-start.x)/dx, radius = halfGap/Math.abs(dx);
+        return [Math.max(0,t-radius),Math.min(1,t+radius)];
+      }).sort((a,b)=>a[0]-b[0]);
+      const at = t => ({x:start.x+dx*t,y:start.y+dy*t});
+      let cursor = 0;
+      for (const [from,to] of gaps) {
+        if (from > cursor) segments.push([at(cursor),at(from)]);
+        cursor = Math.max(cursor,to);
+      }
+      if (cursor < 1) segments.push([at(cursor),at(1)]);
     }
-    const crossesBreakLine = previousPoint && breakLines.some((lineX) => (
-      Number.isFinite(lineX)
-      && ((previousPoint.x < lineX && point.x > lineX) || (previousPoint.x > lineX && point.x < lineX))
-    ));
-    if (!previousPoint || previousPoint.phase !== point.phase || crossesBreakLine) {
-      ctx.beginPath();
-      ctx.moveTo(point.x, point.y);
-    } else {
-      ctx.lineTo(point.x, point.y);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(point.x, point.y);
-    }
-    previousPoint = point;
-  });
+    previous = point;
+  }
+  return segments;
+}
+
+function drawPhaseSegments(ctx, points, breakXs = []) {
+  for (const [start,end] of buildStrokeSegments(points,breakXs)) {
+    ctx.beginPath();ctx.moveTo(start.x,start.y);ctx.lineTo(end.x,end.y);ctx.stroke();
+  }
 }
 
 function isTargetMasteryMarker(marker) {
@@ -928,6 +932,8 @@ export function buildClinicalGraphLayout(series, model, left, width, spacing = "
   const renderedMarkers = resolved.filter(event=>!boundaryMarker || event.sourceIndex!==phaseMarkers.length);
   return {dateXPositions,pointX,observationAnchors:ordered.observations.map(point=>({point,x:pointX(point)})),intervals,
     events:resolved,labelAnchors:resolved.map(event=>({event,x:event.renderX})),
+    strokeBreakXsForSeries:item => resolved.filter(event => !isTargetMasteryMarker(event)
+      || masteryObservations(series,event).some(point => item.points.includes(point))).map(event=>event.renderX),
     markerBreakXs:renderedMarkers.filter(event=>event.breaksLine).map(event=>event.renderX),
     phaseMarkers:renderedMarkers,phaseBoundary:renderedBoundary ? {...phaseBoundary,renderX:renderedBoundary.renderX} : null};
 }
