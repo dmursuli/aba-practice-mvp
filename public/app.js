@@ -1,3 +1,4 @@
+import { authorizationUtilization, sessionDurationMinutes, billingUnits } from "./authorization-utilization.js";
 import { sanitizeClinicalSnapshot, snapshotPhaseConfig, reportSnapshotDisclosure } from "./report-snapshot.js";
 import { recordProgramClinicalAction, discardSessionDraft, assignClientProvider, cancelAppointment, completeSessionDraft, createAppointment, createProviderAvailability, createProviderZones, createRecurringSeries, createAuditEvent, createClient, createClientServiceLocation, createRbtFidelityObservation, createSession, createSessionDraft, createUser, deactivateClientServiceLocation, deactivateProviderAvailability, deactivateProviderZones, deleteClient, deleteClientDocument, deleteSession, deleteSessionBehaviorData, deleteSessionParentGoalData, deleteSessionTargetData, findSchedulingProviderMatches, getAppointment, getAppointmentOptions, getAppointments, getAuditLog, getClientAssignments, getClientSessions, getClientTargetReviews, getCurrentUser, getData, getHistoricalImportBatches, getHistoricalImportDuplicateMetadata, getPracticeBackup, getProviderAvailability, getProviderAvailabilityProfiles, getProviderZoneProfiles, getProviderZones, getRbtFidelityHistory, getRecoverableDrafts, getSchedulingCapacity, getSessionDraft, getUsers, getVisibleSessions, importHistoricalData, listSessionDrafts, login, logout, preserveDrafts, removeClientProvider, resendSignInCode, restorePracticeBackup, rollbackHistoricalImport, setPrimaryClientServiceLocation, setupVerificationEmail, touchSession, updateAppointment, updateProviderAvailability, updateProviderZones, updateRecurringEntireSeriesFuture, updateRecurringThisAndFuture, updateClientGraphPhaseLines, updateClientPlan, updateClientProfile, updateClientServiceLocation, updateClientWorkflow, updateNote, updateSessionDraft, updateUser, uploadClientDocument, verifySignInCode } from "./api.js";
 import { clinicalPhaseOf, programPhaseAt, graphObservationProvider, buildGraphAnalysis, buildLegendItems, drawLineChart, formatGraphDate, filterSeriesPointsByDateRange, redrawLineChartTrend } from "./charts.js";
@@ -895,7 +896,7 @@ function ensureProgramGraphModalAnalysis() {
 }
 
 function viewNeedsClientSessions(view = currentView()) {
-  return ["session", "workflow", "parent", "graphs", "report", "soap"].includes(view);
+  return ["clients", "session", "workflow", "parent", "graphs", "report", "soap"].includes(view);
 }
 
 function viewNeedsAllVisibleSessions(view = currentView()) {
@@ -922,6 +923,7 @@ function loadedSessionPageMatches(clientId) {
 }
 
 function rerenderSessionBackedView(view = currentView()) {
+  if (view === "clients") renderAuthorizationUsage();
   if (view === "session") renderSummary();
   if (view === "workflow") renderWorkflowBoard();
   if (view === "parent") renderParentSummary();
@@ -8642,40 +8644,11 @@ function renderAuthorizationUsage() {
       </div>
     `;
   }).join("");
-  authorizationUsageNote.textContent = "97153 and 97156 usage update automatically from saved sessions in the current authorization period. 97151 and 97155 will show 0 until timed billing entries are captured for those codes.";
+  authorizationUsageNote.textContent = "Utilization updates automatically from saved clinical services within the current authorization period.";
 }
 
 function authorizationUsageByCode(client) {
-  const cycle = currentAuthorizationCycle(client);
-  const timedRows = loadedSessions()
-    .filter((session) => session.clientId === client.id && dateFallsInCycle(session.date, cycle))
-    .map((session) => billingRow(session));
-  const services = client.profile?.authorization?.services || {};
-  return ["97153", "97155", "97156", "97151"].map((code) => {
-    const approvedHours = Number(services?.[code]?.hours || 0);
-    const approvedUnits = Number(services?.[code]?.units || 0);
-    const matchingRows = timedRows.filter((row) => row.codeValue === code);
-    const usedMinutes = matchingRows.reduce((sum, row) => sum + row.minutes, 0);
-    const usedUnits = matchingRows.reduce((sum, row) => sum + row.units, 0);
-    const usedHours = roundUsage(usedMinutes / 60);
-    const remainingHours = roundUsage(Math.max(approvedHours - usedHours, 0));
-    const remainingUnits = Math.max(approvedUnits - usedUnits, 0);
-    const percentUsed = approvedUnits > 0
-      ? Math.round((usedUnits / approvedUnits) * 100)
-      : approvedHours > 0
-        ? Math.round((usedHours / approvedHours) * 100)
-        : 0;
-    return {
-      code,
-      approvedHours,
-      approvedUnits,
-      usedHours,
-      usedUnits,
-      remainingHours,
-      remainingUnits,
-      percentUsed
-    };
-  });
+  return authorizationUtilization(client, loadedSessions());
 }
 
 function roundUsage(value) {
@@ -9015,20 +8988,6 @@ function billingRow(session) {
   };
 }
 
-function sessionDurationMinutes(startTime, endTime) {
-  if (!startTime || !endTime) return 0;
-  const [startHour, startMinute] = startTime.split(":").map(Number);
-  const [endHour, endMinute] = endTime.split(":").map(Number);
-  if ([startHour, startMinute, endHour, endMinute].some(Number.isNaN)) return 0;
-  const start = startHour * 60 + startMinute;
-  const end = endHour * 60 + endMinute;
-  return Math.max(0, end - start);
-}
-
-function billingUnits(minutes) {
-  if (!minutes) return 0;
-  return Math.max(1, Math.round(minutes / 15));
-}
 
 function exportBillingCsv() {
   const rows = filteredBillingSessions();
