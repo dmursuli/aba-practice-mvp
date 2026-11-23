@@ -312,7 +312,7 @@ export function programPhaseAt(records = [], point = {}) {
   const event = eligible.at(-1);
   if (event) return clinicalPhaseOf(event);
   // Preserve existing date-only Treatment line behavior; no fabricated transition.
-  if (events.some(record => !record.effectiveAt && clinicalPhaseOf(record) === "intervention"
+  if (events.some(record => (!record.effectiveAt || record.historicalDecision) && clinicalPhaseOf(record) === "intervention"
     && (!record.historicalDecision || record.baselineBefore === true))) return "baseline";
   return null;
 }
@@ -846,6 +846,11 @@ function masteryObservations(series, marker) {
 function observationSideOfEvent(point, marker) {
   if (point.x !== marker.date) return point.x < marker.date ? -1 : 1;
   if (isTargetMasteryMarker(marker)) return -1;
+  // Historical date-only observations precede a subsequently confirmed transition.
+  // Use the clinical classification, including explicit links on future observations.
+  if (marker.historicalDecision && marker.effectiveAt) {
+    return programPhaseAt([marker], point) === "intervention" ? 1 : -1;
+  }
   const eventTime = marker.effectiveAt || marker.timestamp;
   if (eventTime && point.recordedAt) {
     const difference = Date.parse(point.recordedAt) - Date.parse(eventTime);
