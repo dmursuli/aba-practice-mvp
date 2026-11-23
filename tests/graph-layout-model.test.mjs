@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildClinicalGraphModel,buildClinicalGraphLayout,deriveProgramPhases,drawLineChart,buildStrokeSegments,buildGraphAnalysis,buildChartLayout} from '../public/charts.js';
+import {buildMarkerLabels,buildClinicalGraphModel,buildClinicalGraphLayout,deriveProgramPhases,drawLineChart,buildStrokeSegments,buildGraphAnalysis,buildChartLayout} from '../public/charts.js';
 import {sanitizeClinicalSnapshot,snapshotPhaseConfig} from '../public/report-snapshot.js';
 import {buildSkillMeasurementChart} from '../public/skill-graph-measurements.js';
 import {behaviorMeasurementGate} from '../public/behavior-graph-measurements.js';
@@ -154,4 +154,56 @@ test('many exclusion bands merge without crossed strokes or lost datapoints',()=
   assert.ok(stroke.path.at(-1).x<=event.renderX-5 || stroke.path[0].x>=event.renderX+5);
  }
  assert.deepEqual(result.layout.events.map(e=>e.renderX),layout(series,{phaseMarkers:markers}).events.map(e=>e.renderX));
+});
+
+for (const count of [1,3,4]) test(`${count} nearby mastery markers render one centered cluster label`,()=>{
+ const markers=Array.from({length:count},(_,i)=>marker(`m${i}`,'2026-01-02',{renderX:100+i*20,targetIds:[`t${i}`]}));
+ const before=structuredClone(markers);
+ const labels=buildMarkerLabels(markers,text=>text.length*6);
+ assert.equal(labels.length,1);
+ assert.equal(labels[0].text,'Target mastered');
+ assert.equal(labels[0].anchorX,(markers[0].renderX+markers.at(-1).renderX)/2);
+ assert.deepEqual(markers,before);
+ for(const layoutMode of [undefined,'graphs']) {
+  const result=render(series,{layoutMode,phaseMarkers:markers.map(m=>({...m,targetIds:['a']}))});
+  assert.equal(result.labels.filter(l=>l.t==='Target mastered').length,1);
+  assert.equal(result.strokes.filter(s=>s.color==='#7a4f00').length,count);
+ }
+});
+test('mastery label clusters use resolved pixels, measured width and spacing, not dates or target IDs',()=>{
+ const markers=[marker('a','2026-01-01',{renderX:100}),marker('b','2026-02-01',{renderX:120}),
+  marker('c','2026-01-01',{renderX:400}),marker('d','2026-01-01',{renderX:420})];
+ const labels=buildMarkerLabels(markers,text=>text.length*6);
+ assert.deepEqual(labels.map(l=>l.anchorX),[110,410]);
+ assert.ok(labels[1].anchorX-labels[0].anchorX>84+12);
+ assert.deepEqual(buildMarkerLabels([...markers].reverse(),text=>text.length*6),labels);
+ assert.equal(buildMarkerLabels(markers,()=>400).length,1);
+});
+for(const layoutMode of [undefined,'graphs']) test(`shared ${layoutMode || 'report/modal'} renderer keeps every mastery line, association and exclusion band`,()=>{
+ const markers=[marker('a','2026-01-01'),marker('b','2026-01-01'),marker('c','2026-01-01'),
+  marker('d','2026-01-10'),marker('e','2026-01-10'),
+  marker('treatment','2026-01-03',{phaseType:'environmental',clinicalPhase:'intervention',label:'Treatment'}),
+  marker('custom','2026-01-03',{phaseType:'environmental',label:'Environment'})];
+ const options={phaseMarkers:markers,layoutMode,showTrendLine:true};
+ const before=structuredClone({series,options});
+ const result=render(series,options);
+ assert.equal(result.labels.filter(l=>l.t==='Target mastered').length,2);
+ assert.equal(result.labels.filter(l=>l.t==='Treatment').length,1);
+ assert.equal(result.labels.filter(l=>l.t==='Environment').length,1);
+ assert.equal(result.strokes.filter(s=>s.color==='#7a4f00').length,markers.length);
+ const expected=layout(series,options);
+ assert.deepEqual(result.layout.events.map(e=>[e.id,e.renderX,e.targetIds]),expected.events.map(e=>[e.id,e.renderX,e.targetIds]));
+ assert.deepEqual(result.layout.markerBreakXs,expected.markerBreakXs);
+ const inspected=result.canvas.__graphInspection.groups.flatMap(g=>g.entries).filter(e=>e.kind==='marker');
+ assert.equal(inspected.length,markers.length);
+ for(const event of result.layout.events) {
+  assert.ok(inspected.some(entry=>entry.x===event.renderX));
+ }
+ // A distinct label on each of the same mastery markers bypasses de-duplication.
+ // Plot dimensions, points, marker lines, and clipped data strokes must match.
+ const unique=render(series,{...options,phaseMarkers:markers.map(m=>m.label==='Target mastered'?{...m,label:`Mastery ${m.id}`} : m)});
+ assert.deepEqual(result.arcs,unique.arcs);
+ assert.deepEqual(result.strokes.filter(s=>s.color!=='#a6aeb5'),unique.strokes.filter(s=>s.color!=='#a6aeb5'));
+ assert.deepEqual(buildGraphAnalysis(series,options),buildGraphAnalysis(series,before.options));
+ assert.deepEqual({series,options},before);
 });

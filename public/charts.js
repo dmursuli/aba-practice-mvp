@@ -87,6 +87,8 @@ export function drawLineChart(canvas, series, options = {}) {
   const maxY = Math.max(options.maxY || 0, ...allPoints.map((point) => point.y), 1);
   const yTop = options.maxY || Math.max(options.yStep || 1, Math.ceil(maxY * 1.15));
   const phaseLineX = phaseBoundary?.renderX ?? null;
+  ctx.font = "12px system-ui, sans-serif";
+  const markerLabels = buildMarkerLabels(phaseMarkers, text => ctx.measureText?.(text).width ?? text.length * 7);
 
   let phaseLabels = [];
   if (responsive) {
@@ -95,13 +97,18 @@ export function drawLineChart(canvas, series, options = {}) {
       labels.push({ text: "Baseline", anchorX: margin.left + (phaseLineX - margin.left) / 2, color: "#1f2933" });
       labels.push({ text: phaseBoundary.label || "Treatment", anchorX: phaseLineX + (margin.left + plotWidth - phaseLineX) / 2, color: "#1f2933" });
     }
+    const originalLabels = [...labels];
     phaseMarkers.forEach((marker) => {
       const anchorX = marker.renderX;
-      if (marker.label && Number.isFinite(anchorX)) labels.push({ text: marker.label, anchorX, color: "#7a4f00", marker: true });
+      if (marker.label && Number.isFinite(anchorX)) originalLabels.push({ text: marker.label, anchorX, color: "#7a4f00", marker: true });
     });
+    labels.push(...markerLabels);
     ctx.font = "12px system-ui, sans-serif";
     phaseLabels = layoutPhaseLabels(labels, margin.left, margin.left + plotWidth, (text) => ctx.measureText(text).width);
-    const labelBottom = Math.max(0, ...phaseLabels.map((label) => label.top + label.height));
+    // Reserve the original label area so de-duplication cannot move observations
+    // or change plot geometry, even when fewer label lanes are now drawn.
+    const originalLayout = layoutPhaseLabels(originalLabels, margin.left, margin.left + plotWidth, (text) => ctx.measureText(text).width);
+    const labelBottom = Math.max(0, ...originalLayout.map((label) => label.top + label.height));
     const extraHeight = Math.max(0, labelBottom + 12 - margin.top);
     margin.top += extraHeight;
     height += extraHeight;
@@ -231,7 +238,7 @@ export function drawLineChart(canvas, series, options = {}) {
   // Exclusion bands affect strokes only. Markers overlay those gaps; unchanged
   // datapoints are drawn last and remain authoritative even near a marker.
   drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, !responsive);
-  drawPhaseMarkers(ctx, margin, plotHeight, phaseMarkers, !responsive);
+  drawPhaseMarkers(ctx, margin, plotHeight, phaseMarkers, !responsive, markerLabels);
   datapointsToDraw.forEach(({point,color}) => {
     ctx.fillStyle = color;ctx.beginPath();ctx.arc(point.x,point.y,4,0,Math.PI*2);ctx.fill();
   });
@@ -761,7 +768,28 @@ function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, showLa
   return lineX;
 }
 
-function drawPhaseMarkers(ctx, margin, plotHeight, markers, showLabels = true) {
+// Label-only clusters: never filter or mutate the resolved marker/event list.
+export function buildMarkerLabels(markers, measureText) {
+  const visible = markers.filter(marker => marker.label && Number.isFinite(marker.renderX));
+  const mastery = marker => isTargetMasteryMarker(marker) && marker.label.trim().toLowerCase() === "target mastered";
+  const label = (text, anchorX) => ({text, anchorX, color:"#7a4f00", marker:true});
+  const labels = visible.filter(marker => !mastery(marker)).map(marker => label(marker.label, marker.renderX));
+  const sorted = visible.filter(mastery).slice().sort((a,b) => a.renderX-b.renderX);
+  const threshold = measureText("Target mastered") + 12;
+  let first, last;
+  for (const marker of sorted) {
+    if (last !== undefined && marker.renderX-last > threshold) {
+      labels.push(label("Target mastered", (first+last)/2));
+      first = undefined;
+    }
+    if (first === undefined) first = marker.renderX;
+    last = marker.renderX;
+  }
+  if (first !== undefined) labels.push(label("Target mastered", (first+last)/2));
+  return labels;
+}
+
+function drawPhaseMarkers(ctx, margin, plotHeight, markers, showLabels = true, labels = []) {
   markers.forEach((marker) => {
     const lineX = marker.renderX;
     if (!Number.isFinite(lineX)) return;
@@ -779,9 +807,16 @@ function drawPhaseMarkers(ctx, margin, plotHeight, markers, showLabels = true) {
     ctx.fillStyle = "#7a4f00";
     ctx.font = "12px system-ui, sans-serif";
     ctx.textAlign = "center";
-    if (showLabels && marker.label) ctx.fillText(marker.label, lineX, margin.top - 30);
     ctx.restore();
   });
+  if (showLabels) {
+    ctx.save();
+    ctx.fillStyle = "#7a4f00";
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    labels.forEach(label => ctx.fillText(label.text, label.anchorX, margin.top - 30));
+    ctx.restore();
+  }
 }
 
 // Clip only strokes, never observation or event anchors. Interpolation preserves
