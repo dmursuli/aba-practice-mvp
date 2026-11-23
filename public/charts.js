@@ -41,7 +41,7 @@ export function drawLineChart(canvas, series, options = {}) {
   const width = canvas.width / dpr;
   let height = canvas.height / dpr;
   const availablePlotWidth = width - PLOT_LEFT_MARGIN - PLOT_RIGHT_MARGIN;
-  const plotWidth = responsive ? availablePlotWidth : Math.min(availablePlotWidth, MAX_DESKTOP_PLOT_WIDTH);
+  const plotWidth = Math.min(availablePlotWidth, MAX_DESKTOP_PLOT_WIDTH);
   const margin = { top: 52, right: PLOT_RIGHT_MARGIN, bottom: 68, left: PLOT_LEFT_MARGIN };
   let plotHeight = height - margin.top - margin.bottom;
 
@@ -58,8 +58,9 @@ export function drawLineChart(canvas, series, options = {}) {
 
   const model = buildClinicalGraphModel(series, options);
   const { dates } = model;
-  const layout = buildPhaseTransitionLayout(series, model, margin.left, plotWidth,
+  const layout = buildClinicalGraphLayout(series, model, margin.left, plotWidth,
     options.graphType === "behavior" ? "calendar" : "sequence");
+  canvas.__clinicalGraphLayout = layout;
   const phaseBoundary = layout.phaseBoundary;
   const phaseMarkers = layout.phaseMarkers || model.phaseMarkers;
   const xPositions = layout.dateXPositions;
@@ -85,8 +86,8 @@ export function drawLineChart(canvas, series, options = {}) {
   }
   const maxY = Math.max(options.maxY || 0, ...allPoints.map((point) => point.y), 1);
   const yTop = options.maxY || Math.max(options.yStep || 1, Math.ceil(maxY * 1.15));
-  const phaseLineX = phaseBoundary ? phaseLinePosition(phaseBoundary, xPositions) : null;
-  const phaseMarkerXs = markerPositions(phaseMarkers, dates, xPositions, layout.markerXByDate);
+  const phaseLineX = phaseBoundary?.renderX ?? null;
+  const phaseMarkerXs = layout.markerBreakXs;
   const breakLines = [
     ...(Number.isFinite(phaseLineX) ? [phaseLineX] : []),
     ...phaseMarkerXs
@@ -100,7 +101,7 @@ export function drawLineChart(canvas, series, options = {}) {
       labels.push({ text: phaseBoundary.label || "Treatment", anchorX: phaseLineX + (margin.left + plotWidth - phaseLineX) / 2, color: "#1f2933" });
     }
     phaseMarkers.forEach((marker) => {
-      const anchorX = xPositionForMarkerDateWithMode(marker, dates, xPositions, layout.markerXByDate);
+      const anchorX = marker.renderX;
       if (marker.label && Number.isFinite(anchorX)) labels.push({ text: marker.label, anchorX, color: "#7a4f00", marker: true });
     });
     ctx.font = "12px system-ui, sans-serif";
@@ -116,8 +117,8 @@ export function drawLineChart(canvas, series, options = {}) {
   }
 
   drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options);
-  drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions, !responsive);
-  drawPhaseMarkers(ctx, margin, plotHeight, phaseMarkers, dates, xPositions, layout.markerXByDate, !responsive);
+  drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, !responsive);
+  drawPhaseMarkers(ctx, margin, plotHeight, phaseMarkers, !responsive);
   // Draw annotation leaders first, then opaque label backgrounds, so a leader
   // from a higher lane cannot run through another label's text.
   phaseLabels.forEach((label) => {
@@ -179,7 +180,7 @@ export function drawLineChart(canvas, series, options = {}) {
       .sort(compareGraphObservations)
       .map((point, pointIndex) => {
         const dateIndex = dates.indexOf(point.x);
-        const baseX = layout.pointX ? layout.pointX(sourcePoints[pointIndex]) : xPositions[dateIndex];
+        const baseX = layout.pointX(sourcePoints[pointIndex]);
         return {
           x: baseX,
           y: point.y === null ? null : margin.top + plotHeight - (point.y / yTop) * plotHeight,
@@ -206,7 +207,7 @@ export function drawLineChart(canvas, series, options = {}) {
       .sort(compareGraphObservations)
       .map((point, pointIndex) => {
         const dateIndex = dates.indexOf(point.x);
-        const baseX = layout.pointX ? layout.pointX(point) : xPositions[dateIndex];
+        const baseX = layout.pointX(point);
         return {
           x: baseX,
           y: point.y === null ? null : margin.top + plotHeight - (point.y / yTop) * plotHeight,
@@ -237,7 +238,7 @@ export function drawLineChart(canvas, series, options = {}) {
   });
 
   const inspectionMarkers = phaseMarkers.map(marker => ({
-    ...marker, x: xPositionForMarkerDateWithMode(marker, dates, xPositions, layout.markerXByDate),
+    ...marker, x: marker.renderX,
     top: margin.top - 24, bottom: margin.top + plotHeight
   })).filter(marker => Number.isFinite(marker.x));
   if (phaseBoundary && Number.isFinite(phaseLineX)) inspectionMarkers.push({
@@ -733,10 +734,10 @@ function drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, optio
   }
 }
 
-function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPositions, showLabels = true) {
+function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, showLabels = true) {
   if (!phaseBoundary) return null;
 
-  const lineX = phaseLinePosition(phaseBoundary, xPositions);
+  const lineX = phaseBoundary.renderX;
   if (!Number.isFinite(lineX)) return null;
 
   ctx.save();
@@ -761,9 +762,9 @@ function drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, xPosit
   return lineX;
 }
 
-function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions, markerXByDate = new Map(), showLabels = true) {
+function drawPhaseMarkers(ctx, margin, plotHeight, markers, showLabels = true) {
   markers.forEach((marker) => {
-    const lineX = xPositionForMarkerDateWithMode(marker, dates, xPositions, markerXByDate);
+    const lineX = marker.renderX;
     if (!Number.isFinite(lineX)) return;
 
     ctx.save();
@@ -784,52 +785,6 @@ function drawPhaseMarkers(ctx, margin, plotHeight, markers, dates, xPositions, m
   });
 }
 
-function xPositionForMarkerDate(date, dates, xPositions, markerXByDate = new Map()) {
-  return xPositionForMarkerDateWithMode({ date }, dates, xPositions, markerXByDate);
-}
-
-function xPositionForMarkerDateWithMode(marker, dates, xPositions, markerXByDate = new Map()) {
-  if (Object.hasOwn(marker || {}, "renderX")) return marker.renderX;
-  const date = marker?.date;
-  if (marker?.position === "after-date" && markerXByDate.has(date)) {
-    return markerXByDate.get(date);
-  }
-  const exactIndex = dates.indexOf(date);
-  if (exactIndex >= 0) {
-    return xPositions[exactIndex];
-  }
-
-  const markerValue = `${date}T00:00`;
-  let previousIndex = -1;
-  let nextIndex = -1;
-
-  dates.forEach((existingDate, index) => {
-    const value = `${existingDate}T00:00`;
-    if (value < markerValue) previousIndex = index;
-    if (nextIndex === -1 && value > markerValue) nextIndex = index;
-  });
-
-  if (previousIndex >= 0 && nextIndex >= 0) {
-    return xPositions[previousIndex] + (xPositions[nextIndex] - xPositions[previousIndex]) / 2;
-  }
-  if (previousIndex >= 0) return xPositions[previousIndex];
-  if (nextIndex >= 0) return xPositions[nextIndex];
-  return NaN;
-}
-
-function markerPositions(markers, dates, xPositions, markerXByDate = new Map()) {
-  return markers
-    .map((marker) => xPositionForMarkerDateWithMode(marker, dates, xPositions, markerXByDate))
-    .filter((value) => Number.isFinite(value));
-}
-
-function phaseLinePosition(phaseBoundary, xPositions) {
-  if (Object.hasOwn(phaseBoundary, "renderX")) return phaseBoundary.renderX;
-  const baselineX = xPositions[phaseBoundary.leftIndex];
-  const interventionX = xPositions[phaseBoundary.rightIndex];
-  return baselineX + (interventionX - baselineX) / 2;
-}
-
 function drawPhaseSegments(ctx, points, phaseBoundary, breakLines = []) {
   let previousPoint = null;
   points.forEach((point) => {
@@ -837,15 +792,11 @@ function drawPhaseSegments(ctx, points, phaseBoundary, breakLines = []) {
       // Missing values omit a point, not the segment between valid observations.
       return;
     }
-    const crossesPhaseBoundary = phaseBoundary
-      && previousPoint
-      && previousPoint.dateIndex <= phaseBoundary.leftIndex
-      && point.dateIndex >= phaseBoundary.rightIndex;
     const crossesBreakLine = previousPoint && breakLines.some((lineX) => (
       Number.isFinite(lineX)
       && ((previousPoint.x < lineX && point.x > lineX) || (previousPoint.x > lineX && point.x < lineX))
     ));
-    if (!previousPoint || previousPoint.phase !== point.phase || crossesPhaseBoundary || crossesBreakLine) {
+    if (!previousPoint || previousPoint.phase !== point.phase || crossesBreakLine) {
       ctx.beginPath();
       ctx.moveTo(point.x, point.y);
     } else {
@@ -867,7 +818,7 @@ function isTargetMasteryMarker(marker) {
 // one series. Unassociated single-series annotations belong to that series.
 // Ambiguous multi-target annotations are not attached to an unrelated target.
 function masteryObservations(series, marker) {
-  const ids = new Set([marker.targetId,...(marker.targetIds || [])].filter(Boolean));
+  const ids = new Set(marker.targetId ? [marker.targetId] : (marker.targetIds || []).filter(Boolean));
   if (ids.size) return series.flatMap(item => (item.points || []).filter(point =>
     ids.has(point.targetId || item.meta?.targetId)));
   const name = marker.targetName || marker.detail;
@@ -922,7 +873,7 @@ export function buildObservationEventPositions(series, markers = []) {
     intradayOffset:point => intradayOffsets.get(point),events:markers.map(marker => ({...marker}))};
 }
 
-export function buildPhaseTransitionLayout(series, model, left, width, spacing = "sequence") {
+export function buildClinicalGraphLayout(series, model, left, width, spacing = "sequence") {
   const {dates, phaseBoundary, phaseMarkers} = model;
   const boundaryMarker = phaseBoundary ? {...phaseBoundary,date:phaseBoundary.configuredDate,position:"date"} : null;
   const ordered = buildObservationEventPositions(series, [...phaseMarkers,...(boundaryMarker ? [boundaryMarker] : [])]);
@@ -936,38 +887,56 @@ export function buildPhaseTransitionLayout(series, model, left, width, spacing =
     return [point,center + halfWidth*ordered.intradayOffset(point)];
   }));
   const pointX = point => positions.get(point);
-  const renderedMarkers = ordered.events.map(marker => {
-    const observations = isTargetMasteryMarker(marker)
+  const anchors = [...new Set(ordered.observations.map(pointX))].sort((a,b)=>a-b);
+  const edgeSpace = Math.min(28,width*0.08);
+  const edges = anchors.length ? [Math.max(left,anchors[0]-edgeSpace),...anchors,Math.min(left+width,anchors.at(-1)+edgeSpace)] : [];
+  const intervals = edges.slice(1).map((right,index)=>({index,left:edges[index],right})).filter(interval=>interval.right>interval.left);
+  const assigned = ordered.events.map((marker,sourceIndex) => {
+    const mastery = isTargetMasteryMarker(marker);
+    const observations = mastery
       ? masteryObservations(series,marker).filter(point => graphNumericValue(point.y) !== null)
       : ordered.observations;
-    // Legacy mastery dates cannot place a sparse target's outcome before its
-    // evidence. Clamp only the overlay; retain the recorded date and data axis.
-    if (isTargetMasteryMarker(marker) && observations.length
-      && (observations.length === 1 || observations.every(point => marker.date < point.x))) {
-      const earliestX = Math.min(...observations.map(pointX));
-      const followingX = Math.min(...observations.map(pointX).filter(x => x > earliestX));
-      const offset = Math.min(16,(left+width-earliestX)/2,(followingX-earliestX)/2);
-      return {...marker,renderX:earliestX+offset};
+    if (!observations.length) return null;
+    let previous = Math.max(...observations.filter(point=>observationSideOfEvent(point,marker)<0).map(pointX));
+    let next = Math.min(...observations.filter(point=>observationSideOfEvent(point,marker)>0).map(pointX));
+    const clamp = mastery && (observations.length===1 || observations.every(point=>marker.date<point.x));
+    if (clamp) {
+      previous = Math.min(...observations.map(pointX));
+      next = Math.min(...observations.map(pointX).filter(x=>x>previous));
     }
-    const before = observations.filter(point => observationSideOfEvent(point,marker)<0).map(pointX);
-    const after = observations.filter(point => observationSideOfEvent(point,marker)>0).map(pointX);
-    const previous = Math.max(...before), next = Math.min(...after);
-    const renderX = Number.isFinite(previous) && Number.isFinite(next) && previous < next
-      ? (previous+next)/2
-      : Number.isFinite(previous) && !after.length
-        ? previous + Math.min(16,(left+width-previous)/2)
-        : Number.isFinite(next) && !before.length
-          ? next - Math.min(16,(next-left)/2) : NaN;
-    return {...marker,renderX};
+    const candidates = intervals.map(interval=>({...interval,left:Math.max(interval.left,previous),right:Math.min(interval.right,next)})).filter(interval=>interval.right>interval.left);
+    if (!candidates.length) return null;
+    // Semantic bounds first; global open intervals prevent collisions with any
+    // target's data. Edge/clamped events use the nearest available interval.
+    const preferred = Number.isFinite(previous) && Number.isFinite(next) && !clamp ? (previous+next)/2 : null;
+    const interval = preferred !== null
+      ? candidates.reduce((best,item)=>Math.abs((item.left+item.right)/2-preferred)<Math.abs((best.left+best.right)/2-preferred)?item:best)
+      : Number.isFinite(previous) ? candidates[0] : candidates.at(-1);
+    return {...marker,sourceIndex,intervalIndex:interval.index,regionLeft:interval.left,regionRight:interval.right,nearLeft:clamp || !Number.isFinite(next),nearRight:!Number.isFinite(previous),breaksLine:!mastery};
+  }).filter(Boolean);
+  const eventKey = event => [event.date,event.effectiveAt || event.timestamp || "",event.id || "",event.label || "",event.targetId || (event.targetIds || []).join(",")].join("|");
+  const resolved = assigned.map(event=>{
+    const interval = intervals.find(item=>item.index===event.intervalIndex);
+    const peers = assigned.filter(item=>item.intervalIndex===event.intervalIndex && item.regionLeft===event.regionLeft && item.regionRight===event.regionRight).sort((a,b)=>eventKey(a).localeCompare(eventKey(b)) || a.sourceIndex-b.sourceIndex);
+    let regionLeft = Math.max(interval.left,...peers.map(item=>item.regionLeft));
+    let regionRight = Math.min(interval.right,...peers.map(item=>item.regionRight));
+    if (peers.some(item=>item.nearLeft)) regionRight = Math.min(regionRight,regionLeft+edgeSpace);
+    else if (peers.some(item=>item.nearRight)) regionLeft = Math.max(regionLeft,regionRight-edgeSpace);
+    return {...event,renderX:regionLeft+(regionRight-regionLeft)*(peers.indexOf(event)+1)/(peers.length+1)};
   });
-  const renderedBoundary = boundaryMarker ? renderedMarkers.pop() : null;
-  return {dateXPositions,markerXByDate:new Map(),pointX,phaseMarkers:renderedMarkers,
-    phaseBoundary:renderedBoundary ? {...phaseBoundary,renderX:renderedBoundary.renderX} : null};
+  const renderedBoundary = boundaryMarker ? resolved.find(event=>event.sourceIndex===phaseMarkers.length) : null;
+  const renderedMarkers = resolved.filter(event=>!boundaryMarker || event.sourceIndex!==phaseMarkers.length);
+  return {dateXPositions,pointX,observationAnchors:ordered.observations.map(point=>({point,x:pointX(point)})),intervals,
+    events:resolved,labelAnchors:resolved.map(event=>({event,x:event.renderX})),
+    markerBreakXs:renderedMarkers.filter(event=>event.breaksLine).map(event=>event.renderX),
+    phaseMarkers:renderedMarkers,phaseBoundary:renderedBoundary ? {...phaseBoundary,renderX:renderedBoundary.renderX} : null};
 }
+
+// Compatibility entry point; no independent coordinate implementation.
+export const buildPhaseTransitionLayout = buildClinicalGraphLayout;
 
 export function buildChartLayout(dates, left, width, phaseBoundary, markers = [], spacing = "sequence") {
   const dateXPositions = Array(dates.length).fill(NaN);
-  const markerXByDate = new Map();
   const padding = Math.min(28, width * 0.08);
   const start = left + padding;
   const end = left + width - padding;
@@ -986,27 +955,7 @@ export function buildChartLayout(dates, left, width, phaseBoundary, markers = []
     });
   }
 
-  (markers || [])
-    .filter((marker) => marker?.position === "after-date" && marker?.date)
-    .forEach((marker) => {
-      const dateIndex = dates.indexOf(marker.date);
-      if (dateIndex < 0) return;
-      const baseX = dateXPositions[dateIndex];
-      const nextX = dateIndex < dateXPositions.length - 1 ? dateXPositions[dateIndex + 1] : null;
-      const previousX = dateIndex > 0 ? dateXPositions[dateIndex - 1] : null;
-      const forwardGap = Number.isFinite(nextX) ? Math.max(0, nextX - baseX) : 0;
-      const backwardGap = Number.isFinite(previousX) ? Math.max(0, baseX - previousX) : 0;
-      const availableGap = forwardGap || backwardGap;
-      const offset = Math.min(16, Math.max(6, availableGap * 0.2));
-      const markerX = Number.isFinite(nextX)
-        ? Math.min(baseX + offset, nextX - 4)
-        : Number.isFinite(previousX)
-          ? baseX + Math.min(10, Math.max(4, backwardGap * 0.15))
-          : baseX;
-      markerXByDate.set(marker.date, markerX);
-    });
-
-  return { dateXPositions, markerXByDate };
+  return { dateXPositions };
 }
 
 function dateSortValue(value) {
