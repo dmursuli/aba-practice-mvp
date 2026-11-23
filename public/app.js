@@ -10833,9 +10833,10 @@ function renderHistoricalPhaseControls(program) {
   return `<div class="historical-phase-controls">
     <p><strong>Historical phase not established</strong></p>
     <p>This program-level decision applies to every target. Observations will not be changed.</p>
-    <button type="button" data-program-clinical-action="classify-historical" data-boundary-mode="first" data-program-id="${escapeHtml(program.id)}" ${dates.length < 2 ? "disabled" : ""}>Use first historical date as Baseline</button>
-    <p class="muted">All observations on the earliest recorded date will be Baseline. Treatment will begin on the next recorded observation date.</p>
-    ${dates.length < 2 ? '<p class="muted">At least two historical observation dates are required to establish Baseline followed by Treatment.</p>' : ""}
+    <button type="button" data-program-clinical-action="classify-historical" data-boundary-mode="first" data-program-id="${escapeHtml(program.id)}">Use first historical date as Baseline</button>
+    <p class="muted">${dates.length === 1
+      ? "All observations on the historical date will be Baseline. Treatment will begin after that historical date, and future observations will be Treatment."
+      : "All observations on the earliest recorded date will be Baseline. Treatment will begin on the next recorded observation date."}</p>
     <label>Treatment start date<select data-history-date>${dates.map(date => `<option value="${date}">${escapeHtml(formatGraphDate(date))}</option>`).join("")}</select></label>
     <p class="muted">All observations on the selected date and afterward will be Treatment. This is a date boundary, including all same-day observations.</p>
     <label><input type="checkbox" data-history-baseline> Explicitly classify observations before this date as Baseline</label>
@@ -10889,7 +10890,7 @@ async function handleProgramClinicalAction(button) {
     confirmed:true
   } : {};
   if (action === "classify-historical" && !window.confirm(historical.boundaryMode === "first"
-    ? "Use all observations on the earliest recorded date as Baseline and begin Treatment on the next recorded observation date? No observations will be changed."
+    ? "Use all observations on the earliest recorded date as Baseline and begin Treatment afterward? No observations will be changed."
     : `Establish Treatment from ${historical.startDate}? Earlier observations ${historical.baselineBefore ? "will be classified as Baseline" : "will remain unclassified"}. No observations will be changed.`)) return;
   if (action === "start-treatment" && !window.confirm("Begin treatment for this program? Future observations will be classified as Treatment until the phase is changed again.")) return;
   if (action === "establish-baseline" && !window.confirm("Establish Baseline for future observations? Existing historical observations will remain unchanged.")) return;

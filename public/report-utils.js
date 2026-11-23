@@ -150,7 +150,9 @@ export function sanitizeCustomPhaseLines(source = {}) {
         return entries;
       }
       entries.push({
-        ...(line?.historicalDecision === true ? {historicalDecision:true,baselineBefore:line.baselineBefore === true,clinicalPhase:"intervention",decidedBy:sanitizeText(line.decidedBy),decidedAt:sanitizeText(line.decidedAt),sessionId:sanitizeText(line.sessionId)} : {}),
+        ...(line?.historicalDecision === true ? {historicalDecision:true,baselineBefore:line.baselineBefore === true,clinicalPhase:line.clinicalPhase === "baseline" ? "baseline" : "intervention",decidedBy:sanitizeText(line.decidedBy),decidedAt:sanitizeText(line.decidedAt),sessionId:sanitizeText(line.sessionId)} : {}),
+        ...(line?.historicalDecision && line.initial === true ? {initial:true} : {}),
+        ...(line?.historicalDecision && line.position === "after-date" ? {position:"after-date"} : {}),
         ...(line?.effectiveAt ? {effectiveAt:sanitizeText(line.effectiveAt),clinicalPhase:sanitizeText(line.clinicalPhase),sessionId:sanitizeText(line.sessionId),initial:Boolean(line.initial)} : {}),
         id: sanitizeText(line?.id) || (normalizedPhaseType === "treatment" ? `${key}:treatment` : `${key}:${date}:${label.toLowerCase()}`),
         graphId: key,

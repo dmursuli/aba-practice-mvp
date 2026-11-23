@@ -207,3 +207,36 @@ for(const layoutMode of [undefined,'graphs']) test(`shared ${layoutMode || 'repo
  assert.deepEqual(buildGraphAnalysis(series,options),buildGraphAnalysis(series,before.options));
  assert.deepEqual({series,options},before);
 });
+
+test('explicit one-date historical Treatment occupies the interval after all Baseline observations',async()=>{
+ const {applyProgramClinicalAction,programPhaseRecords}=await import('../lib/program-phase-workflow.mjs');
+ const client={id:'c',programs:[{id:'p',targets:[{id:'a'},{id:'b'}]}],profile:{graphPhaseLines:{}}};
+ const db={clients:[client],sessions:[{id:'s',clientId:'c',date:'2026-01-01',programs:[{programId:'p',targets:[
+  {targetId:'a',independence:20},{targetId:'b',independence:40,recordedAt:'2026-01-01T23:59:00Z'}
+ ]}]}]};
+ const before=structuredClone(db.sessions);
+ applyProgramClinicalAction(db,'c','p',{action:'classify-historical',boundaryMode:'first',baselineBefore:false,confirmed:true,
+  sessionContext:{clientId:'c',sessionId:'active',sessionDate:'2026-11-19'}},{id:'bcba',role:'bcba'},'2026-11-19T15:00:00Z');
+ const markers=programPhaseRecords(client,'p');
+ const input=db.sessions[0].programs[0].targets.map(p=>({name:p.targetId,meta:{targetId:p.targetId},points:[{x:'2026-01-01',y:p.independence,recordedAt:p.recordedAt}]}));
+ const result=render(input,{phaseMarkers:markers});
+ const bare=render(input);
+ assert.deepEqual(result.layout.observationAnchors.map(p=>p.x),bare.layout.observationAnchors.map(p=>p.x));
+ assert.equal(result.layout.events.length,1);
+ const treatment=result.layout.events[0];
+ assert.ok(result.layout.observationAnchors.every(p=>p.x<treatment.renderX));
+ assert.equal(result.layout.observationAnchors[0].x,424);
+ assert.equal(treatment.renderX,438);
+ assert.equal(result.labels.filter(l=>l.t==='Treatment').length,1);
+ const inspection=result.canvas.__graphInspection.groups.flatMap(g=>g.entries);
+ assert.ok(inspection.filter(e=>e.kind==='observation').every(e=>e.phase==='baseline'));
+ assert.deepEqual(db.sessions,before);
+ // A historical date-boundary record without the explicit timed after-date
+ // designation keeps the existing before-observation positioning.
+ const legacy=render(input,{phaseMarkers:[{...markers[1],effectiveAt:undefined,position:undefined}]});
+ assert.equal(legacy.layout.events[0].renderX,410);
+ const future=render([...input,{name:'Future',points:[{x:'2026-11-20',y:70,phaseRecordId:markers[1].id}]}],{phaseMarkers:markers});
+ const boundary=future.layout.events[0].renderX;
+ assert.ok(future.layout.observationAnchors.filter(p=>p.point.x==='2026-01-01').every(p=>p.x<boundary));
+ assert.ok(future.layout.observationAnchors.filter(p=>p.point.x==='2026-11-20').every(p=>p.x>boundary));
+});

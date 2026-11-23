@@ -881,6 +881,12 @@ function masteryObservations(series, marker) {
 function observationSideOfEvent(point, marker) {
   if (point.x !== marker.date) return point.x < marker.date ? -1 : 1;
   if (isTargetMasteryMarker(marker)) return -1;
+  // Explicit one-date historical transition: the whole historical date precedes
+  // Treatment. Later observations linked to this phase remain on its right.
+  if (marker.historicalDecision && marker.baselineBefore === true && marker.effectiveAt
+    && marker.position === "after-date" && clinicalPhaseOf(marker) === "intervention") {
+    return point.phaseRecordId === marker.id ? 1 : -1;
+  }
   const eventTime = marker.effectiveAt || marker.timestamp;
   if (eventTime && point.recordedAt) {
     const difference = Date.parse(point.recordedAt) - Date.parse(eventTime);
