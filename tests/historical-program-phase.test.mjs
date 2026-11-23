@@ -110,12 +110,12 @@ test('historical phase controls belong to Treatment Planning program and are abs
  assert.match(markup,/program-level decision applies to every target/);
  assert.match(markup,/Use first historical date as Baseline/);
  assert.match(markup,/All observations on the earliest recorded date will be Baseline/);
- assert.match(markup,/Treatment will begin immediately afterward/);
+ assert.match(markup,/Treatment will begin on the next recorded observation date/);
  const originalSessions=f.db.sessions;
  f.db.sessions=[originalSessions[0]];
  const singleDateMarkup=sandbox.renderProgramPhaseControls(f.client.programs[0]);
- assert.doesNotMatch(singleDateMarkup,/data-boundary-mode="first"[^>]*disabled/);
- assert.doesNotMatch(singleDateMarkup,/At least two historical observation dates are required/);
+ assert.match(singleDateMarkup,/data-boundary-mode="first"[^>]*disabled/);
+ assert.match(singleDateMarkup,/At least two historical observation dates are required/);
  assert.match(singleDateMarkup,/Establish Baseline going forward/);
  assert.match(singleDateMarkup,/data-boundary-mode="date"/);
  f.db.sessions=originalSessions;
@@ -162,57 +162,14 @@ test('first-date mode groups all targets and timestamps by unique eligible date 
  assert.deepEqual(db.sessions,before.sessions);
 });
 
-test('one unique historical date establishes Treatment after Baseline without fabricating observations',()=>{
- const {db,client,act}=fixture();
+test('one unique eligible date rejects first-date mode without writing a boundary or history',()=>{
+ const {db,act}=fixture();
  db.sessions.forEach((session,i)=>{
   session.date='2026-07-06';
-  if(i%2) session.programs[0].targets[0].recordedAt=`2026-07-06T${String(i).padStart(2,'0')}:00:00Z`;
+  session.recordedAt=`2026-07-06T${String(i).padStart(2,'0')}:00:00Z`;
  });
- client.planChangeLog=[{id:'existing',note:'Preserve'}];
+ db.sessions.push({id:'ineligible',clientId:'c',date:'2026-07-09',programs:[{programId:'p',targets:[{targetId:'t',independence:null}]}]});
  const before=structuredClone(db);
- act();
- const records=programPhaseRecords(client,'p'),record=records[0];
- assert.equal(records.length,1);
- assert.equal(record.date,'2026-07-06');
- assert.equal(record.effectiveAt,record.decidedAt);
- assert.equal(record.decidedAt,'2026-11-19T15:00:00.000Z');
- assert.equal(record.decidedBy,'clinician');
- assert.equal(record.historicalDecision,true);
- assert.equal(record.baselineBefore,true);
- assert.equal(client.planChangeLog.length,2);
- assert.deepEqual(client.planChangeLog[0],before.clients[0].planChangeLog[0]);
- const points=db.sessions.flatMap(s=>s.programs[0].targets.map(p=>({...p,x:s.date,y:p.independence})));
- assert.ok(points.every(point=>programPhaseAt(records,point)==='baseline'));
- assert.equal(programPhaseAt(records,{x:context.sessionDate,recordedAt:record.decidedAt}),'intervention');
- assert.equal(programPhaseAt(records,{x:'2026-11-20'}),'intervention');
- const analysis=buildGraphAnalysis([{name:'T',points}],{phaseMarkers:records}).analyses[0];
- assert.equal(analysis.baselineLevel,45);
- assert.equal(analysis.treatmentLevel,null);
- const clean=sanitizeCustomPhaseLines(client.profile.graphPhaseLines);
- validateManagedPhaseEdit(client,clean);
- const snapshot=sanitizeClinicalSnapshot({version:1,phases:{'skill:p':{phaseMarkers:records}}});
- assert.equal(snapshot.phases['skill:p'].phaseMarkers[0].effectiveAt,record.effectiveAt);
- assert.deepEqual(db.sessions,before.sessions);
- assert.deepEqual(client.note97155History,before.clients[0].note97155History);
-});
-
-test('one-date classification immediately permits Treatment observations without Start Treatment',()=>{
- const {db,client,act}=fixture();
- db.sessions=db.sessions.slice(0,1);
- // Even when the sole historical date is today's clinical date, existing
- // date-only observations remain Baseline and new observations link to Treatment.
- db.sessions[0].date=context.sessionDate;
- const history=structuredClone(db.sessions);
- act();
- const records=programPhaseRecords(client,'p');
- assert.equal(programPhaseAt(records,{x:context.sessionDate,recordedAt:records[0].decidedAt}),'intervention');
- assert.equal(programPhaseAt(records,{x:context.sessionDate}),'baseline');
- applyProgramClinicalAction(db,'c','p',{action:'save-observation',targetId:'t',value:60,sessionContext:context},
-  {id:'clinician',role:'bcba'},'2026-11-19T15:01:00.000Z');
- assert.deepEqual(db.sessions[0],history[0]);
- const point=db.sessions[1].programs[0].targets[0];
- assert.equal(point.phase,'intervention');
- assert.equal(point.phaseRecordId,records[0].id);
- assert.equal(programPhaseAt(records,{...point,x:context.sessionDate}),'intervention');
- assert.equal(programPhaseRecords(client,'p').length,1);
+ assert.throws(()=>act(),/At least two historical observation dates are required to establish Baseline followed by Treatment\./);
+ assert.deepEqual(db,before);
 });

@@ -285,28 +285,3 @@ test('one valid target observation clamps mastery right despite missing entries 
   assert.deepEqual(result.points.map(point=>point.x),plain.points.map(point=>point.x));
  }
 });
-
-test('single historical date uses the existing Treatment boundary after every Baseline point', async()=>{
- const {applyProgramClinicalAction,programPhaseRecords}=await import('../lib/program-phase-workflow.mjs');
- const client={id:'c',programs:[{id:'p',targets:[{id:'a'},{id:'b'}]}],profile:{graphPhaseLines:{}}};
- const db={clients:[client],sessions:[{id:'historical',clientId:'c',date:'2026-07-06',programs:[{programId:'p',targets:[
-  {targetId:'a',independence:20},
-  {targetId:'b',independence:40,recordedAt:'2026-07-06T23:59:00Z'}
- ]}]}]};
- const before=structuredClone(db.sessions);
- applyProgramClinicalAction(db,'c','p',{action:'classify-historical',boundaryMode:'first',baselineBefore:false,confirmed:true,
-  sessionContext:{clientId:'c',sessionId:'active',sessionDate:'2026-11-23'}},{id:'clinician',role:'bcba'},'2026-11-23T16:00:00Z');
- const markers=programPhaseRecords(client,'p');
- const series=db.sessions[0].programs[0].targets.map(p=>({name:p.targetId,points:[{x:'2026-07-06',y:p.independence,recordedAt:p.recordedAt}]}));
- const result=draw(series,markers);
- assert.equal(result.points.length,2);
- assert.ok(result.points.every(p=>p.phase==='baseline'));
- assert.equal(result.markers.length,1);
- assert.ok(result.points.every(p=>p.x<result.markers[0].x));
- assert.equal(result.markers[0].date,'2026-07-06');
- assert.deepEqual(db.sessions,before);
- const future=[...series,{name:'Future',points:[{x:'2026-11-24',y:60,phaseRecordId:markers[0].id}]}];
- const next=draw(future,markers);
- assert.ok(next.points.filter(p=>p.phase==='baseline').every(p=>p.x<next.markers[0].x));
- assert.ok(next.points.filter(p=>p.phase==='intervention').every(p=>p.x>next.markers[0].x));
-});
