@@ -20,12 +20,12 @@ test('ten historical observations identify absent classification without fabrica
  assert.equal(a.phaseUnclassified,true);assert.match(a.interpretation,/Treatment phase not established for historical data/);
  assert.doesNotMatch(a.interpretation,/insufficient/i);assert.equal(a.trendDirection,'Phase not established');
 });
-test('confirmed first-observation decision computes treatment analytics and preserves every stored observation',()=>{
+test('confirmed first-date Baseline decision computes treatment analytics and preserves every stored observation',()=>{
  const {db,client,analysis,act}=fixture();const before=JSON.stringify(db.sessions);
- act();const a=analysis();assert.equal(a.treatmentLevel,45);assert.equal(a.trendDirection,'Increasing');assert.equal(a.currentLevel,90);
- assert.equal(a.baselineLevel,null);assert.equal(a.recentPerformance,'Recent improvement');
+ act();const a=analysis();assert.equal(a.treatmentLevel,50);assert.equal(a.trendDirection,'Increasing');assert.equal(a.currentLevel,90);
+ assert.equal(a.baselineLevel,0);assert.equal(a.recentPerformance,'Recent improvement');
  assert.equal(JSON.stringify(db.sessions),before);assert.deepEqual(client.note97155History,[]);
- const record=programPhaseRecords(client,'p')[0];assert.equal(record.date,'2025-01-01');assert.equal(record.decidedBy,'clinician');assert.equal(record.decidedAt,'2026-11-19T15:00:00.000Z');
+ const record=programPhaseRecords(client,'p')[0];assert.equal(record.date,'2025-01-02');assert.equal(record.baselineBefore,true);assert.equal(record.decidedBy,'clinician');assert.equal(record.decidedAt,'2026-11-19T15:00:00.000Z');
  assert.throws(()=>act(),/already has/);
  const clean=sanitizeCustomPhaseLines(client.profile.graphPhaseLines);
  validateManagedPhaseEdit(client,clean);
@@ -68,7 +68,7 @@ test('actual UI handler requires confirmation, preserves session, and immediatel
   vm.createContext(sandbox);vm.runInContext(extract('handleProgramClinicalAction')+'\nthis.actUI=handleProgramClinicalAction;',sandbox);
   await sandbox.actUI(button);assert.equal(calls,0);assert.equal(f.analysis().phaseUnclassified,true);
   accepted=true;await sandbox.actUI(button);assert.equal(calls,1);assert.equal(rendered,true);
-  assert.equal(f.analysis().treatmentLevel,mode==='first'?45:70);assert.equal(sandbox.state.active97155SessionId,context.sessionId);
+  assert.equal(f.analysis().treatmentLevel,mode==='first'?50:70);assert.equal(sandbox.state.active97155SessionId,context.sessionId);
   assert.equal(button.disabled,false);
  }
 });
@@ -84,8 +84,8 @@ test('one historical program decision updates all twelve targets without per-tar
  for (const target of client.programs[0].targets) {
   const points=db.sessions.flatMap(s=>s.programs[0].targets.filter(p=>p.targetId===target.id).map(p=>({x:s.date,y:p.independence})));
   const result=buildGraphAnalysis([{name:target.name,points}],{phaseMarkers:programPhaseRecords(client,'p')}).analyses[0];
-  assert.equal(result.treatmentLevel,target.id==='t11'?85:45);assert.equal(result.currentLevel,90);
-  assert.equal(result.baselineLevel,null);
+  assert.equal(result.treatmentLevel,target.id==='t11'?85:50);assert.equal(result.currentLevel,90);
+  assert.equal(result.baselineLevel,target.id==='t11'?null:0);
   if(target.id==='t11') {assert.equal(result.trendDisplay,'Insufficient Treatment data for trend.');assert.match(result.trendConfidence,/Insufficient Treatment data/);}
   else {assert.equal(result.trendDirection,'Increasing');assert.equal(result.recentPerformance,'Recent improvement');}
  }
@@ -108,6 +108,17 @@ test('historical phase controls belong to Treatment Planning program and are abs
  const markup=sandbox.renderProgramPhaseControls(f.client.programs[0]);
  assert.equal((markup.match(/data-boundary-mode="first"/g)||[]).length,1);
  assert.match(markup,/program-level decision applies to every target/);
+ assert.match(markup,/Use first historical date as Baseline/);
+ assert.match(markup,/All observations on the earliest recorded date will be Baseline/);
+ assert.match(markup,/Treatment will begin on the next recorded observation date/);
+ const originalSessions=f.db.sessions;
+ f.db.sessions=[originalSessions[0]];
+ const singleDateMarkup=sandbox.renderProgramPhaseControls(f.client.programs[0]);
+ assert.match(singleDateMarkup,/data-boundary-mode="first"[^>]*disabled/);
+ assert.match(singleDateMarkup,/At least two historical observation dates are required/);
+ assert.match(singleDateMarkup,/Establish Baseline going forward/);
+ assert.match(singleDateMarkup,/data-boundary-mode="date"/);
+ f.db.sessions=originalSessions;
  const analysis={graphType:'skill',analyses:[f.analysis()]};
  // Analyze the actual renderer source: no graph owns a historical action.
  for(const name of ['renderGraphAnalysisMarkup','renderReportGraphAnalysisMarkup']) assert.doesNotMatch(extract(name),/data-manage-historical-phase|data-program-clinical-action/);
@@ -116,4 +127,49 @@ test('historical phase controls belong to Treatment Planning program and are abs
  assert.equal(buildCompactGraphAnalysisSentence({...f.analysis(),trendDisplay:'Insufficient Treatment data for trend.'},'skill').includes('Insufficient Treatment data for trend.'),true);
  sandbox.canEditClinical=()=>false;f.client.profile.graphPhaseLines={};
  assert.doesNotMatch(sandbox.renderProgramPhaseControls(f.client.programs[0]),/data-program-clinical-action/);
+});
+
+test('first-date mode groups all targets and timestamps by unique eligible date and appends provenance',()=>{
+ const {db,client,act}=fixture();
+ db.sessions=[
+  {id:'late',clientId:'c',date:'2026-07-16',programs:[{programId:'p',targets:[{targetId:'a',independence:90}]}]},
+  ...['2026-07-06','2026-07-09'].flatMap(date=>['00:01','23:59'].map((time,i)=>({
+   id:`${date}-${i}`,clientId:'c',date,recordedAt:`${date}T${time}:00Z`,
+   programs:[{programId:'p',targets:['a','b'].map(targetId=>({targetId,independence:i*20,recordedAt:`${date}T${time}:00Z`}))}]
+  }))),
+  {id:'invalid',clientId:'c',date:'2026-07-01',programs:[{programId:'p',targets:[{targetId:'a',independence:null}]}]}
+ ];
+ client.profile.graphPhaseLines['skill:p']=[{id:'annotation',date:'2026-07-01',label:'Context',phaseType:'environmental'}];
+ client.planChangeLog=[{id:'earlier-change',note:'Preserve'}];
+ const before=structuredClone(db);
+ act();
+ const records=programPhaseRecords(client,'p');
+ assert.equal(records.length,2);
+ assert.deepEqual(records[0],before.clients[0].profile.graphPhaseLines['skill:p'][0]);
+ assert.equal(records[1].date,'2026-07-09');
+ assert.equal(records[1].historicalDecision,true);
+ assert.equal(records[1].baselineBefore,true);
+ assert.equal(records[1].sessionId,context.sessionId);
+ assert.equal(records[1].decidedBy,'clinician');
+ assert.equal(records[1].decidedAt,'2026-11-19T15:00:00.000Z');
+ assert.equal(client.planChangeLog.length,2);
+ assert.deepEqual(client.planChangeLog[0],before.clients[0].planChangeLog[0]);
+ for(const session of db.sessions.filter(s=>s.id!=='invalid')) {
+  for(const point of session.programs[0].targets) {
+   assert.equal(programPhaseAt(records,{...point,x:session.date}),session.date==='2026-07-06'?'baseline':'intervention');
+  }
+ }
+ assert.deepEqual(db.sessions,before.sessions);
+});
+
+test('one unique eligible date rejects first-date mode without writing a boundary or history',()=>{
+ const {db,act}=fixture();
+ db.sessions.forEach((session,i)=>{
+  session.date='2026-07-06';
+  session.recordedAt=`2026-07-06T${String(i).padStart(2,'0')}:00:00Z`;
+ });
+ db.sessions.push({id:'ineligible',clientId:'c',date:'2026-07-09',programs:[{programId:'p',targets:[{targetId:'t',independence:null}]}]});
+ const before=structuredClone(db);
+ assert.throws(()=>act(),/At least two historical observation dates are required to establish Baseline followed by Treatment\./);
+ assert.deepEqual(db,before);
 });
