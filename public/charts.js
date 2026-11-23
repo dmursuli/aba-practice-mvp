@@ -112,8 +112,6 @@ export function drawLineChart(canvas, series, options = {}) {
   }
 
   drawAxes(ctx, margin, plotWidth, plotHeight, width, height, yTop, options);
-  drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, !responsive);
-  drawPhaseMarkers(ctx, margin, plotHeight, phaseMarkers, !responsive);
   // Draw annotation leaders first, then opaque label backgrounds, so a leader
   // from a higher lane cannot run through another label's text.
   phaseLabels.forEach((label) => {
@@ -160,6 +158,7 @@ export function drawLineChart(canvas, series, options = {}) {
   });
 
   const interactivePoints = [];
+  const datapointsToDraw = [];
   const movingAverageSeries = options.showTrendLine
     ? buildMovingAverageSeriesSet(series, {
         dates,
@@ -191,7 +190,7 @@ export function drawLineChart(canvas, series, options = {}) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.setLineDash([8, 6]);
-    drawPhaseSegments(ctx, points.map((point) => ({ ...point, phase: "rolling" })), layout.strokeBreakXsForSeries(series[seriesIndex]));
+    drawPhaseSegments(ctx, points.map((point) => ({ ...point, phase: "rolling" })), layout.strokeExclusionXs);
     ctx.restore();
   });
   series.forEach((item, seriesIndex) => {
@@ -219,17 +218,22 @@ export function drawLineChart(canvas, series, options = {}) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 3;
     ctx.setLineDash(style.dashPattern);
-    drawPhaseSegments(ctx, points, layout.strokeBreakXsForSeries(item));
+    drawPhaseSegments(ctx, points, layout.strokeExclusionXs);
     ctx.restore();
 
     points.forEach((point) => {
       if (point.y === null) return;
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
-      ctx.fill();
+      datapointsToDraw.push({point,color});
       interactivePoints.push(point);
     });
+  });
+
+  // Exclusion bands affect strokes only. Markers overlay those gaps; unchanged
+  // datapoints are drawn last and remain authoritative even near a marker.
+  drawPhaseLine(ctx, margin, plotWidth, plotHeight, phaseBoundary, !responsive);
+  drawPhaseMarkers(ctx, margin, plotHeight, phaseMarkers, !responsive);
+  datapointsToDraw.forEach(({point,color}) => {
+    ctx.fillStyle = color;ctx.beginPath();ctx.arc(point.x,point.y,4,0,Math.PI*2);ctx.fill();
   });
 
   const inspectionMarkers = phaseMarkers.map(marker => ({
@@ -782,14 +786,14 @@ function drawPhaseMarkers(ctx, margin, plotHeight, markers, showLabels = true) {
 
 // Clip only strokes, never observation or event anchors. Interpolation preserves
 // the original slope. Overlapping gap ranges merge naturally in parameter space.
-export function buildStrokeSegments(points, breakXs = [], halfGap = 3) {
+export function buildStrokeSegments(points, breakXs = [], halfGap = 5) {
   const segments = [];
   let previous = null;
   for (const point of points) {
     if (point.y === null) continue;
     if (previous && previous.phase === point.phase) {
       const start = previous, dx = point.x-start.x, dy = point.y-start.y;
-      const cuts = breakXs.filter(x => Number.isFinite(x) && x >= Math.min(start.x,point.x) && x <= Math.max(start.x,point.x));
+      const cuts = breakXs.filter(x => Number.isFinite(x) && x+halfGap >= Math.min(start.x,point.x) && x-halfGap <= Math.max(start.x,point.x));
       const gaps = dx === 0 ? (cuts.length ? [[0,1]] : []) : cuts.map(x => {
         const t = (x-start.x)/dx, radius = halfGap/Math.abs(dx);
         return [Math.max(0,t-radius),Math.min(1,t+radius)];
@@ -808,7 +812,10 @@ export function buildStrokeSegments(points, breakXs = [], halfGap = 3) {
 }
 
 function drawPhaseSegments(ctx, points, breakXs = []) {
-  for (const [start,end] of buildStrokeSegments(points,breakXs)) {
+  // Reserve five clear CSS pixels on either side, plus half the stroke width
+  // so diagonal stroke edges cannot bleed into the exclusion band.
+  ctx.lineCap = "butt";
+  for (const [start,end] of buildStrokeSegments(points,breakXs,5+ctx.lineWidth/2)) {
     ctx.beginPath();ctx.moveTo(start.x,start.y);ctx.lineTo(end.x,end.y);ctx.stroke();
   }
 }
@@ -932,8 +939,7 @@ export function buildClinicalGraphLayout(series, model, left, width, spacing = "
   const renderedMarkers = resolved.filter(event=>!boundaryMarker || event.sourceIndex!==phaseMarkers.length);
   return {dateXPositions,pointX,observationAnchors:ordered.observations.map(point=>({point,x:pointX(point)})),intervals,
     events:resolved,labelAnchors:resolved.map(event=>({event,x:event.renderX})),
-    strokeBreakXsForSeries:item => resolved.filter(event => !isTargetMasteryMarker(event)
-      || masteryObservations(series,event).some(point => item.points.includes(point))).map(event=>event.renderX),
+    strokeExclusionXs:[...new Set(resolved.map(event=>event.renderX))].filter(Number.isFinite).sort((a,b)=>a-b),
     markerBreakXs:renderedMarkers.filter(event=>event.breaksLine).map(event=>event.renderX),
     phaseMarkers:renderedMarkers,phaseBoundary:renderedBoundary ? {...phaseBoundary,renderX:renderedBoundary.renderX} : null};
 }
