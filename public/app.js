@@ -8638,9 +8638,12 @@ function renderAuthorizationUsage() {
     return `
       <div>
         <strong>${row.code}</strong>
-        <span>${formatUsageNumber(row.usedHours)}h / ${row.usedUnits}u used</span>
-        <span>${formatUsageNumber(row.approvedHours)}h / ${row.approvedUnits}u approved</span>
-        <span class="health-badge ${remainingClass}">${formatUsageNumber(row.remainingHours)}h / ${row.remainingUnits}u left</span>
+        <span>Hours</span>
+        <span>${formatUsageNumber(row.usedHours)} / ${formatUsageNumber(row.approvedHours)} used</span>
+        <span class="health-badge ${remainingClass}">${formatUsageNumber(row.remainingHours)} left</span>
+        <span>Units</span>
+        <span>${row.usedUnits} / ${row.approvedUnits} used</span>
+        <span class="health-badge ${remainingClass}">${row.remainingUnits} left</span>
       </div>
     `;
   }).join("");

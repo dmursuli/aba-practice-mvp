@@ -95,3 +95,36 @@ test('clinical data linked to a completed encounter is not additional service ti
  const c=client(),session=encounter('97153');
  assert.equal(row(c,[session,{...session,id:'probe',sessionId:'s',clinicalDataOnly:true}]).usedUnits,4);
 });
+
+for (const code of ['97151', '97153', '97155', '97156']) {
+ test(`${code} card compares hours and units separately without changing calculated values`, () => {
+  const c = client();
+  c.profile.authorization.services[code] = {hours: '81.75', units: '327'};
+  const service = encounter(code, {endTime: '10:15'});
+  const sessions = ['97153', '97156'].includes(code) ? [service] : [];
+  if (!sessions.length) c[`note${code}History`] = [service];
+  const usage = authorizationUtilization(c, sessions);
+  const before = structuredClone({c, sessions, usage});
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const extract = name => app.match(new RegExp(`^function ${name}\\([^\\n]*\\{[\\s\\S]*?^}`, 'm'))[0];
+  const sandbox = {
+   currentClient: () => c,
+   authorizationUsageByCode: () => usage,
+   authorizationUsage: {innerHTML: ''},
+   authorizationUsageNote: {textContent: ''}
+  };
+  vm.createContext(sandbox);
+  for (const name of ['roundUsage', 'formatUsageNumber', 'renderAuthorizationUsage']) {
+   vm.runInContext(extract(name), sandbox);
+  }
+  sandbox.renderAuthorizationUsage();
+  const cards = [...sandbox.authorizationUsage.innerHTML.matchAll(/<div>([\s\S]*?)<\/div>/g)];
+  assert.equal(cards.length, 4);
+  const card = cards.find(([, html]) => html.includes(`<strong>${code}</strong>`))[1];
+  const lines = [...card.matchAll(/<(?:strong|span)\b[^>]*>([^<]*)<\/(?:strong|span)>/g)].map(match => match[1]);
+  assert.deepEqual(lines, [code, 'Hours', '1.25 / 81.75 used', '80.50 left', 'Units', '5 / 327 used', '322 left']);
+  assert.deepEqual({c, sessions, usage}, before);
+  assert.equal(sandbox.authorizationUsageNote.textContent, 'Utilization updates automatically from saved clinical services within the current authorization period.');
+  assert.doesNotMatch(card, /\d+h\s*\/\s*\d+u/);
+ });
+}
