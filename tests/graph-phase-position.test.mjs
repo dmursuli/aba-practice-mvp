@@ -166,11 +166,11 @@ test('100 observations share ten date slots; mastery and Treatment overlays cann
  assert.deepEqual(series,original);
 });
 
-test('single observation stays centered with bounded mastery overlays before and after',()=>{
+test('single observation stays centered with mastery always bounded to its right',()=>{
  const series=[{name:'A',points:[{x:'2026-07-05',y:50}]}];
  const plain=draw(series,[]);const x=plain.points[0].x;
  assert.equal(x,424,'normal single-point plot center');
- for(const [date,direction] of [['2026-07-01',-1],['2026-07-05',1],['2026-07-10',1]]) {
+ for(const [date,direction] of [['2026-07-01',1],['2026-07-05',1],['2026-07-10',1]]) {
   const result=draw(series,[{date,label:'Target mastered',phaseType:'targetMastered'}]);
   assert.equal(result.points[0].x,x);
   const offset=result.markers[0].x-x;
@@ -256,4 +256,32 @@ test('mastery source preserves target association and timestamp without changing
  const marker=sandbox.masteryMarkersForProgram('p')[0];
  assert.equal(marker.targetIds[0],'a');assert.equal(marker.targetName,'A');assert.equal(marker.timestamp,history[0].timestamp);
  assert.deepEqual(history,before);
+});
+
+test('legacy mastery before all target data clamps after earliest observation, preserving date and later data',()=>{
+ const series=[{name:'A',meta:{targetId:'a'},points:[{x:'2026-07-05',y:80},{x:'2026-07-10',y:90},{x:'2026-07-15',y:95}]}];
+ const marker={date:'2026-07-01',label:'Target mastered',phaseType:'targetMastered',targetIds:['a']};
+ const original=structuredClone({series,marker});
+ const plain=draw(series,[]),result=draw(series,[marker]);
+ assert.equal(result.markers.length,1);
+ assert.equal(result.markers[0].date,'2026-07-01');
+ assert.ok(result.markers[0].x>result.points[0].x);
+ assert.ok(result.markers[0].x-result.points[0].x<=16);
+ assert.ok(result.points.slice(1).every(point=>point.x>result.markers[0].x));
+ assert.deepEqual(result.points.map(point=>point.x),plain.points.map(point=>point.x));
+ assert.deepEqual({series,marker},original);
+});
+
+test('one valid target observation clamps mastery right despite missing entries and unrelated target data',()=>{
+ const series=[{name:'A',meta:{targetId:'a'},points:[{x:'2026-07-01',y:null},{x:'2026-07-05',y:80}]},
+  {name:'B',meta:{targetId:'b'},points:[{x:'2026-07-01',y:30},{x:'2026-07-10',y:70}]}];
+ for(const date of ['2026-06-01','2026-07-05']) {
+  const marker={date,label:'Target mastered',phaseType:'targetMastered',targetIds:['a']};
+  const plain=draw(series,[]),result=draw(series,[marker]);
+  const target=result.points.find(point=>point.label==='A');
+  assert.equal(result.markers.length,1);
+  assert.ok(result.markers[0].x>target.x && result.markers[0].x-target.x<=16);
+  assert.equal(result.markers[0].date,date);
+  assert.deepEqual(result.points.map(point=>point.x),plain.points.map(point=>point.x));
+ }
 });

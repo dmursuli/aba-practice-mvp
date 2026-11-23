@@ -940,6 +940,15 @@ export function buildPhaseTransitionLayout(series, model, left, width, spacing =
     const observations = isTargetMasteryMarker(marker)
       ? masteryObservations(series,marker).filter(point => graphNumericValue(point.y) !== null)
       : ordered.observations;
+    // Legacy mastery dates cannot place a sparse target's outcome before its
+    // evidence. Clamp only the overlay; retain the recorded date and data axis.
+    if (isTargetMasteryMarker(marker) && observations.length
+      && (observations.length === 1 || observations.every(point => marker.date < point.x))) {
+      const earliestX = Math.min(...observations.map(pointX));
+      const followingX = Math.min(...observations.map(pointX).filter(x => x > earliestX));
+      const offset = Math.min(16,(left+width-earliestX)/2,(followingX-earliestX)/2);
+      return {...marker,renderX:earliestX+offset};
+    }
     const before = observations.filter(point => observationSideOfEvent(point,marker)<0).map(pointX);
     const after = observations.filter(point => observationSideOfEvent(point,marker)>0).map(pointX);
     const previous = Math.max(...before), next = Math.min(...after);
