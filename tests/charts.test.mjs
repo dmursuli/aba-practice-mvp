@@ -542,7 +542,7 @@ test('editing the treatment phase line recalculates behavior baseline and treatm
   assert.equal(shiftedAnalysis.analyses[0].treatmentAverage, 4);
 });
 
-test('graph analysis uses insufficient-data messaging when treatment data are too sparse', () => {
+test('graph analysis classifies a single Treatment observation as Stable', () => {
   const analysis = buildGraphAnalysis([{
     name: 'Follow directions',
     points: [
@@ -554,10 +554,10 @@ test('graph analysis uses insufficient-data messaging when treatment data are to
   assert.equal(analysis.analyses[0].baselineLevel, 30);
   assert.equal(analysis.analyses[0].treatmentLevel, 50);
   assert.equal(analysis.analyses[0].difference, 20);
-  assert.equal(analysis.analyses[0].trendDirection, 'Insufficient data');
-  assert.match(analysis.analyses[0].interpretation, /representing a 20-percentage-point improvement/i);
-  assert.match(analysis.analyses[0].interpretation, /Interpretation is limited by the small number of data points/i);
-  assert.match(analysis.analyses[0].stability, /requires at least 3 treatment data points/i);
+  assert.equal(analysis.analyses[0].trendDirection, 'Stable');
+  assert.match(analysis.analyses[0].interpretation, /20-percentage-point increase from Baseline/i);
+  assert.match(analysis.analyses[0].interpretation, /Trend is stable based on the available Treatment observation/i);
+  assert.match(analysis.analyses[0].stability, /Insufficient data/i);
 });
 
 test('five-session moving average is progressive from the first observation', () => {
@@ -786,7 +786,7 @@ test('baseline and treatment comparison calculate with one point in each phase f
   assert.equal(analysis.analyses[0].treatmentLevel, 3);
   assert.equal(analysis.analyses[0].difference, 5);
   assert.equal(analysis.analyses[0].percentReduction, '62.5%');
-  assert.equal(analysis.analyses[0].trendDirection, 'Insufficient data');
+  assert.equal(analysis.analyses[0].trendDirection, 'Stable');
 });
 
 test('baseline mean of zero does not cause divide-by-zero errors', () => {
@@ -815,8 +815,8 @@ test('graph analysis panel data remains available when some metrics are unavaila
 
   assert.equal(analysis.analyses.length, 1);
   assert.equal(analysis.analyses[0].baselineLevel, 45);
-  assert.match(analysis.analyses[0].variability, /requires at least 2 data points|low|moderate|high/i);
-  assert.match(String(analysis.analyses[0].stability), /requires at least 3 treatment data points/i);
+  assert.equal(analysis.analyses[0].variability, "Unavailable");
+  assert.match(String(analysis.analyses[0].stability), /Insufficient data/i);
 });
 
 test('filtered range can suppress the auto treatment boundary when treatment began earlier', () => {
@@ -875,7 +875,7 @@ test('missing phase line leaves phase-dependent analytics unavailable', () => {
   assert.equal(analysis.phaseBoundary, null);
   assert.equal(analysis.analyses[0].baselineLevel, null);
   assert.equal(analysis.analyses[0].treatmentLevel, null);
-  assert.equal(analysis.analyses[0].currentLevel, 80);
+  assert.equal(analysis.analyses[0].currentLevel, null);
   assert.equal(analysis.analyses[0].difference, null);
   assert.equal(analysis.analyses[0].percentChange, 'Unavailable');
   assert.equal(analysis.analyses[0].baselineAvailable, false);
@@ -890,7 +890,7 @@ test('trend direction uses all treatment points and only one is insufficient', (
     ]
   }], { treatmentPhaseLine: { date: '2026-08-02' }, graphType: 'skill' }).analyses[0].trendDirection;
 
-  assert.equal(trendFor([90]), 'Insufficient data');
+  assert.equal(trendFor([90]), 'Stable');
   assert.equal(trendFor([90, 90, 90]), 'Stable');
   assert.equal(trendFor([60, 70, 80]), 'Increasing');
   assert.equal(trendFor([80, 70, 60]), 'Decreasing');

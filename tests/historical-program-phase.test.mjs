@@ -16,9 +16,9 @@ function fixture(){
 }
 test('ten historical observations identify absent classification without fabricated analytics',()=>{
  const {analysis}=fixture();const a=analysis();
- assert.equal(a.treatmentLevel,null);assert.equal(a.baselineLevel,null);assert.equal(a.currentLevel,90);
+ assert.equal(a.treatmentLevel,null);assert.equal(a.baselineLevel,null);assert.equal(a.currentLevel,null);
  assert.equal(a.phaseUnclassified,true);assert.match(a.interpretation,/Treatment phase not established for historical data/);
- assert.doesNotMatch(a.interpretation,/insufficient/i);assert.equal(a.trendDirection,'Phase not established');
+ assert.doesNotMatch(a.interpretation,/insufficient/i);assert.equal(a.trendDirection,'Unavailable');
 });
 test('confirmed first-date Baseline decision computes treatment analytics and preserves every stored observation',()=>{
  const {db,client,analysis,act}=fixture();const before=JSON.stringify(db.sessions);
@@ -47,10 +47,10 @@ test('permission, confirmation, eligible date and program/client isolation rejec
  db.sessions.push({clientId:'other-client',date:'2024-01-01',programs:[{programId:'p',targets:[{targetId:'t',independence:0}]}]});
  const before=structuredClone(db);assert.throws(()=>act(),/No eligible/);assert.deepEqual(db,before);
 });
-test('established treatment with fewer than three valid observations is insufficient; baseline alone is not',()=>{
- const {act,analysis}=fixture();act({boundaryMode:'date',startDate:'2025-01-09'});assert.equal(analysis().trendDirection,'Insufficient data');
+test('two Treatment observations classify direction; baseline alone has no Treatment trend',()=>{
+ const {act,analysis}=fixture();act({boundaryMode:'date',startDate:'2025-01-09'});assert.equal(analysis().trendDirection,'Increasing');
  const a=buildGraphAnalysis([{name:'T',points:[{x:'2025-01-01',y:0}]}],{phaseMarkers:[{date:'2025-01-01',label:'Baseline',phaseType:'environmental'}]}).analyses[0];
- assert.equal(a.trendDirection,'Treatment not started');assert.doesNotMatch(a.interpretation,/insufficient/i);
+ assert.equal(a.trendDirection,'Unavailable');assert.doesNotMatch(a.interpretation,/insufficient/i);
 });
 
 test('actual UI handler requires confirmation, preserves session, and immediately updates phase analysis',async()=>{
@@ -86,7 +86,7 @@ test('one historical program decision updates all twelve targets without per-tar
   const result=buildGraphAnalysis([{name:target.name,points}],{phaseMarkers:programPhaseRecords(client,'p')}).analyses[0];
   assert.equal(result.treatmentLevel,target.id==='t11'?85:50);assert.equal(result.currentLevel,90);
   assert.equal(result.baselineLevel,target.id==='t11'?null:0);
-  if(target.id==='t11') {assert.equal(result.trendDisplay,'Insufficient Treatment data for trend.');assert.match(result.trendConfidence,/Insufficient Treatment data/);}
+  if(target.id==='t11') {assert.equal(result.trendDisplay,'Increasing');assert.equal(result.trendConfidence,'');}
   else {assert.equal(result.trendDirection,'Increasing');assert.equal(result.recentPerformance,'Recent improvement');}
  }
  assert.equal(JSON.stringify(db.sessions),before);

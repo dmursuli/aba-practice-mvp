@@ -21,7 +21,7 @@ test('unconfigured historical programs stay unclassified regardless of observati
   const result=buildGraphAnalysis(full.series).analyses[1];
   assert.equal(result.baselineLevel,null);
   assert.equal(result.treatmentLevel,null);
-  assert.equal(result.currentLevel,90);
+  assert.equal(result.currentLevel,null);
   assert.equal(result.changeFromBaseline,null);
   assert.equal(buildClinicalGraphModel(full.series).phaseBoundary,null);
   assert.deepEqual(history,before);
@@ -46,7 +46,7 @@ test('explicit phases override fallback, mastery does not; current level include
   assert.equal(buildGraphAnalysis(series,withoutMastery).analyses[0].treatmentLevel,40);
 });
 
-for (const [values,expected] of [ [[10,20,30],'Increasing'], [[30,20,10],'Decreasing'], [[20,20,20],'Stable'], [[0,100,0,100,0,100],'Variable'], [[50,51,52],'Stable'], [[50,52,54],'Increasing'], [[54,52,50],'Decreasing'], [[10,20],'Insufficient data'], [[10],'Insufficient data'] ]) {
+for (const [values,expected] of [ [[10,20,30],'Increasing'], [[30,20,10],'Decreasing'], [[20,20,20],'Stable'], [[0,100,0,100,0,100],'Variable'], [[50,51,52],'Stable'], [[50,52,54],'Increasing'], [[54,52,50],'Decreasing'], [[10,20],'Increasing'], [[10],'Stable'] ]) {
   test(`regression trend ${expected} from ${values.join(',')}`, () => {
     const series=[{name:'Target',points:[0,...values].map((y,i)=>({x:`2026-01-${String(i+1).padStart(2,'0')}`,y}))}];
     assert.equal(buildGraphAnalysis(series,{treatmentPhaseLine:{date:"2026-01-02"}}).analyses[0].trendDirection,expected);

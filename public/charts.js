@@ -521,7 +521,7 @@ function analyzeSingleSeries(series, options) {
     }).filter((point) => point !== null);
   const baselineValues = baselinePoints.map((point) => point.y);
   const treatmentValues = treatmentPoints.map((point) => point.y);
-  const evaluationValues = treatmentValues.length ? treatmentValues : baselineValues;
+  const evaluationValues = treatmentValues;
   const baselineAverage = baselineValues.length ? mean(baselineValues) : null;
   const treatmentAverage = treatmentValues.length ? mean(treatmentValues) : null;
   const baselineCurrent = baselineValues.length ? baselineValues[baselineValues.length - 1] : null;
@@ -529,15 +529,13 @@ function analyzeSingleSeries(series, options) {
   const phaseUnclassified = normalized.length > 0 && !treatmentValues.length && !options.hasExplicitPhase;
   const classificationMessage = phaseUnclassified ? "Treatment phase not established for historical data." : "";
   const treatmentPending = !options.hasTreatmentPhase && !treatmentValues.length;
-  const trend = treatmentPending
-    ? {direction:phaseUnclassified ? "Phase not established" : "Treatment not started",confidence:classificationMessage || "Treatment phase has not been established.",slope:0}
-    : classifyTrend(treatmentValues, graphType);
-  const variability = classifyVariability(evaluationValues);
+  const trend = classifyTrend(treatmentValues, graphType);
+  const variability = treatmentValues.length < 3 ? "Unavailable" : classifyVariability(evaluationValues);
   const recentTrend = classifyTrend(treatmentValues.slice(-5), graphType);
   const recentPerformance = treatmentPending ? trend.direction : recentTrend.direction === "Increasing" ? (graphType === "behavior" ? "Recent increase" : "Recent improvement")
     : recentTrend.direction === "Decreasing" ? (graphType === "behavior" ? "Recent decrease" : "Recent decline")
     : recentTrend.direction === "Stable" ? "Recent stability / plateau" : recentTrend.direction;
-  const stability = classifyStability(evaluationValues);
+  const stability = treatmentValues.length < 3 ? (treatmentValues.length ? "Insufficient data" : "Unavailable") : classifyStability(evaluationValues);
   const difference = baselineAverage !== null && treatmentAverage !== null
     ? graphType === "behavior"
       ? baselineAverage - treatmentAverage
@@ -569,6 +567,8 @@ function analyzeSingleSeries(series, options) {
   const interpretation = buildInterpretation({
     graphType,
     label: series.name,
+    percentage: graphType === "skill" && !normalized.some(point => point.dataCollectionType === "frequency"),
+    classificationMessage,
     baselineValues,
     treatmentValues,
     baselineAverage,
@@ -594,13 +594,14 @@ function analyzeSingleSeries(series, options) {
     baselineLevel: roundMetric(baselineAverage),
     treatmentAverage: roundMetric(treatmentAverage),
     treatmentLevel: roundMetric(treatmentAverage),
-    currentLevel: roundMetric(normalized.at(-1)?.y),
+    currentLevel: roundMetric(treatmentValues.length < 3 ? treatmentCurrent : normalized.at(-1)?.y),
+    treatmentObservationCount: treatmentValues.length,
     phaseUnclassified,
     classificationMessage,
     recentPerformance,
     trendDirection: trend.direction,
-    trendDisplay: trend.direction === "Insufficient data" ? "Insufficient Treatment data for trend." : trend.direction,
-    trendConfidence: trend.confidence,
+    trendDisplay: trend.direction,
+    trendConfidence: treatmentValues.length < 3 ? "" : trend.confidence,
     variability,
     stability,
     magnitudeOfImprovement,
@@ -1046,8 +1047,11 @@ export function formatGraphDate(value) {
 }
 
 function classifyTrend(values, graphType) {
-  if (!Array.isArray(values) || values.length < 3) {
-    return { direction: "Insufficient data", slope: 0, confidence: "Insufficient Treatment data for trend. At least 3 valid Treatment observations are required." };
+  if (!Array.isArray(values) || !values.length) return {direction:"Unavailable",slope:0,confidence:""};
+  if (values.length === 1) return {direction:"Stable",slope:0,confidence:""};
+  if (values.length === 2) {
+    const slope = values[1] - values[0];
+    return {direction:slope > 0 ? "Increasing" : slope < 0 ? "Decreasing" : "Stable",slope,confidence:""};
   }
   const slope = linearRegressionSlope(values);
   const average = mean(values);
@@ -1170,6 +1174,34 @@ function buildInterpretation(context) {
     masteryStatus,
     sessionsToMastery
   } = context;
+  if (treatmentValues.length < 3) {
+    const suffix = context.percentage ? "%" : "";
+    const value = number => `${roundMetric(number, 1)}${suffix}`;
+    const baseline = baselineValues.length
+      ? `${graphType === "behavior" ? "Baseline observations averaged" : "Baseline level was"} ${value(baselineAverage)} based on ${baselineValues.length} baseline data point${baselineValues.length === 1 ? "" : "s"}.`
+      : "Baseline unavailable.";
+    if (!treatmentValues.length) {
+      return `${label}: ${baseline} No Treatment data are available yet.${context.classificationMessage ? ` ${context.classificationMessage}` : ""}`;
+    }
+    const current = treatmentValues.at(-1);
+    let description;
+    if (treatmentValues.length === 1) {
+      description = `Treatment performance is currently ${value(current)}. Trend is stable based on the available Treatment observation. Variability cannot yet be determined from one Treatment observation.`;
+    } else {
+      const previous = treatmentValues[0];
+      const change = current - previous;
+      const units = context.percentage ? "percentage-point" : "point";
+      description = change === 0
+        ? `Treatment performance remained unchanged at ${value(current)} across the two available observations.`
+        : `Treatment performance ${change > 0 ? "increased" : "decreased"} from ${value(previous)} to ${value(current)} across the two available observations, a ${roundMetric(Math.abs(change), 1)}-${units} ${change > 0 ? "increase" : "decrease"}.`;
+      description += ` Trend is ${trend.direction.toLowerCase()}. Additional Treatment observations are needed before variability can be meaningfully interpreted.`;
+    }
+    const comparison = baselineAverage !== null
+      ? changeFromBaseline === 0 ? " Mean Treatment performance is unchanged from Baseline."
+        : ` Mean Treatment performance shows a ${roundMetric(Math.abs(changeFromBaseline), 1)}-${context.percentage ? "percentage-point" : "point"} ${changeFromBaseline > 0 ? "increase" : "decrease"} from Baseline.`
+      : "";
+    return `${label}: ${baseline} ${description}${comparison}`;
+  }
   if (!baselineValues.length) {
     return `${label}: Baseline unavailable. ${treatmentValues.length ? `Treatment level is currently ${roundMetric(treatmentAverage ?? mean(treatmentValues), 1)}${graphType === "skill" ? "%" : ""}.` : "Treatment data are unavailable."} ${treatmentValues.length ? `Trend: ${trend.direction.toLowerCase()}; variability: ${variability}.` : ""} ${trend.confidence || ""}`.trim();
   }
