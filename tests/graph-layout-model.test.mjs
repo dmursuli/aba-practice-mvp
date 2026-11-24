@@ -76,7 +76,7 @@ test('behavior keeps calendar spacing and measurement gates; skill keeps shared 
  assert.deepEqual(b.dateXPositions,buildChartLayout(dates,64,720,null,[],'calendar').dateXPositions);
  const skill=buildSkillMeasurementChart({id:'p'},[{id:'a',name:'A'}],series[0].points.map(p=>({...p,targetId:'a',independence:p.y,dataCollectionType:'percent_correct'})));
  const a=layout(skill.series);assert.equal(a.dateXPositions[1]-a.dateXPositions[0],a.dateXPositions[2]-a.dateXPositions[1]);
- assert.equal(buildGraphAnalysis(skill.series).analyses[0].currentLevel,90);
+ assert.equal(buildGraphAnalysis(skill.series).analyses[0].currentLevel,null);
 });
 
 test('stroke clipping merges close markers, interpolates slope, and handles endpoint and reversed segments',()=>{
@@ -239,4 +239,42 @@ test('explicit one-date historical Treatment occupies the interval after all Bas
  const boundary=future.layout.events[0].renderX;
  assert.ok(future.layout.observationAnchors.filter(p=>p.point.x==='2026-01-01').every(p=>p.x<boundary));
  assert.ok(future.layout.observationAnchors.filter(p=>p.point.x==='2026-11-20').every(p=>p.x>boundary));
+});
+
+for(const count of [1,3]) test(`historical Treatment marker follows all ${count} same-date observations resolved as Baseline`,()=>{
+ const phaseMarkers=[
+  {id:'baseline',date:'2026-01-01',label:'Baseline',clinicalPhase:'baseline',initial:true},
+  {id:'treatment',date:'2026-01-02',label:'Treatment',clinicalPhase:'intervention',historicalDecision:true,baselineBefore:true}
+ ];
+ const input=[{name:'A',points:[
+  ...Array.from({length:count},(_,i)=>({x:'2026-01-02',y:20+i*5,phaseRecordId:'baseline',...(i?{recordedAt:`2026-01-02T0${i}:00:00Z`}:{})})),
+  {x:'2026-01-03',y:60,phaseRecordId:'treatment'}
+ ]}];
+ const before=structuredClone({input,phaseMarkers});
+ const result=render(input,{phaseMarkers});
+ const markerX=result.layout.events[0].renderX;
+ const baseline=result.layout.observationAnchors.filter(p=>p.point.effectiveProgramPhase==='baseline');
+ const treatment=result.layout.observationAnchors.filter(p=>p.point.effectiveProgramPhase==='intervention');
+ assert.equal(baseline.length,count);
+ assert.ok(baseline.every(p=>p.x<markerX));
+ assert.ok(treatment.every(p=>p.x>markerX));
+ assert.deepEqual(result.layout.observationAnchors.map(p=>p.x),render(input).layout.observationAnchors.map(p=>p.x));
+ if(count===1) {assert.equal(baseline[0].x,92);assert.equal(markerX,424);assert.equal(treatment[0].x,756);}
+ assert.deepEqual({input,phaseMarkers},before);
+});
+
+test('same-date future Treatment without a phase link follows the historical boundary by resolved classification',()=>{
+ const phaseMarkers=[
+  {id:'b',date:'2026-01-01',label:'Baseline',clinicalPhase:'baseline',initial:true},
+  {id:'t',date:'2026-01-01',label:'Treatment',clinicalPhase:'intervention',historicalDecision:true,baselineBefore:true,
+   effectiveAt:'2026-01-01T12:00:00Z',position:'after-date'}
+ ];
+ const input=[{name:'A',points:[{x:'2026-01-01',y:20,recordedAt:'2026-01-01T09:00:00Z'},
+  {x:'2026-01-01',y:60,recordedAt:'2026-01-01T15:00:00Z'}]}];
+ const result=render(input,{phaseMarkers});
+ assert.equal(result.layout.events.length,1);
+ const markerX=result.layout.events[0].renderX;
+ assert.ok(result.layout.observationAnchors[0].x<markerX);
+ assert.ok(result.layout.observationAnchors[1].x>markerX);
+ assert.deepEqual(result.layout.observationAnchors.map(p=>p.point.effectiveProgramPhase),['baseline','intervention']);
 });

@@ -882,6 +882,12 @@ function masteryObservations(series, marker) {
 function observationSideOfEvent(point, marker) {
   if (point.x !== marker.date) return point.x < marker.date ? -1 : 1;
   if (isTargetMasteryMarker(marker)) return -1;
+  // Historical placement must agree with the authoritative phase resolution,
+  // including explicit phase-record links on date-only observations.
+  if (marker.historicalDecision && marker.baselineBefore === true && clinicalPhaseOf(marker) === "intervention") {
+    if (point.effectiveProgramPhase === "baseline") return -1;
+    if (point.effectiveProgramPhase === "intervention") return 1;
+  }
   // Explicit one-date historical transition: the whole historical date precedes
   // Treatment. Later observations linked to this phase remain on its right.
   if (marker.historicalDecision && marker.baselineBefore === true && marker.effectiveAt

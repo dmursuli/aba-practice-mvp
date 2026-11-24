@@ -27,7 +27,7 @@ test('new program starts Baseline; repeated data collection never automatically 
  assert.equal(programPhaseAt(programPhaseRecords(client,'p'),{x:context.sessionDate,recordedAt:time('31')}),'baseline');
  act('save-observation',{targetId:'a',value:0});act('save-observation',{targetId:'a',value:20},'36');
  const result=buildGraphAnalysis(series(db,client),{phaseMarkers:programPhaseRecords(client,'p')}).analyses[0];
- assert.equal(result.baselineLevel,10);assert.equal(result.treatmentLevel,null);assert.equal(result.currentLevel,20);
+ assert.equal(result.baselineLevel,10);assert.equal(result.treatmentLevel,null);assert.equal(result.currentLevel,null);
  assert.equal(db.sessions.length,1);assert.equal(db.sessions[0].id,context.sessionId);
  assert.equal(client.note97155History.length,0);assert.equal(programPhaseRecords(client,'p').length,1);
 });

@@ -8,6 +8,7 @@ function formatMetricValue(value, graphType) {
 
 export function buildCompactGraphAnalysisSentence(entry, graphType) {
   if (!entry) return "";
+  if (entry.treatmentObservationCount < 3 && entry.interpretation) return entry.interpretation;
   const metrics = [
     `Baseline: ${formatMetricValue(entry.baselineLevel, graphType)}`,
     `Treatment: ${formatMetricValue(entry.treatmentLevel ?? entry.treatmentAverage, graphType)}`,

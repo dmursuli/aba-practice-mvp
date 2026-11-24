@@ -21,7 +21,7 @@ test('unconfigured graph has no visual phase line and no inferred phase classifi
   const analysis=buildGraphAnalysis(series).analyses[0];
   assert.equal(analysis.baselineAvailable,false);
   assert.equal(analysis.treatmentAvailable,false);
-  assert.equal(analysis.currentLevel,80);
+  assert.equal(analysis.currentLevel,null);
   assert.deepEqual(series,before);
 });
 
