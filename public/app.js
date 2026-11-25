@@ -10464,9 +10464,9 @@ function renderPlanReview() {
   const programs = clientPrograms();
   const behaviors = clientBehaviors();
   const client = currentClient();
-  const activePrograms = programs.filter((program) => programHasPlanContentForTab(program, "active")).length;
-  const pausedPrograms = programs.filter((program) => programHasPlanContentForTab(program, "paused")).length;
-  const masteredPrograms = programs.filter((program) => programHasPlanContentForTab(program, "mastered")).length;
+  const activePrograms = programs.filter((program) => programMatchesPlanTab(program, "active")).length;
+  const pausedPrograms = programs.filter((program) => programMatchesPlanTab(program, "paused")).length;
+  const masteredPrograms = programs.filter((program) => programMatchesPlanTab(program, "mastered")).length;
   const activeTargets = programs.flatMap((program) => program.targets || []).filter((target) => target.status === "active").length;
   const pausedTargets = programs.flatMap((program) => program.targets || []).filter((target) => normalizePlanStatus(target.status) === "paused").length;
   const targetReviewEntry = targetReviewCacheEntry();
@@ -10575,9 +10575,9 @@ function renderHistoricalTargets() {
 function renderPlanStatusTabs(programs) {
   if (!planStatusTabs) return;
   const counts = {
-    active: programs.filter((program) => programHasPlanContentForTab(program, "active")).length,
-    paused: programs.filter((program) => programHasPlanContentForTab(program, "paused")).length,
-    mastered: programs.filter((program) => programHasPlanContentForTab(program, "mastered")).length
+    active: programs.filter((program) => programMatchesPlanTab(program, "active")).length,
+    paused: programs.filter((program) => programMatchesPlanTab(program, "paused")).length,
+    mastered: programs.filter((program) => programMatchesPlanTab(program, "mastered")).length
   };
   if (!counts[state.activePlanProgramTab]) {
     if (counts.active) {
@@ -10809,16 +10809,13 @@ function filteredTargetsForPlanProgram(program, tab) {
   });
 }
 
+function programMatchesPlanTab(program, tab) {
+  return normalizePlanStatus(program.status || "active") === tab;
+}
+
 function programHasPlanContentForTab(program, tab) {
-  const visibleTargets = filteredTargetsForPlanProgram(program, tab);
-  if (visibleTargets.length) return true;
-  if (state.activePlanReviewFilter) return false;
-  if (!(program.targets || []).length) {
-    const status = normalizePlanStatus(program.status || "active");
-    return status === tab;
-  }
-  const status = normalizePlanStatus(program.status || "active");
-  return status === tab && tab !== "active";
+  if (state.activePlanReviewFilter) return filteredTargetsForPlanProgram(program, tab).length > 0;
+  return programMatchesPlanTab(program, tab);
 }
 
 function renderPlanDomainTabs(domains) {
