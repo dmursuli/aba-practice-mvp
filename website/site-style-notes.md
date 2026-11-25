@@ -14,5 +14,5 @@ The CSS keeps the public site content and images, but makes the visual language 
 Small content fixes I noticed while inspecting the live site:
 
 - The page meta description is empty.
-- The footer text link labeled `Instagram` points to `http://squarespace.com`; the header Instagram icon points to the correct `https://www.instagram.com/triumph_aba/`.
+- Historical Squarespace inspection: the footer `Instagram` link pointed to `http://squarespace.com`. For the current static site, use the owner-identified profile `https://www.instagram.com/triumphbehavioralcare/` in both the footer and structured data.
 - The homepage copy is warm, but several sections are long. A tighter hero and shorter service cards would make the professional app-style design feel even stronger.
