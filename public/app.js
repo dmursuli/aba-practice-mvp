@@ -10475,7 +10475,7 @@ function renderPlanReview() {
   planClientSummary.innerHTML = client
     ? `
       <div><strong>${client.name}</strong><span>Client</span></div>
-      <div><strong>${activePrograms} / ${pausedPrograms} / ${masteredPrograms}</strong><span>Active / on hold / mastered goals</span></div>
+      <div><strong>${activePrograms} / ${pausedPrograms} / ${masteredPrograms}</strong><span>Active / on hold / mastered programs</span></div>
       <div><strong>${activeTargets}</strong><span>Active targets</span></div>
       <div><strong>${pausedTargets}</strong><span>On hold targets</span></div>
       <div><strong>${behaviors.filter((behavior) => behavior.status !== "inactive").length}</strong><span>Active behaviors</span></div>
@@ -10512,7 +10512,7 @@ function renderPlanReview() {
     planReview.innerHTML = state.activePlanReviewFilter
       ? `<p class="muted">No ${escapeHtml(state.activePlanReviewFilter)} targets found in this treatment plan.</p>`
       : state.activePlanProgramTab === "mastered"
-      ? '<p class="muted">No mastered goals yet.</p>'
+      ? '<p class="muted">No mastered programs yet.</p>'
       : state.activePlanProgramTab === "paused"
         ? '<p class="muted">No on-hold goals yet.</p>'
         : `
@@ -10530,7 +10530,7 @@ function renderPlanReview() {
     <section class="plan-status-legend">
       <button type="button" class="health-badge mastery-close-badge ${state.activePlanReviewFilter === "close" ? "is-active" : ""}" data-review-jump="close" aria-pressed="${state.activePlanReviewFilter === "close"}" ${targetReviewsReady ? "" : "disabled"}>Close (${targetReviewsReady ? masteryCounts.close : "…"})</button>
       <button type="button" class="health-badge mastery-ready-badge ${state.activePlanReviewFilter === "ready" ? "is-active" : ""}" data-review-jump="ready" aria-pressed="${state.activePlanReviewFilter === "ready"}" ${targetReviewsReady ? "" : "disabled"}>Ready (${targetReviewsReady ? masteryCounts.ready : "…"})</button>
-      <button type="button" class="health-badge mastered-badge ${state.activePlanReviewFilter === "mastered" ? "is-active" : ""}" data-review-jump="mastered" aria-pressed="${state.activePlanReviewFilter === "mastered"}" ${targetReviewsReady ? "" : "disabled"}>Mastered (${targetReviewsReady ? masteryCounts.mastered : "…"})</button>
+      <button type="button" class="health-badge mastered-badge ${state.activePlanReviewFilter === "mastered" ? "is-active" : ""}" data-review-jump="mastered" aria-pressed="${state.activePlanReviewFilter === "mastered"}" ${targetReviewsReady ? "" : "disabled"}>Mastered targets (${targetReviewsReady ? masteryCounts.mastered : "…"})</button>
       <button type="button" class="health-badge stagnant-badge ${state.activePlanReviewFilter === "stagnant" ? "is-active" : ""}" data-review-jump="stagnant" aria-pressed="${state.activePlanReviewFilter === "stagnant"}" ${targetReviewsReady ? "" : "disabled"}>Stagnant (${targetReviewsReady ? masteryCounts.stagnant : "…"})</button>
     </section>
     ${!targetReviewsReady
@@ -10579,7 +10579,7 @@ function renderPlanStatusTabs(programs) {
     paused: programs.filter((program) => programMatchesPlanTab(program, "paused")).length,
     mastered: programs.filter((program) => programMatchesPlanTab(program, "mastered")).length
   };
-  if (!counts[state.activePlanProgramTab]) {
+  if (!state.activePlanReviewFilter && !counts[state.activePlanProgramTab]) {
     if (counts.active) {
       state.activePlanProgramTab = "active";
     } else if (counts.paused) {
@@ -10590,7 +10590,7 @@ function renderPlanStatusTabs(programs) {
   }
   planStatusTabs.innerHTML = ["active", "paused", "mastered"].map((tab) => `
     <button type="button" class="domain-tab ${tab === state.activePlanProgramTab ? "active" : ""}" data-plan-status-tab="${tab}">
-      ${tab === "active" ? "Active goals" : tab === "paused" ? "On hold" : "Mastered goals"}${counts[tab] ? ` (${counts[tab]})` : ""}
+      ${tab === "active" ? "Active goals" : tab === "paused" ? "On hold" : "Mastered programs"}${counts[tab] ? ` (${counts[tab]})` : ""}
     </button>
   `).join("");
   planStatusTabs.querySelectorAll("[data-plan-status-tab]").forEach((button) => {
@@ -11144,7 +11144,20 @@ async function handlePlanClick(event) {
   }
   const openProgramGraph = event.target.closest("[data-open-plan-graph]");
   if (openProgramGraph) {
-    openProgramGraphModal(openProgramGraph.dataset.openPlanGraph);
+    if (openProgramGraph.disabled) return;
+    const clientId = currentClient()?.id;
+    if (!clientId) return;
+    openProgramGraph.disabled = true;
+    planMessage.textContent = "Loading program graph…";
+    try {
+      await ensureClientSessionsLoaded(clientId);
+      if (currentClient()?.id !== clientId) return;
+      if (state.sessionsLoadError) throw new Error(state.sessionsLoadError);
+      openProgramGraphModal(openProgramGraph.dataset.openPlanGraph);
+      planMessage.textContent = "";
+    } catch (error) {
+      if (currentClient()?.id === clientId) planMessage.textContent = error.message || "We couldn't load program graph data.";
+    } finally { openProgramGraph.disabled = false; }
     return;
   }
   const openBehaviorGraph = event.target.closest("[data-open-plan-behavior-graph]");

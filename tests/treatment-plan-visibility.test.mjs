@@ -52,7 +52,7 @@ test('program status tab counts are parent-based, including while a review filte
   s.state.activePlanReviewFilter=filter;s.renderPlanStatusTabs(programs);
   assert.match(s.planStatusTabs.innerHTML,/Active goals \(2\)/);
   assert.match(s.planStatusTabs.innerHTML,/On hold \(1\)/);
-  assert.match(s.planStatusTabs.innerHTML,/Mastered goals \(1\)/);
+  assert.match(s.planStatusTabs.innerHTML,/Mastered programs \(1\)/);
  }
  assert.deepEqual(programs,before);
  const review=extract('renderPlanReview');
