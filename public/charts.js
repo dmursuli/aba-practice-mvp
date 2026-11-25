@@ -97,8 +97,13 @@ export function drawLineChart(canvas, series, options = {}) {
       labels.push({ text: "Baseline", anchorX: margin.left + (phaseLineX - margin.left) / 2, color: "#1f2933" });
       labels.push({ text: phaseBoundary.label || "Treatment", anchorX: phaseLineX + (margin.left + plotWidth - phaseLineX) / 2, color: "#1f2933" });
     }
-    const originalLabels = [...labels];
-    phaseMarkers.forEach((marker) => {
+    const originalLabels = [];
+    const reservedBoundary = layout.labelSpaceBoundary;
+    if (reservedBoundary) {
+      originalLabels.push({text:"Baseline",anchorX:margin.left+(reservedBoundary.renderX-margin.left)/2,color:"#1f2933"});
+      originalLabels.push({text:reservedBoundary.label || "Treatment",anchorX:reservedBoundary.renderX+(margin.left+plotWidth-reservedBoundary.renderX)/2,color:"#1f2933"});
+    }
+    layout.labelSpaceMarkers.forEach((marker) => {
       const anchorX = marker.renderX;
       if (marker.label && Number.isFinite(anchorX)) originalLabels.push({ text: marker.label, anchorX, color: "#7a4f00", marker: true });
     });
@@ -983,11 +988,20 @@ export function buildClinicalGraphLayout(series, model, left, width, spacing = "
     else if (peers.some(item=>item.nearRight)) regionLeft = Math.max(regionLeft,regionRight-edgeSpace);
     return {...event,renderX:regionLeft+(regionRight-regionLeft)*(peers.indexOf(event)+1)/(peers.length+1)};
   });
-  const renderedBoundary = boundaryMarker ? resolved.find(event=>event.sourceIndex===phaseMarkers.length) : null;
-  const renderedMarkers = resolved.filter(event=>!boundaryMarker || event.sourceIndex!==phaseMarkers.length);
+  // Visibility only: retain phase records for classification/analysis and resolve
+  // all peers first so hiding an old Treatment line cannot move other markers.
+  const plotted = ordered.observations.filter(point => graphNumericValue(point.y) !== null);
+  const visible = resolved.filter(event => !(clinicalPhaseOf(event) === "intervention" && plotted.length
+    && plotted.every(point => event.date < point.x || (event.date === point.x && event.effectiveAt && point.recordedAt
+      && Date.parse(event.effectiveAt) < Date.parse(point.recordedAt) && observationSideOfEvent(point,event) > 0))));
+  const labelSpaceBoundary = boundaryMarker ? resolved.find(event=>event.sourceIndex===phaseMarkers.length) : null;
+  const labelSpaceMarkers = resolved.filter(event=>!boundaryMarker || event.sourceIndex!==phaseMarkers.length);
+  const renderedBoundary = boundaryMarker ? visible.find(event=>event.sourceIndex===phaseMarkers.length) : null;
+  const renderedMarkers = visible.filter(event=>!boundaryMarker || event.sourceIndex!==phaseMarkers.length);
   return {dateXPositions,pointX,observationAnchors:ordered.observations.map(point=>({point,x:pointX(point)})),intervals,
-    events:resolved,labelAnchors:resolved.map(event=>({event,x:event.renderX})),
-    strokeExclusionXs:[...new Set(resolved.map(event=>event.renderX))].filter(Number.isFinite).sort((a,b)=>a-b),
+    labelSpaceMarkers,labelSpaceBoundary,
+    events:visible,labelAnchors:visible.map(event=>({event,x:event.renderX})),
+    strokeExclusionXs:[...new Set(visible.map(event=>event.renderX))].filter(Number.isFinite).sort((a,b)=>a-b),
     markerBreakXs:renderedMarkers.filter(event=>event.breaksLine).map(event=>event.renderX),
     phaseMarkers:renderedMarkers,phaseBoundary:renderedBoundary ? {...phaseBoundary,renderX:renderedBoundary.renderX} : null};
 }

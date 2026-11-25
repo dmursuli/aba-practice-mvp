@@ -278,3 +278,49 @@ test('same-date future Treatment without a phase link follows the historical bou
  assert.ok(result.layout.observationAnchors[1].x>markerX);
  assert.deepEqual(result.layout.observationAnchors.map(p=>p.point.effectiveProgramPhase),['baseline','intervention']);
 });
+
+for(const layoutMode of [undefined,'graphs']) for(const source of ['marker','boundary']) {
+ test(`earlier Treatment ${source} is invisible in ${layoutMode || 'standard'} charts without reclassifying data`,()=>{
+  const input=[{name:'Later target',points:[{x:'2026-07-06',y:20},{x:'2026-07-14',y:60}]}];
+  const transition={id:'t',date:'2026-05-15',label:'Treatment',clinicalPhase:'intervention'};
+  const options={layoutMode,...(source==='marker'?{phaseMarkers:[transition]}:{treatmentPhaseLine:transition})};
+  const before=structuredClone({input,options});
+  const analysis=buildGraphAnalysis(input,options);
+  const result=render(input,options);
+  assert.equal(result.layout.events.length,0);assert.equal(result.layout.phaseBoundary,null);
+  assert.equal(result.strokes.filter(s=>s.color==='#7a4f00').length,0);
+  assert.equal(result.labels.filter(l=>l.t==='Treatment').length,0);
+  assert.ok(result.canvas.__graphInspection.groups.flatMap(g=>g.entries).filter(e=>e.kind==='observation').every(e=>e.phase==='intervention'));
+  assert.deepEqual(result.layout.observationAnchors.map(p=>p.x),render(input).layout.observationAnchors.map(p=>p.x));
+  assert.deepEqual(buildGraphAnalysis(input,options),analysis);
+  assert.equal(analysis.analyses[0].baselineLevel,null);assert.equal(analysis.analyses[0].treatmentLevel,40);
+  assert.deepEqual({input,options},before);
+ });
+}
+test('visibility preserves other marker geometry, labels and raw-series coordinates',()=>{
+ const transition={id:'t',date:'2025-12-01',label:'Treatment',clinicalPhase:'intervention'};
+ const companions=[marker('m','2026-01-02'),marker('m2','2026-01-02'),
+  {id:'environment',date:'2025-12-01',label:'Environment',phaseType:'environmental'}];
+ for(const layoutMode of [undefined,'graphs']) {
+  const result=render(series,{layoutMode,phaseMarkers:[...companions,transition]});
+  // Same geometry with the old line represented as a custom annotation, which
+  // must remain visible and reserve the same label space and peer interval.
+  const control=render(series,{layoutMode,phaseMarkers:[...companions,{...transition,clinicalPhase:'',label:'EarlierTx',phaseType:'environmental'}]});
+  for(const id of ['m','m2','environment']) assert.equal(result.layout.events.find(e=>e.id===id).renderX,control.layout.events.find(e=>e.id===id).renderX);
+  assert.deepEqual(result.arcs,control.arcs);
+  assert.equal(result.labels.filter(l=>l.t==='Target mastered').length,control.labels.filter(l=>l.t==='Target mastered').length);
+  assert.equal(result.labels.filter(l=>l.t==='Environment').length,1);
+  assert.deepEqual(result.strokes.filter(s=>s.color==='#167c80'),control.strokes.filter(s=>s.color==='#167c80'));
+ }
+});
+test('missing observations do not expand the plotted Treatment visibility domain',()=>{
+ const input=[{name:'A',points:[{x:'2026-01-01',y:null},{x:'2026-07-06',y:60}]}];
+ const result=render(input,{phaseMarkers:[{date:'2026-05-15',label:'Treatment'}]});
+ assert.equal(result.layout.events.length,0);
+});
+test('known same-day transition before every plotted timestamp is hidden; date-only same-day boundary remains',()=>{
+ const record={date:'2026-07-06',effectiveAt:'2026-07-06T09:00:00Z',label:'Treatment',clinicalPhase:'intervention'};
+ const points=[{x:record.date,y:40,recordedAt:'2026-07-06T10:00:00Z'}];
+ assert.equal(render([{name:'A',points}],{phaseMarkers:[record]}).layout.events.length,0);
+ assert.equal(render([{name:'A',points:[{x:record.date,y:40}]}],{phaseMarkers:[{...record,effectiveAt:undefined}]}).layout.events.length,1);
+});
