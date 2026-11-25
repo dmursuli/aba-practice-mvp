@@ -10490,6 +10490,7 @@ function renderPlanReview() {
       <p class="muted">No treatment plan targets configured.</p>
       ${renderPlanBehaviorSection(behaviors)}
     `;
+    planReview.insertAdjacentHTML("beforeend", renderHistoricalTargets());
     bindPlanReviewInputs();
     return;
   }
@@ -10518,6 +10519,7 @@ function renderPlanReview() {
           <p class="muted">No active goals yet.</p>
           ${renderPlanBehaviorSection(behaviors)}
         `;
+    planReview.insertAdjacentHTML("beforeend", renderHistoricalTargets());
     bindPlanReviewInputs();
     return;
   }
@@ -10548,7 +10550,26 @@ function renderPlanReview() {
     ${state.activePlanProgramTab === "active" && !state.activePlanReviewFilter ? renderPlanBehaviorSection(behaviors) : ""}
   `;
 
+  planReview.insertAdjacentHTML("beforeend", renderHistoricalTargets());
   bindPlanReviewInputs();
+}
+
+function historicalProgramsForPlan() {
+  const entry = targetReviewCacheEntry();
+  return entry?.status === "ready" ? entry.snapshot?.historicalPrograms || [] : [];
+}
+
+function renderHistoricalTargets() {
+  const programs = historicalProgramsForPlan();
+  if (!programs.length) return "";
+  return `<section class="plan-domain historical-targets"><h3>Historical targets</h3>
+    <p class="muted">These targets have saved observations but are not in the current treatment plan. They are excluded from active target and mastery-review counts.</p>
+    ${programs.map(program => `<section class="plan-program">
+      <h4>${escapeHtml(program.name)}</h4>
+      <ul>${program.targets.map(target => `<li>${escapeHtml(target.name)} <span class="muted">Historical / not currently active</span></li>`).join("")}</ul>
+      <button type="button" class="secondary-button" data-open-historical-graph="${escapeHtml(program.id)}">View historical graph</button>
+      ${renderProgramPhaseControls({...program,historicalOnly:true})}
+    </section>`).join("")}</section>`;
 }
 
 function renderPlanStatusTabs(programs) {
@@ -10828,7 +10849,7 @@ function renderPlanDomainTabs(domains) {
 
 function renderHistoricalPhaseControls(program) {
   if (state.historicalPhaseProgramId !== program.id) return `<button type="button" class="secondary-button" data-program-clinical-action="review-history" data-program-id="${escapeHtml(program.id)}">Classify historical data</button>`;
-  const dates = historicalProgramDates(program.id, currentSessions());
+  const dates = program.historicalDates || historicalProgramDates(program.id, currentSessions());
   if (!dates.length) return '<p class="muted">No eligible recorded observations exist for this program.</p>';
   return `<div class="historical-phase-controls">
     <p><strong>Historical phase not established</strong></p>
@@ -10854,6 +10875,10 @@ function renderProgramPhaseControls(program) {
     .reduce((latest, record) => record.effectiveAt > latest ? record.effectiveAt : latest, new Date().toISOString());
   const phase = programPhaseAt(records, {x:date, recordedAt});
   const label = phase === "intervention" ? "Treatment" : phase ? phase.charAt(0).toUpperCase() + phase.slice(1) : "Not established";
+  if (program.historicalOnly) return `<div class="program-phase-controls" data-phase-program="${escapeHtml(program.id)}" data-historical-only="true">
+    <p><strong>Current Phase: ${escapeHtml(label)}</strong></p>
+    ${canEditClinical() && !records.some(record => clinicalPhaseOf(record)) ? renderHistoricalPhaseControls(program) : ""}
+  </div>`;
   return `<div class="program-phase-controls" data-phase-program="${escapeHtml(program.id)}">
     <p><strong>Current Phase: ${escapeHtml(label)}</strong></p>
     ${canEditClinical() ? `${!records.some(record => clinicalPhaseOf(record)) ? renderHistoricalPhaseControls(program) : ""}${!phase ? `<button type="button" class="secondary-button" data-program-clinical-action="establish-baseline" data-program-id="${escapeHtml(program.id)}">Establish Baseline going forward</button>` : ""}
@@ -10873,7 +10898,7 @@ async function handleProgramClinicalAction(button) {
   if (action === "review-history") {
     button.disabled = true;
     try {
-      await ensureClientSessionsLoaded(currentClient().id);
+      if (!button.closest("[data-phase-program]")?.dataset?.historicalOnly) await ensureClientSessionsLoaded(currentClient().id);
       state.historicalPhaseProgramId = programId;
       renderPlanReview();
     } catch (error) { planMessage.textContent = error.message; }
@@ -10896,7 +10921,7 @@ async function handleProgramClinicalAction(button) {
   if (action === "establish-baseline" && !window.confirm("Establish Baseline for future observations? Existing historical observations will remain unchanged.")) return;
   button.disabled = true;
   try {
-    await persistCurrentPlanDraftBefore97155Generation();
+    if (!section?.dataset?.historicalOnly) await persistCurrentPlanDraftBefore97155Generation();
     const sessionContext = {...current97155SessionContext({create:true}),
       startTime:bcbaSessionForm.elements.startTime.value, endTime:bcbaSessionForm.elements.endTime.value,
       setting:bcbaSessionForm.elements.setting.value};
@@ -11109,6 +11134,17 @@ async function handlePlanClick(event) {
     jumpToReviewState(reviewJump.dataset.reviewJump);
     return;
   }
+  const historicalGraph = event.target.closest("[data-open-historical-graph]");
+  if (historicalGraph) {
+    historicalGraph.disabled = true;
+    try {
+      const clientId = currentClient()?.id;
+      await ensureClientSessionsLoaded(clientId);
+      if (currentClient()?.id === clientId) openProgramGraphModal(historicalGraph.dataset.openHistoricalGraph, true);
+    } catch (error) { planMessage.textContent = error.message; }
+    finally { historicalGraph.disabled = false; }
+    return;
+  }
   const openProgramGraph = event.target.closest("[data-open-plan-graph]");
   if (openProgramGraph) {
     openProgramGraphModal(openProgramGraph.dataset.openPlanGraph);
@@ -11275,8 +11311,8 @@ function handleProgramGraphModalClick(event) {
   }
 }
 
-function openProgramGraphModal(programId) {
-  const program = clientPrograms().find((item) => item.id === programId);
+function openProgramGraphModal(programId, historicalOnly = false) {
+  const program = (historicalOnly ? historicalProgramsForPlan() : clientPrograms()).find((item) => item.id === programId);
   if (!program) return;
   const chart = buildProgramSkillChart(program, currentSessions().slice().reverse());
   const chartSettings = skillChartSettings(chart);
@@ -11290,7 +11326,7 @@ function openProgramGraphModal(programId) {
   programGraphModal.setAttribute("aria-hidden", "false");
   programGraphModal.querySelector(".skill-measurement-controls")?.remove();
   programGraphModalCanvas.insertAdjacentHTML("beforebegin", `<div class="skill-measurement-controls">${renderSkillMeasurementControl(chart)}</div>`);
-  bindSkillMeasurementControls(programGraphModal, () => openProgramGraphModal(programId));
+  bindSkillMeasurementControls(programGraphModal, () => openProgramGraphModal(programId, historicalOnly));
   requestAnimationFrame(() => {
     drawLineChart(programGraphModalCanvas, chart.series, {
       ...chartSettings,

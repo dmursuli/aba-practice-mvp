@@ -65,6 +65,9 @@ async function resetDb() {
     serviceType: "97153",
     programs: [{ programId: "program-1", targets: [{ targetId: "none", independence: 100 }] }]
   });
+  sessions.push({id:"orphan-session",clientId:"client-1",date:"2026-01-03",programs:[
+    {programId:"archived-program",programName:"Archived program",targets:[{targetId:"orphan",targetName:"Historical target",independence:0}]}
+  ]});
   await writeFile(dbPath, `${JSON.stringify({
     clients: [
       {
@@ -145,6 +148,7 @@ test("target-review endpoint enforces client access and returns compact classifi
   assert.equal(response.status, 200);
   assert.equal(response.json.clientId, "client-1");
   assert.equal(response.json.targets.length, 3);
+  assert.deepEqual(response.json.historicalPrograms,[{id:"archived-program",name:"Archived program",domain:"Historical",historicalDates:["2026-01-03"],targets:[{id:"orphan",name:"Historical target"}]}]);
   assert.deepEqual(response.json.counts, { close: 0, ready: 1, mastered: 1, stagnant: 0, none: 1 });
   assert.equal(response.json.targets.find((target) => target.targetId === "mastered").classification, "mastered");
   assert.equal(response.json.targets.find((target) => target.targetId === "ready").classification, "ready");
